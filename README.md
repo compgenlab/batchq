@@ -1,3 +1,5 @@
 # batchq
 
 batchq is a job scheduler for running tasks. This is meant to be a simplier version of a batch job scheduler like SGE or SLURM. Job information is stored in a SQLite database and stored on a single node. In it's default mode, batchq is serverless. This means that all job submission, scheduling, or running is handled at run-time by the current process. There is no coordinating server process... all coordination is manged within the database.
+
+This is largely intended to be a go-lang replacement for the single-file Python script `sbs` [http://github.com/compgen-io/sbs](https://github.com/compgen-io/sbs). Part of the rationale is to use a sqlite3 db to maintain state for each job. Eventually the idea is that multiple kinds of runners might be written. For example, one idea for a new job runner is to use batchq as a front-end for SLURM. On many SLURM clusters, there is a limit on the number of jobs any one person can submit. If jobs are instead submitted to batchq, it would be possible to have a batchq runner that would submit the jobs to SLURM on an on-going basis (and keep track of the jobs).
