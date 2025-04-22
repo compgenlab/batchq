@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/rand"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,10 @@ func initSqlite3(fname string, force bool) error {
 		} else {
 			os.Remove(fname)
 		}
+	}
+
+	if _, err := os.Stat(path.Dir(fname)); os.IsNotExist(err) {
+		os.MkdirAll(path.Dir(fname), 0755) // creates intermediate directories too
 	}
 
 	db, err := sql.Open("sqlite3", fname)
