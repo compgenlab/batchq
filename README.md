@@ -1,0 +1,3 @@
+# batchq
+
+batchq is a job scheduler for running tasks. This is meant to be a simplier version of a batch job scheduler like SGE or SLURM. Job information is stored in a SQLite database and stored on a single node. In it's default mode, batchq is serverless. This means that all job submission, scheduling, or running is handled at run-time by the current process. There is no coordinating server process... all coordination is manged within the database.
