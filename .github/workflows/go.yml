@@ -27,10 +27,10 @@ jobs:
           GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -o bin/batchq.macos_x86_64 main.go
 
       - name: Upload binaries
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: batchq-macos-binaries
-          path: bin/*
+          name: batchq-binaries
+          path: bin/
 
   build-linux:
     runs-on: ubuntu-latest
@@ -56,7 +56,7 @@ jobs:
           CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -o bin/batchq.linux_arm64 main.go
 
       - name: Upload binaries
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: batchq-linux-binaries
-          path: bin/*
+          name: batchq-binaries
+          path: bin/
