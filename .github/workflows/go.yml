@@ -1,29 +1,58 @@
 # This workflow will build a golang project
 # For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
 
-name: Go
+name: Build Binaries
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
 
 jobs:
-
-  build:
-    runs-on: debian-latest
+  build-macos:
+    runs-on: macos-14
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v3
 
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.23'
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
 
-    - name: Build
-#      run: go build -v ./...
-      run: make
+      - name: Build for macOS ARM64
+        run: |
+          GOOS=darwin GOARCH=arm64 CGO_ENABLED=1 go build -o bin/batchq.macos_arm64 main.go
 
-    - name: Test
-      run: go test -v ./...
+      - name: Build for macOS x86_64
+        run: |
+          GOOS=darwin GOARCH=amd64 CGO_ENABLED=1 go build -o bin/batchq.macos_x86_64 main.go
+
+      - name: Show binary info
+        run: |
+          file bin/*
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
+
+      - name: Install cross-compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc
+
+      - name: Build Linux amd64
+        run: |
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC=gcc go build -o bin/batchq.linux_amd64 main.go
+
+      - name: Build Linux arm64
+        run: |
+          CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -o bin/batchq.linux_arm64 main.go
+
+      - name: Show binary info
+        run: |
+          file bin/*          

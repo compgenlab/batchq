@@ -9,7 +9,12 @@ bin/batchq.macos_arm64: go.mod go.sum $(SOURCES)
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -o bin/batchq.macos_arm64 main.go
 
 bin/batchq.linux_amd64: go.mod go.sum $(SOURCES)
+	CC=x86_64-linux-gnu-gcc \
 	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o bin/batchq.linux_amd64 main.go
+
+bin/batchq.linux_arm64: go.mod go.sum $(SOURCES)
+	CC=aarch64-linux-gnu-gcc \
+	CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o bin/batchq.linux_arm64 main.go
 
 clean:
 	rm bin/*
