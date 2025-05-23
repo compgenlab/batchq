@@ -22,6 +22,7 @@ type simpleRunner struct {
 	maxMemoryMb    int
 	maxWalltimeSec int
 	foreverMode    bool
+	useSystemdRun  bool
 	curJobs        []jobStatus
 	availProcs     int
 	availMem       int
@@ -36,6 +37,7 @@ type jobStatus struct {
 	cmd        *exec.Cmd
 	running    bool
 	returnCode int
+	startTime  time.Time
 }
 
 /*
@@ -78,6 +80,19 @@ func (r *simpleRunner) SetShell(shell string) *simpleRunner {
 	r.shellBin = shell
 	return r
 }
+func (r *simpleRunner) SetSystemdRun(useSystemdRun bool) Runner {
+	if useSystemdRun {
+		_, err := exec.LookPath("systemd-run")
+		if err != nil {
+			log.SetFlags(0)
+			log.Fatalln("ERROR: systemd-run requested, but systemd-run not found in $PATH")
+		} else {
+			r.useSystemdRun = useSystemdRun
+		}
+	}
+
+	return r
+}
 
 func (r *simpleRunner) Start() bool {
 
@@ -96,9 +111,9 @@ func (r *simpleRunner) Start() bool {
 	keepRunning := true
 	ranAtLeastOneJob := false
 
-	fmt.Printf("Starting job runner: %s\n", r.runnerId)
+	log.Printf("Starting job runner: %s\n", r.runnerId)
 	for keepRunning {
-
+		now := time.Now()
 		// check to see if we need to cancel a running job
 		for _, curJob := range r.curJobs {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -112,11 +127,25 @@ func (r *simpleRunner) Start() bool {
 					curJob.cmd.Cancel()
 					continue
 				} else {
-					fmt.Printf("Trying to cancel job: %d, but Cancel() is nil.\n", curJob.job.JobId)
+					log.Printf("Trying to cancel job: %d, but Cancel() is nil.\n", curJob.job.JobId)
 				}
 			}
 
 			if job.Status == jobs.RUNNING {
+				// Check to see if the job has a walltime set...
+				if val := job.GetDetail("walltime", ""); val != "" {
+					if jobTime, err := strconv.Atoi(val); err != nil {
+						log.Fatal(err)
+					} else if jobTime > 0 {
+						duration := now.Sub(curJob.startTime)
+						if duration.Seconds() > float64(jobTime) {
+							log.Printf("Job: %d exceeded wall-time (%s sec limit, %.2f sec elapsed)", curJob.job.JobId, val, duration.Seconds())
+							curJob.cmd.Cancel()
+							continue
+						}
+					}
+				}
+
 				// TODO: also check here to see if the job has been running for
 				//       too long. We can check the wall-time here. If the job
 				//       has been running too long, then just kill it here.
@@ -200,6 +229,7 @@ func interruptibleSleep(ctx context.Context, d time.Duration) error {
 func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	jobProcs := -1
 	jobMem := -1
+
 	if val := job.GetDetail("procs", ""); val != "" {
 		if p, err := strconv.Atoi(val); err != nil {
 			log.Fatal(err)
@@ -215,7 +245,24 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		}
 	}
 
-	cmd := exec.CommandContext(context.Background(), r.shellBin)
+	prog := r.shellBin
+	args := []string{}
+	if r.useSystemdRun {
+		prog = "systemd-run"
+
+		args = []string{"--user", "--slice"}
+
+		if jobProcs > 0 {
+			args = append(args, "-p", fmt.Sprintf("CPUQuota=%d%%", jobProcs*100))
+		}
+		if jobMem > 0 {
+			args = append(args, "-p", fmt.Sprintf("MemoryMax=%dM", jobMem))
+		}
+
+		args = append(args, r.shellBin)
+	}
+
+	cmd := exec.CommandContext(context.Background(), prog, args...)
 
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -261,7 +308,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		log.Fatal(err)
 	}
 
-	myStatus := jobStatus{job: job, running: false, returnCode: 0, cmd: cmd}
+	myStatus := jobStatus{job: job, running: false, returnCode: 0, cmd: cmd, startTime: time.Now()}
 	r.curJobs = append(r.curJobs, myStatus)
 
 	if r.availProcs != -1 && jobProcs > 0 {

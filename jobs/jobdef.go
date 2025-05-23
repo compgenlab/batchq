@@ -230,6 +230,14 @@ func ParseWalltimeString(val string) int {
 				seconds = num
 			}
 		}
+	} else {
+		// Treat everything else as the number of seconds...
+		if num, err := strconv.Atoi(val); err != nil {
+			return -1
+		} else {
+			seconds = num
+		}
+
 	}
 
 	seconds += days * 60 * 60 * 24

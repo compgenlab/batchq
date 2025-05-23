@@ -37,6 +37,12 @@ var runCmd = &cobra.Command{
 						}
 					}
 
+					if !useSystemdRun {
+						if val, ok := Config.GetBool("simple_runner", "use_systemd_run"); ok {
+							useSystemdRun = val
+						}
+					}
+
 					shell, _ := Config.Get("simple_runner", "shell", "/bin/bash")
 
 					runr = runner.NewSimpleRunner(jobq).
@@ -44,7 +50,8 @@ var runCmd = &cobra.Command{
 						SetMaxMemMB(jobs.ParseMemoryString(maxMemStr)).
 						SetMaxWalltimeSec(jobs.ParseWalltimeString(maxTimeStr)).
 						SetForever(forever).
-						SetShell(shell)
+						SetShell(shell).
+						SetSystemdRun(useSystemdRun)
 
 					runr.Start()
 				}
@@ -57,12 +64,14 @@ var maxProcs int
 var maxMemStr string
 var maxTimeStr string
 var forever bool
+var useSystemdRun bool
 
 func init() {
 	runCmd.Flags().IntVar(&maxProcs, "max-procs", -1, "Maximum processors to use")
 	runCmd.Flags().StringVar(&maxMemStr, "max-mem", "", "Max-memory (MB,GB)")
 	runCmd.Flags().StringVar(&maxTimeStr, "max-walltime", "", "Max-time (D-HH:MM:SS)")
 	runCmd.Flags().BoolVar(&forever, "forever", false, "Run forever, waiting for new jobs")
+	runCmd.Flags().BoolVar(&useSystemdRun, "systemd-run", false, "Use systemd-run to spawn jobs (cgroup control)")
 
 	rootCmd.AddCommand(runCmd)
 }
