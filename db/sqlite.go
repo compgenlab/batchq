@@ -144,6 +144,14 @@ func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.J
 		log.Fatal(err)
 	} else {
 
+		for _, depid := range job.AfterOk {
+			dep := db.GetJob(ctx, depid)
+			if dep == nil || dep.Status == jobs.CANCELLED || dep.Status == jobs.FAILED {
+				// bad dependency
+				return nil
+			}
+		}
+
 		newStatus := job.Status
 		if newStatus != jobs.USERHOLD {
 			if len(job.AfterOk) == 0 {
@@ -517,13 +525,33 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
 
-	sql2 := "UPDATE jobs SET status = ?, end_time = ? WHERE id = ?"
-	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, support.GetNowTS(), jobId)
+	sql2 := "UPDATE jobs SET status = ?, end_time = ? WHERE id = ? AND status != ? AND status != ?"
+	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, support.GetNowTS(), jobId, jobs.FAILED, jobs.SUCCESS)
 	if err != nil {
 		log.Fatal(err)
 	}
-	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 != nil {
-		// db.scanQueue(ctx, jobId, false)
+	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
+		childIds := []int{}
+		// Load job dependencies
+		sql2 := "SELECT job_id FROM job_deps WHERE afterok_id = ?"
+		rows2, err2 := conn.QueryContext(ctx, sql2, jobId)
+		if err2 != nil {
+			log.Fatal(err2)
+		}
+		defer rows2.Close()
+
+		for rows2.Next() {
+			var childId int
+			rows2.Scan(&childId)
+			childIds = append(childIds, childId)
+		}
+
+		for _, cid := range childIds {
+			if !db.CancelJob(ctx, cid) {
+				return false
+			}
+		}
+
 		return true
 	}
 	return false
@@ -609,14 +637,19 @@ func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string,
 		}
 	}
 
-	sql2 := "UPDATE jobs SET status = ?, end_time = ?, return_code = ? WHERE id = ?"
+	// MAYBE: remove job_runner records here if necessary... probably nice
+	//        to keep them around, but this is where you'd remove them. As
+	//        a bonus, cancelled jobs will also end up here, so you could
+	//        remove the records here too...
+
+	sql2 := "UPDATE jobs SET status = ?, end_time = ?, return_code = ? WHERE id = ? and status = ?"
 
 	status := jobs.SUCCESS
 	if returnCode != 0 {
 		status = jobs.FAILED
 	}
 	// fmt.Printf("updating job final status: %d\n", status)
-	res, err := conn.ExecContext(ctx, sql2, status, support.GetNowTS(), returnCode, jobId)
+	res, err := conn.ExecContext(ctx, sql2, status, support.GetNowTS(), returnCode, jobId, jobs.RUNNING)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -699,7 +732,7 @@ func (db *SqliteBatchQ) HoldJob(ctx context.Context, jobId int) bool {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 != nil {
+	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
 		return true
 	}
 	return false
@@ -712,7 +745,7 @@ func (db *SqliteBatchQ) ReleaseJob(ctx context.Context, jobId int) bool {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 != nil {
+	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
 		return true
 	}
 	return false

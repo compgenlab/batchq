@@ -101,7 +101,8 @@ func (job *JobDef) AddAfterOk(depId int) *JobDef {
 }
 
 func (job *JobDef) Print() {
-	fmt.Printf("[%d] %s\n", job.JobId, job.Status.String())
+	fmt.Printf("jobid    : %d\n", job.JobId)
+	fmt.Printf("status   : %s\n", job.Status.String())
 	fmt.Printf("name     : %s\n", job.Name)
 	fmt.Printf("submit   : %v\n", job.SubmitTime)
 	fmt.Printf("start    : %v\n", job.StartTime)

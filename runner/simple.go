@@ -98,6 +98,33 @@ func (r *simpleRunner) Start() bool {
 
 	fmt.Printf("Starting job runner: %s\n", r.runnerId)
 	for keepRunning {
+
+		// check to see if we need to cancel a running job
+		for _, curJob := range r.curJobs {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			// this could be optimized, but just iterating over jobs
+			// is the easiest thing to do
+			job := r.db.GetJob(ctx, curJob.job.JobId)
+			if job.Status == jobs.CANCELLED {
+				if curJob.cmd != nil && curJob.cmd.Cancel != nil {
+					curJob.cmd.Cancel()
+					continue
+				} else {
+					fmt.Printf("Trying to cancel job: %d, but Cancel() is nil.\n", curJob.job.JobId)
+				}
+			}
+
+			if job.Status == jobs.RUNNING {
+				// TODO: also check here to see if the job has been running for
+				//       too long. We can check the wall-time here. If the job
+				//       has been running too long, then just kill it here.
+
+			}
+		}
+
+		// check to see if we have the resources to run a job
 		findJob := false
 		if maxJobs > 0 {
 			if len(r.curJobs) < maxJobs {
@@ -114,15 +141,16 @@ func (r *simpleRunner) Start() bool {
 			}
 		}
 
+		// we have the resources... let's find a job to run
 		if findJob {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
 			// we should be looking for a new job
-			fmt.Printf("Looking for a job (%d, %d, %d)\n", r.availProcs, r.availMem, r.maxWalltimeSec)
+			log.Printf("Looking for a job (%d, %d, %d)\n", r.availProcs, r.availMem, r.maxWalltimeSec)
 
 			if job, hasMore := r.db.FetchNext(ctx, r.availProcs, r.availMem, r.maxWalltimeSec); job != nil {
-				fmt.Printf("Processing job: %d\n", job.JobId)
+				log.Printf("Processing job: %d\n", job.JobId)
 				r.lock.Lock()
 				r.startJob(job)
 				r.lock.Unlock()
@@ -133,15 +161,20 @@ func (r *simpleRunner) Start() bool {
 					// we are done here
 					// no jobs running, none left in queue, and we aren't waiting...
 					keepRunning = false
-					fmt.Println("Done processing jobs")
+					log.Println("Done processing jobs")
 				}
 			}
 		}
+
+		// do we have more jobs to run? should we keep waiting to
+		// run more jobs?
 
 		if keepRunning {
 			ctx, cancel := context.WithCancel(context.Background())
 			r.interrupt = cancel
 			// fmt.Println("Sleeping")
+
+			// sleep for 60 seconds to see if jobs complete
 			if err := interruptibleSleep(ctx, 60*time.Second); err != nil {
 				// fmt.Println("Woken up...")
 			}
@@ -182,7 +215,21 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		}
 	}
 
-	cmd := exec.Command(r.shellBin)
+	cmd := exec.CommandContext(context.Background(), r.shellBin)
+
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			log.Printf("Cancelling job: %d [%d]\n", job.JobId, cmd.Process.Pid)
+			cmd.Process.Kill()
+		} else {
+			log.Printf("Cancelling job: %d, but process already done\n", job.JobId)
+			cmd.Process.Kill()
+		}
+		return nil
+	}
+
+	cmd.WaitDelay = 30 * time.Second
+
 	cmd.Stdin = strings.NewReader(job.GetDetail("script", ""))
 	cmd.Stdout = nil
 	cmd.Stderr = nil
@@ -228,7 +275,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	defer cancel()
 	r.db.StartJob(ctx, job.JobId, r.runnerId, map[string]string{"pid": strconv.Itoa(cmd.Process.Pid)})
 	ctx.Done()
-	fmt.Printf("Started job: %d [%d]\n%s\n", job.JobId, cmd.Process.Pid, job.GetDetail("script", ""))
+	log.Printf("Started job: %d [%d]\n%s\n", job.JobId, cmd.Process.Pid, job.GetDetail("script", ""))
 
 	// Track it in the background
 	go func() {
@@ -251,14 +298,14 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		ctx.Done()
 
 		r.lock.Lock()
-		var newStatus []jobStatus
+		var newJobs []jobStatus
 		for _, val := range r.curJobs {
 			if val != myStatus {
-				newStatus = append(newStatus, val)
+				newJobs = append(newJobs, val)
 			}
 		}
 
-		r.curJobs = newStatus
+		r.curJobs = newJobs
 		if r.availProcs != -1 && jobProcs > 0 {
 			r.availProcs = r.availProcs + jobProcs
 		}

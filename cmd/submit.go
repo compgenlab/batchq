@@ -330,22 +330,33 @@ var submitCmd = &cobra.Command{
 			job.AddDetail(k, v)
 		}
 
-		for _, val := range strings.Split(jobDeps, ",") {
-			if val != "" {
-				if depid, err := strconv.Atoi(val); err != nil {
-					log.Fatal(err)
-				} else {
-					job.AddAfterOk(depid)
-				}
-			}
-		}
-
 		var jobq db.BatchDB
 		var err error
 		if jobq, err = db.OpenDB(dbpath); err != nil {
 			log.Fatalln(err)
 		}
 		defer jobq.Close()
+
+		baddep := false
+		for _, val := range strings.Split(jobDeps, ",") {
+			if val != "" {
+				if depid, err := strconv.Atoi(val); err != nil {
+					log.Fatal(err)
+				} else {
+					dep := jobq.GetJob(ctx, depid)
+					if dep == nil || dep.Status == jobs.CANCELLED || dep.Status == jobs.FAILED {
+						// bad dependency
+						fmt.Printf("Bad job dependency: %d\n", depid)
+						baddep = true
+					}
+					job.AddAfterOk(depid)
+				}
+			}
+		}
+
+		if baddep {
+			return
+		}
 
 		job = jobq.SubmitJob(ctx, job)
 		fmt.Printf("%d\n", job.JobId)

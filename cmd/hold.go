@@ -28,7 +28,7 @@ var holdCmd = &cobra.Command{
 		} else {
 			defer jobq.Close()
 			for _, arg := range args {
-				if jobid, err := strconv.Atoi(arg); err == nil {
+				if jobid, err := strconv.Atoi(arg); err != nil {
 					fmt.Printf("Bad job-id: %s\n", arg)
 				} else {
 					if jobq.HoldJob(ctx, jobid) {
@@ -59,7 +59,7 @@ var releaseCmd = &cobra.Command{
 		} else {
 			defer jobq.Close()
 			for _, arg := range args {
-				if jobid, err := strconv.Atoi(arg); err == nil {
+				if jobid, err := strconv.Atoi(arg); err != nil {
 					fmt.Printf("Bad job-id: %s\n", arg)
 				} else {
 					if jobq.ReleaseJob(ctx, jobid) {
@@ -73,7 +73,39 @@ var releaseCmd = &cobra.Command{
 	},
 }
 
+var cancelCmd = &cobra.Command{
+	Use:   "cancel job-id...",
+	Short: "Cancel a job (running or queued)",
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) == 0 {
+			cmd.Help()
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if jobq, err := db.OpenDB(dbpath); err != nil {
+			log.Fatalln(err)
+		} else {
+			defer jobq.Close()
+			for _, arg := range args {
+				if jobid, err := strconv.Atoi(arg); err != nil {
+					fmt.Printf("Bad job-id: %s\n", arg)
+				} else {
+					if jobq.CancelJob(ctx, jobid) {
+						fmt.Printf("Job: %d cancelled\n", jobid)
+					} else {
+						fmt.Printf("Error cancelling job: %d\n", jobid)
+					}
+				}
+			}
+		}
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(holdCmd)
 	rootCmd.AddCommand(releaseCmd)
+	rootCmd.AddCommand(cancelCmd)
 }
