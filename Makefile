@@ -1,4 +1,4 @@
-all: bin/batchq.linux_amd64
+all: bin/batchq.linux
 
 SOURCES := $(shell find . -name '*.go')
 
@@ -8,13 +8,17 @@ bin/batchq.macos_amd64: go.mod go.sum $(SOURCES)
 bin/batchq.macos_arm64: go.mod go.sum $(SOURCES)
 	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -o bin/batchq.macos_arm64 main.go
 
-bin/batchq.linux_amd64: go.mod go.sum $(SOURCES)
-	CC=x86_64-linux-gnu-gcc \
-	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o bin/batchq.linux_amd64 main.go
+#bin/batchq.linux_amd64: go.mod go.sum $(SOURCES)
+#	CC=x86_64-linux-gnu-gcc \
+#	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o bin/batchq.linux_amd64 main.go
 
-bin/batchq.linux_arm64: go.mod go.sum $(SOURCES)
-	CC=aarch64-linux-gnu-gcc \
-	CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o bin/batchq.linux_arm64 main.go
+#bin/batchq.linux_arm64: go.mod go.sum $(SOURCES)
+#	CC=aarch64-linux-gnu-gcc \
+#	CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o bin/batchq.linux_arm64 main.go
+
+bin/batchq.linux: go.mod go.sum $(SOURCES)
+	CGO_ENABLED=1 GOOS=linux go build -o bin/batchq.linux main.go
+
 
 clean:
 	rm bin/*
