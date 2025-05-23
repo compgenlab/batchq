@@ -42,6 +42,21 @@ var debugCmd = &cobra.Command{
 	},
 }
 
+var licenseCmd = &cobra.Command{
+	Use:    "license",
+	Short:  "Show the license",
+	Hidden: true,
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println(licenseText)
+	},
+}
+
+var licenseText string
+
+func SetLicenseText(txt string) {
+	licenseText = txt
+}
+
 var batchqHome string
 var configFile string
 var dbpath string
@@ -53,6 +68,7 @@ func init() {
 	initdbCmd.Flags().BoolVar(&force, "force", false, "Force overwriting existing DB")
 
 	rootCmd.AddCommand(debugCmd)
+	rootCmd.AddCommand(licenseCmd)
 	rootCmd.AddCommand(initdbCmd)
 
 	batchqHome = os.Getenv("BATCHQ_HOME")
