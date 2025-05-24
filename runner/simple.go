@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/mbreese/batchq/db"
+	"github.com/mbreese/batchq/iniconfig"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/support"
 )
@@ -34,6 +35,7 @@ type simpleRunner struct {
 	runnerId       string
 	interrupt      context.CancelFunc
 	lock           sync.Mutex
+	spoolDir       string
 }
 
 type jobStatus struct {
@@ -60,7 +62,7 @@ criterion.
 */
 func NewSimpleRunner(jobq db.BatchDB) *simpleRunner {
 	id := uuid.New()
-	runner := simpleRunner{db: jobq, maxProcs: -1, maxMemoryMb: -1, maxWalltimeSec: -1, foreverMode: false, runnerId: id.String()}
+	runner := simpleRunner{db: jobq, maxProcs: -1, maxMemoryMb: -1, maxWalltimeSec: -1, foreverMode: false, runnerId: id.String(), spoolDir: filepath.Join(iniconfig.GetBatchqHome(), "spool")}
 	return &runner
 }
 
@@ -105,9 +107,11 @@ func (r *simpleRunner) SetCgroupV1(useCgroupV1 bool) *simpleRunner {
 }
 
 func (r *simpleRunner) Start() bool {
-	if path, err := support.ExpandPathAbs("~/.batchq/drain"); err == nil {
+	if path, err := support.ExpandPathAbs(filepath.Join(iniconfig.GetBatchqHome(), "drain")); err == nil {
 		os.Remove(path)
 	}
+
+	os.MkdirAll(r.spoolDir, 0755)
 
 	// If we have no resource restrictions, then we will only run
 	// one job at a time. That job can take up as many or few CPU/memory
@@ -243,7 +247,7 @@ func (r *simpleRunner) Start() bool {
 }
 
 func (r *simpleRunner) IsDrain() bool {
-	if path, err := support.ExpandPathAbs("~/.batchq/drain"); err == nil {
+	if path, err := support.ExpandPathAbs(filepath.Join(iniconfig.GetBatchqHome(), "drain")); err == nil {
 		return support.FileExists(path)
 	}
 	return false
@@ -302,7 +306,13 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	// log.Println(prog, args)
 
 	// cmd := exec.CommandContext(context.Background(), prog, args...)
-	cmd := exec.CommandContext(context.Background(), r.shellBin, "-s")
+	// cmd := exec.CommandContext(context.Background(), r.shellBin, "-s")
+
+	script := filepath.Join(r.spoolDir, fmt.Sprintf("batchq-%d.sh", job.JobId))
+	os.WriteFile(script, []byte(job.GetDetail("script", "")), 0755)
+	os.Chmod(script, 0755) // just in case it existed before
+
+	cmd := exec.CommandContext(context.Background(), script)
 
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -321,7 +331,8 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 
 	cmd.WaitDelay = 30 * time.Second
 
-	cmd.Stdin = strings.NewReader(job.GetDetail("script", ""))
+	// cmd.Stdin = strings.NewReader(job.GetDetail("script", ""))
+	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 
@@ -332,6 +343,9 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	jobStderr := job.GetDetail("stderr", "")
 
 	if jobStdout != "" {
+		if filepath.Dir(jobStdout) != "." {
+			os.MkdirAll(filepath.Dir(jobStdout), 0755)
+		}
 		if f, err := os.Create(jobStdout); err == nil {
 			cmd.Stdout = f
 			stdoutFile = f
@@ -341,6 +355,9 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		if jobStderr == jobStdout {
 			cmd.Stderr = cmd.Stdout
 		} else {
+			if filepath.Dir(jobStderr) != "." {
+				os.MkdirAll(filepath.Dir(jobStderr), 0755)
+			}
 			if f, err := os.Create(jobStderr); err == nil {
 				cmd.Stderr = f
 				stderrFile = f
@@ -350,7 +367,8 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	if env := job.GetDetail("env", ""); env != "" {
 		cmd.Env = strings.Split(fmt.Sprintf("%s\n-|-\nJOB_ID=%d", env, job.JobId), "\n-|-\n")
 	} else {
-		cmd.Env = append(os.Environ(), fmt.Sprintf("JOB_ID=%d", job.JobId))
+		cmd.Env = []string{fmt.Sprintf("JOB_ID=%d", job.JobId)}
+		//cmd.Env = append(os.Environ(), fmt.Sprintf("JOB_ID=%d", job.JobId))
 	}
 	cmd.Dir = job.GetDetail("wd", "")
 
@@ -445,7 +463,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	defer cancel()
 	r.db.StartJob(ctx, job.JobId, r.runnerId, map[string]string{"pid": strconv.Itoa(cmd.Process.Pid)})
 	ctx.Done()
-	log.Printf("Started job: %d [%d]\n", job.JobId, cmd.Process.Pid)
+	log.Printf("Started job: %d [proc: %d]\n", job.JobId, cmd.Process.Pid)
 
 	// Track it in the background
 	go func() {
@@ -456,10 +474,11 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		if stderrFile != nil {
 			stderrFile.Close()
 		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		r.lock.Lock()
-		log.Printf("Process %d exited: %s\n", cmd.Process.Pid, state.String())
+		log.Printf("Job %d [proc: %d] exited: %s\n", job.JobId, cmd.Process.Pid, state.String())
 		if state != nil && state.Success() {
 			// log.Printf("Process %d exited successfully\n", cmd.Process.Pid)
 			r.db.EndJob(ctx, job.JobId, r.runnerId, 0)
@@ -474,6 +493,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 			r.db.EndJob(ctx, job.JobId, r.runnerId, -1)
 		}
 		ctx.Done()
+		os.Remove(script)
 
 		if r.useCgroupV2 && support.AmIRoot() {
 			os.RemoveAll(cgroupV2Path)

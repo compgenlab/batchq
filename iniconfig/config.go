@@ -9,6 +9,15 @@ import (
 	"strings"
 )
 
+func GetBatchqHome() string {
+	batchqHome := os.Getenv("BATCHQ_HOME")
+	if batchqHome == "" {
+		batchqHome = "~/.batchq"
+	}
+
+	return batchqHome
+}
+
 type Config struct {
 	sections []string
 	data     map[string]map[string]string
