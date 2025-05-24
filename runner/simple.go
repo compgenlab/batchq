@@ -170,7 +170,7 @@ func (r *simpleRunner) Start() bool {
 				findJob = true
 			}
 		} else {
-			fmt.Printf("Available resources (procs:%d, mem:%d)\n", r.availProcs, r.availMem)
+			log.Printf("Available resources (procs:%d, mem:%d)\n", r.availProcs, r.availMem)
 			if r.availMem > 0 && r.availProcs > 0 {
 				findJob = true
 			} else if r.availMem > 0 && r.availProcs == -1 {
@@ -289,7 +289,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 			log.Println("Killing process group:", pgid)
 			syscall.Kill(-pgid, syscall.SIGTERM)
 			cmd.Process.Wait()
-			log.Println("Process killed")
+			// log.Println("Process killed")
 		} else {
 			log.Printf("Cancelling job: %d, but process already done\n", job.JobId)
 			// cmd.Process.Kill()
@@ -416,11 +416,11 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	defer cancel()
 	r.db.StartJob(ctx, job.JobId, r.runnerId, map[string]string{"pid": strconv.Itoa(cmd.Process.Pid)})
 	ctx.Done()
-	log.Printf("Started job: %d [%d]\n%s\n", job.JobId, cmd.Process.Pid, job.GetDetail("script", ""))
+	log.Printf("Started job: %d [%d]\n", job.JobId, cmd.Process.Pid)
 
 	// Track it in the background
 	go func() {
-		state, err := cmd.Process.Wait()
+		state, _ := cmd.Process.Wait()
 		if stdoutFile != nil {
 			stdoutFile.Close()
 		}
@@ -430,18 +430,18 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		r.lock.Lock()
-		// log.Printf("Process %d exited: %s\n", cmd.Process.Pid, state.String())
+		log.Printf("Process %d exited: %s\n", cmd.Process.Pid, state.String())
 		if state != nil && state.Success() {
-			log.Printf("Process %d exited successfully\n", cmd.Process.Pid)
+			// log.Printf("Process %d exited successfully\n", cmd.Process.Pid)
 			r.db.EndJob(ctx, job.JobId, r.runnerId, 0)
 		} else if state != nil {
-			log.Printf("Process %d exited with error: %d\n", cmd.Process.Pid, state.ExitCode())
+			// log.Printf("Process %d exited with error: %d\n", cmd.Process.Pid, state.ExitCode())
 			r.db.EndJob(ctx, job.JobId, r.runnerId, state.ExitCode())
-		} else if err != nil {
-			log.Printf("Process %d exited with error: %v\n", cmd.Process.Pid, err)
-			r.db.EndJob(ctx, job.JobId, r.runnerId, -1)
+			// } else if err != nil {
+			// 	log.Printf("Process %d exited with error: %v\n", cmd.Process.Pid, err)
+			// 	r.db.EndJob(ctx, job.JobId, r.runnerId, -1)
 		} else {
-			log.Printf("Process %d exited with an unknown error\n", cmd.Process.Pid)
+			// log.Printf("Process %d exited with an unknown error\n", cmd.Process.Pid)
 			r.db.EndJob(ctx, job.JobId, r.runnerId, -1)
 		}
 		ctx.Done()
