@@ -430,7 +430,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		r.lock.Lock()
-		log.Printf("Process %d exited: %s\n", cmd.Process.Pid, state.String())
+		// log.Printf("Process %d exited: %s\n", cmd.Process.Pid, state.String())
 		if state != nil && state.Success() {
 			log.Printf("Process %d exited successfully\n", cmd.Process.Pid)
 			r.db.EndJob(ctx, job.JobId, r.runnerId, 0)
