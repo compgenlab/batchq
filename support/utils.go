@@ -91,3 +91,8 @@ func Contains[T comparable](slice []T, val T) bool {
 	}
 	return false
 }
+
+func FileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || !os.IsNotExist(err)
+}

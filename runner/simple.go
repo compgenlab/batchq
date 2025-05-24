@@ -105,6 +105,9 @@ func (r *simpleRunner) SetCgroupV1(useCgroupV1 bool) *simpleRunner {
 }
 
 func (r *simpleRunner) Start() bool {
+	if path, err := support.ExpandPathAbs("~/.batchq/drain"); err == nil {
+		os.Remove(path)
+	}
 
 	// If we have no resource restrictions, then we will only run
 	// one job at a time. That job can take up as many or few CPU/memory
@@ -163,48 +166,55 @@ func (r *simpleRunner) Start() bool {
 			}
 		}
 
-		// check to see if we have the resources to run a job
-		findJob := false
-		log.Printf("Available resources (procs:%d, mem:%d)\n", r.availProcs, r.availMem)
-		if maxJobs > 0 {
-			if len(r.curJobs) < maxJobs {
-				findJob = true
+		if r.IsDrain() {
+			log.Printf("Draining jobs (remaining:%d)\n", len(r.curJobs))
+			if r.IsDrain() && len(r.curJobs) == 0 {
+				keepRunning = false
+				log.Println("Done processing jobs")
 			}
 		} else {
-			if r.availMem > 0 && r.availProcs > 0 {
-				findJob = true
-			} else if r.availMem > 0 && r.availProcs == -1 {
-				findJob = true
-			} else if r.availProcs > 0 && r.availMem == -1 {
-				findJob = true
-			}
-		}
-
-		// we have the resources... let's find a job to run
-		if findJob {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-
-			// we should be looking for a new job
-			// log.Printf("Looking for a job (%d, %d, %d)\n", r.availProcs, r.availMem, r.maxWalltimeSec)
-
-			if job, hasMore := r.db.FetchNext(ctx, r.availProcs, r.availMem, r.maxWalltimeSec); job != nil {
-				log.Printf("Processing job: %d\n", job.JobId)
-				r.lock.Lock()
-				r.startJob(job)
-				r.lock.Unlock()
-				ranAtLeastOneJob = true
-				continue
+			// check to see if we have the resources to run a job
+			findJob := false
+			log.Printf("Available resources (procs:%d, mem:%d)\n", r.availProcs, r.availMem)
+			if maxJobs > 0 {
+				if len(r.curJobs) < maxJobs {
+					findJob = true
+				}
 			} else {
-				if len(r.curJobs) == 0 && !hasMore && !r.foreverMode {
-					// we are done here
-					// no jobs running, none left in queue, and we aren't waiting...
-					keepRunning = false
-					log.Println("Done processing jobs")
+				if r.availMem > 0 && r.availProcs > 0 {
+					findJob = true
+				} else if r.availMem > 0 && r.availProcs == -1 {
+					findJob = true
+				} else if r.availProcs > 0 && r.availMem == -1 {
+					findJob = true
+				}
+			}
+
+			// we have the resources... let's find a job to run
+			if findJob {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				// we should be looking for a new job
+				// log.Printf("Looking for a job (%d, %d, %d)\n", r.availProcs, r.availMem, r.maxWalltimeSec)
+
+				if job, hasMore := r.db.FetchNext(ctx, r.availProcs, r.availMem, r.maxWalltimeSec); job != nil {
+					log.Printf("Processing job: %d\n", job.JobId)
+					r.lock.Lock()
+					r.startJob(job)
+					r.lock.Unlock()
+					ranAtLeastOneJob = true
+					continue
+				} else {
+					if len(r.curJobs) == 0 && !hasMore && !r.foreverMode {
+						// we are done here
+						// no jobs running, none left in queue, and we aren't waiting...
+						keepRunning = false
+						log.Println("Done processing jobs")
+					}
 				}
 			}
 		}
-
 		// do we have more jobs to run? should we keep waiting to
 		// run more jobs?
 
@@ -226,9 +236,17 @@ func (r *simpleRunner) Start() bool {
 			r.lock.Unlock()
 		}
 		// time.Sleep(60 * time.Second)
+
 	}
 
 	return ranAtLeastOneJob
+}
+
+func (r *simpleRunner) IsDrain() bool {
+	if path, err := support.ExpandPathAbs("~/.batchq/drain"); err == nil {
+		return support.FileExists(path)
+	}
+	return false
 }
 
 func interruptibleSleep(ctx context.Context, d time.Duration) error {
