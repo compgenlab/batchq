@@ -534,8 +534,8 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int) bool {
 	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
 		childIds := []int{}
 		// Load job dependencies
-		sql2 := "SELECT job_id FROM job_deps WHERE afterok_id = ?"
-		rows2, err2 := conn.QueryContext(ctx, sql2, jobId)
+		sql2 := "SELECT job_id FROM job_deps, jobs WHERE afterok_id = ? AND job_deps.job_id = jobs.id AND jobs.status != ?"
+		rows2, err2 := conn.QueryContext(ctx, sql2, jobId, jobs.CANCELLED)
 		if err2 != nil {
 			log.Fatal(err2)
 		}
