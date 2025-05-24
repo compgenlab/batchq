@@ -58,6 +58,7 @@ func initSqlite3(fname string, force bool) error {
 	defer db.Close()
 	sql := `
 	PRAGMA foreign_keys = ON;
+    PRAGMA journal_mode=WAL;
 
 	DROP TABLE IF EXISTS job_running_details;
 	DROP TABLE IF EXISTS job_running;
@@ -129,7 +130,7 @@ func (db *SqliteBatchQ) connect() *sql.DB {
 		log.Fatal("Missing database. Please initialize it first!")
 	}
 
-	conn, err := sql.Open("sqlite3", db.fname)
+	conn, err := sql.Open("sqlite3", fmt.Sprintf("%s?_busy_timeout=5000", db.fname))
 	if err != nil {
 		log.Fatal(err)
 	}
