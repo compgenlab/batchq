@@ -63,6 +63,10 @@ func GetCurrentUsername() string {
 }
 
 func ExpandPathAbs(path string) (string, error) {
+	endsWithSlash := false
+	if path[len(path)-1] == os.PathSeparator {
+		endsWithSlash = true
+	}
 	if strings.HasPrefix(path, "~") {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -70,7 +74,11 @@ func ExpandPathAbs(path string) (string, error) {
 		}
 		path = filepath.Join(home, path[1:])
 	}
-	return filepath.Abs(path)
+	ret, err := filepath.Abs(path)
+	if endsWithSlash {
+		ret = ret + string(os.PathSeparator)
+	}
+	return ret, err
 }
 
 func GetNowTS() string {

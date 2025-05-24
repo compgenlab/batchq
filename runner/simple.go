@@ -328,16 +328,23 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	var stdoutFile *os.File
 	var stderrFile *os.File
 
-	if stdout := job.GetDetail("stdout", ""); stdout != "" {
-		if f, err := os.Create(stdout); err == nil {
+	jobStdout := job.GetDetail("stdout", "")
+	jobStderr := job.GetDetail("stderr", "")
+
+	if jobStdout != "" {
+		if f, err := os.Create(jobStdout); err == nil {
 			cmd.Stdout = f
 			stdoutFile = f
 		}
 	}
-	if stderr := job.GetDetail("stderr", ""); stderr != "" {
-		if f, err := os.Create(stderr); err == nil {
-			cmd.Stderr = f
-			stderrFile = f
+	if jobStderr != "" {
+		if jobStderr == jobStdout {
+			cmd.Stderr = cmd.Stdout
+		} else {
+			if f, err := os.Create(jobStderr); err == nil {
+				cmd.Stderr = f
+				stderrFile = f
+			}
 		}
 	}
 	if env := job.GetDetail("env", ""); env != "" {

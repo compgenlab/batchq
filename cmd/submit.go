@@ -61,6 +61,8 @@ var submitCmd = &cobra.Command{
 		}
 
 		details := make(map[string]string)
+		details["stdout"] = "./batchq-%JOBID.stdout"
+		details["stderr"] = "./batchq-%JOBID.stderr"
 
 		// get default/config values if not specified
 		if tmp, ok := Config.GetInt("job_defaults", "procs"); ok && tmp > 0 {
@@ -100,6 +102,7 @@ var submitCmd = &cobra.Command{
 		// #BATCHQ -stderr val
 		// #BATCHQ -env
 		// #BATCHQ -hold
+		// #BATCHQ -afterok val1,val2
 
 		incomment := true
 		for _, line := range strings.Split(scriptSrc, "\n") {
@@ -383,6 +386,10 @@ var submitCmd = &cobra.Command{
 func isDirectory(path string) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
+		if path[len(path)-1] == os.PathSeparator {
+			// if we end with a "/", assume we want a directory
+			return true, nil
+		}
 		return false, err // path doesn't exist or other error
 	}
 	return info.IsDir(), nil
@@ -408,8 +415,8 @@ func init() {
 	submitCmd.Flags().BoolVar(&slurmMode, "slurm", false, "Script has SLURM-compatible configuration values (#SBATCH)")
 
 	submitCmd.Flags().StringVar(&jobWd, "wd", ".", "Working directory")
-	submitCmd.Flags().StringVar(&jobStdout, "stdout", "./batchq-%JOBID.stdout", "Stdout output file")
-	submitCmd.Flags().StringVar(&jobStderr, "stderr", "./batchq-%JOBID.stderr", "Stderr output file")
+	submitCmd.Flags().StringVar(&jobStdout, "stdout", "", "Stdout output file")
+	submitCmd.Flags().StringVar(&jobStderr, "stderr", "", "Stderr output file")
 	submitCmd.Flags().StringVar(&jobName, "name", "batchq-%JOBID", "Job name")
 	submitCmd.Flags().StringVar(&jobDeps, "deps", "", "Dependencies (comma delimited job ids)")
 	submitCmd.Flags().BoolVar(&jobEnv, "env", false, "Capture current environment")
