@@ -420,7 +420,10 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 
 	// Track it in the background
 	go func() {
-		err := cmd.Wait()
+		state, err := cmd.Process.Wait()
+		if err != nil {
+			log.Printf("Wait error: %v\n", err)
+		}
 		if stdoutFile != nil {
 			stdoutFile.Close()
 		}
@@ -429,17 +432,14 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if err != nil {
-			log.Printf("Process %d exited with error: %v (%T)\n", cmd.Process.Pid, err, err)
-			switch e2 := err.(type) {
-			case *exec.ExitError:
-				r.db.EndJob(ctx, job.JobId, r.runnerId, e2.ExitCode())
-			default:
-				r.db.EndJob(ctx, job.JobId, r.runnerId, -1)
-			}
-		} else {
+		r.lock.Lock()
+		log.Printf("Process %d exited: %s\n", cmd.Process.Pid, state.String())
+		if state.Success() {
 			log.Printf("Process %d exited successfully\n", cmd.Process.Pid)
 			r.db.EndJob(ctx, job.JobId, r.runnerId, 0)
+		} else {
+			log.Printf("Process %d exited with error: %v (%T)\n", cmd.Process.Pid, err, err)
+			r.db.EndJob(ctx, job.JobId, r.runnerId, state.ExitCode())
 		}
 		ctx.Done()
 
@@ -449,7 +449,6 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 			cleanupCgroupV1([]string{cgroupV1BaseCPU, cgroupV1BaseMem})
 		}
 
-		r.lock.Lock()
 		var newJobs []jobStatus
 		for _, val := range r.curJobs {
 			if val != myStatus {
