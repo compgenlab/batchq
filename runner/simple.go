@@ -25,7 +25,8 @@ type simpleRunner struct {
 	maxMemoryMb    int
 	maxWalltimeSec int
 	foreverMode    bool
-	useCgroups     bool
+	useCgroupV2    bool
+	useCgroupV1    bool
 	curJobs        []jobStatus
 	availProcs     int
 	availMem       int
@@ -83,12 +84,22 @@ func (r *simpleRunner) SetShell(shell string) *simpleRunner {
 	r.shellBin = shell
 	return r
 }
-func (r *simpleRunner) SetCgroups(useCgroups bool) Runner {
-	if useCgroups && !support.AmIRoot() {
+func (r *simpleRunner) SetCgroupV2(useCgroupV2 bool) *simpleRunner {
+	if useCgroupV2 && !support.AmIRoot() {
 		log.Fatalln("cgroup support requires running as root.")
 	}
 
-	r.useCgroups = useCgroups
+	r.useCgroupV2 = useCgroupV2
+
+	return r
+}
+
+func (r *simpleRunner) SetCgroupV1(useCgroupV1 bool) *simpleRunner {
+	if useCgroupV1 && !support.AmIRoot() {
+		log.Fatalln("cgroup support requires running as root.")
+	}
+
+	r.useCgroupV1 = useCgroupV1
 
 	return r
 }
@@ -348,30 +359,47 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		}
 	}
 
-	cgroupPath := fmt.Sprintf("/sys/fs/cgroup/batchq-%d", job.JobId)
-	if r.useCgroups && support.AmIRoot() {
+	cgroupV2Path := fmt.Sprintf("/sys/fs/cgroup/batchq-%d", job.JobId)
+	cgroupV1BaseCPU := fmt.Sprintf("/sys/fs/cgroup/cpu/batchq-%d", job.JobId)
+	cgroupV1BaseMem := fmt.Sprintf("/sys/fs/cgroup/memory/batchq-%d", job.JobId)
+	if r.useCgroupV2 && support.AmIRoot() {
+
 		// setup cgroups
 
 		// Create the cgroup directory
-		if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+		if err := os.MkdirAll(cgroupV2Path, 0755); err != nil {
 			panic(err)
 		}
 
 		if jobProcs > 0 {
-			support.MustWriteFile(filepath.Join(cgroupPath, "cpu.max"), fmt.Sprintf("%d 100000", 100000*jobProcs)) // 2 CPUs (200ms every 100ms)
+			support.MustWriteFile(filepath.Join(cgroupV2Path, "cpu.max"), fmt.Sprintf("%d 100000", 100000*jobProcs)) // 2 CPUs (200ms every 100ms)
 		}
 		if jobMem > 0 {
-			support.MustWriteFile(filepath.Join(cgroupPath, "memory.max"), fmt.Sprintf("%dM", jobMem)) // 100MB limit
+			support.MustWriteFile(filepath.Join(cgroupV2Path, "memory.max"), fmt.Sprintf("%dM", jobMem)) // 100MB limit
 		}
+	} else if r.useCgroupV1 && support.AmIRoot() {
+		_ = os.MkdirAll(cgroupV1BaseCPU, 0755)
+		_ = os.MkdirAll(cgroupV1BaseMem, 0755)
+		// Set CPU quota (e.g., 2 CPUs assuming 100000us period)
+		support.MustWriteFile(filepath.Join(cgroupV1BaseCPU, "cpu.cfs_period_us"), "100000")
+		support.MustWriteFile(filepath.Join(cgroupV1BaseCPU, "cpu.cfs_quota_us"), fmt.Sprintf("%d", 100000*jobProcs))
+
+		// Set memory limit
+		support.MustWriteFile(filepath.Join(cgroupV1BaseMem, "memory.limit_in_bytes"), fmt.Sprintf("%d", jobMem*1024*1024)) //  MB
+
 	}
 
 	err := cmd.Start()
 	if err != nil {
 		log.Fatal(err)
 	}
-	if r.useCgroups && support.AmIRoot() {
+	if r.useCgroupV2 && support.AmIRoot() {
 		pid := strconv.Itoa(cmd.Process.Pid)
-		support.MustWriteFile(filepath.Join(cgroupPath, "cgroup.procs"), pid)
+		support.MustWriteFile(filepath.Join(cgroupV2Path, "cgroup.procs"), pid)
+	} else if r.useCgroupV1 && support.AmIRoot() {
+		pid := strconv.Itoa(cmd.Process.Pid)
+		support.MustWriteFile(filepath.Join(cgroupV1BaseCPU, "tasks"), pid)
+		support.MustWriteFile(filepath.Join(cgroupV1BaseMem, "tasks"), pid)
 	}
 
 	myStatus := jobStatus{job: job, running: false, returnCode: 0, cmd: cmd, startTime: time.Now()}
@@ -410,8 +438,10 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		}
 		ctx.Done()
 
-		if r.useCgroups && support.AmIRoot() {
-			os.RemoveAll(cgroupPath)
+		if r.useCgroupV2 && support.AmIRoot() {
+			os.RemoveAll(cgroupV2Path)
+		} else if r.useCgroupV1 && support.AmIRoot() {
+			cleanupCgroupV1([]string{cgroupV1BaseCPU, cgroupV1BaseMem})
 		}
 
 		r.lock.Lock()
@@ -437,4 +467,31 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 
 	}()
 
+}
+
+func cleanupCgroupV1(paths []string) error {
+	for _, path := range paths {
+		tasksFile := filepath.Join(path, "tasks")
+
+		data, err := os.ReadFile(tasksFile)
+		if err != nil {
+			return fmt.Errorf("read tasks file: %v", err)
+		}
+
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) == "" {
+				continue
+			}
+			// Move process back to root
+			if err := os.WriteFile(filepath.Join(filepath.Dir(path), "tasks"), []byte(line), 0644); err != nil {
+				return fmt.Errorf("move PID %s: %v", line, err)
+			}
+		}
+
+		// Now remove the cgroup directory
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove %s: %v", path, err)
+		}
+	}
+	return nil
 }

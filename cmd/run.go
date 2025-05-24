@@ -38,13 +38,23 @@ var runCmd = &cobra.Command{
 						}
 					}
 
-					if !useCgroups {
-						if val, ok := Config.GetBool("simple_runner", "use_systemd_run"); ok {
-							useCgroups = val
+					if !useCgroupV2 {
+						if val, ok := Config.GetBool("simple_runner", "use_cgroup_v2"); ok {
+							useCgroupV2 = val
+						}
+					}
+
+					if !useCgroupV1 {
+						if val, ok := Config.GetBool("simple_runner", "use_cgroup_v1"); ok {
+							useCgroupV1 = val
 						}
 					}
 
 					shell, _ := Config.Get("simple_runner", "shell", "/bin/bash")
+
+					if useCgroupV1 && useCgroupV2 {
+						log.Fatalln("You cannot use cgroup v2 and v1 at the same time!")
+					}
 
 					runr = runner.NewSimpleRunner(jobq).
 						SetMaxProcs(maxProcs).
@@ -52,7 +62,8 @@ var runCmd = &cobra.Command{
 						SetMaxWalltimeSec(jobs.ParseWalltimeString(maxTimeStr)).
 						SetForever(forever).
 						SetShell(shell).
-						SetCgroups(useCgroups)
+						SetCgroupV2(useCgroupV2).
+						SetCgroupV1(useCgroupV1)
 
 					runr.Start()
 				}
@@ -65,14 +76,16 @@ var maxProcs int
 var maxMemStr string
 var maxTimeStr string
 var forever bool
-var useCgroups bool
+var useCgroupV2 bool
+var useCgroupV1 bool
 
 func init() {
 	runCmd.Flags().IntVar(&maxProcs, "max-procs", -1, "Maximum processors to use")
 	runCmd.Flags().StringVar(&maxMemStr, "max-mem", "", "Max-memory (MB,GB)")
 	runCmd.Flags().StringVar(&maxTimeStr, "max-walltime", "", "Max-time (D-HH:MM:SS)")
 	runCmd.Flags().BoolVar(&forever, "forever", false, "Run forever, waiting for new jobs")
-	runCmd.Flags().BoolVar(&useCgroups, "use-cgroups", false, "Use cgroups to control resources (requires root)")
+	runCmd.Flags().BoolVar(&useCgroupV2, "use-cgroupv2", false, "Use cgroup v2 to control resources (requires root)")
+	runCmd.Flags().BoolVar(&useCgroupV1, "use-cgroupv1", false, "Use cgroup v1 to control resources (requires root)")
 
 	rootCmd.AddCommand(runCmd)
 }
