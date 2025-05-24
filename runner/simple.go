@@ -213,6 +213,10 @@ func (r *simpleRunner) Start() bool {
 			r.interrupt = cancel
 			// fmt.Println("Sleeping")
 
+			// TODO: check for SIGTERM / Ctrl-C
+			//       if we get the signal, prompt the user to hit ctrl-c again
+			//       then kill all running jobs before exiting!
+
 			// sleep for 60 seconds to see if jobs complete
 			if err := interruptibleSleep(ctx, 60*time.Second); err != nil {
 				// fmt.Println("Woken up...")
