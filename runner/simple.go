@@ -165,12 +165,12 @@ func (r *simpleRunner) Start() bool {
 
 		// check to see if we have the resources to run a job
 		findJob := false
+		log.Printf("Available resources (procs:%d, mem:%d)\n", r.availProcs, r.availMem)
 		if maxJobs > 0 {
 			if len(r.curJobs) < maxJobs {
 				findJob = true
 			}
 		} else {
-			log.Printf("Available resources (procs:%d, mem:%d)\n", r.availProcs, r.availMem)
 			if r.availMem > 0 && r.availProcs > 0 {
 				findJob = true
 			} else if r.availMem > 0 && r.availProcs == -1 {
@@ -186,7 +186,7 @@ func (r *simpleRunner) Start() bool {
 			defer cancel()
 
 			// we should be looking for a new job
-			log.Printf("Looking for a job (%d, %d, %d)\n", r.availProcs, r.availMem, r.maxWalltimeSec)
+			// log.Printf("Looking for a job (%d, %d, %d)\n", r.availProcs, r.availMem, r.maxWalltimeSec)
 
 			if job, hasMore := r.db.FetchNext(ctx, r.availProcs, r.availMem, r.maxWalltimeSec); job != nil {
 				log.Printf("Processing job: %d\n", job.JobId)
@@ -284,7 +284,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	// log.Println(prog, args)
 
 	// cmd := exec.CommandContext(context.Background(), prog, args...)
-	cmd := exec.CommandContext(context.Background(), r.shellBin)
+	cmd := exec.CommandContext(context.Background(), r.shellBin, "-s")
 
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
