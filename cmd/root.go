@@ -71,11 +71,7 @@ func init() {
 	rootCmd.AddCommand(licenseCmd)
 	rootCmd.AddCommand(initdbCmd)
 
-	batchqHome = os.Getenv("BATCHQ_HOME")
-	if batchqHome == "" {
-		batchqHome = "~/.batchq"
-	}
-
+	batchqHome := iniconfig.GetBatchqHome()
 	var err error
 	if configFile, err = support.ExpandPathAbs(filepath.Join(batchqHome, "config")); err == nil {
 		Config = iniconfig.LoadConfig(configFile, "batchq")
