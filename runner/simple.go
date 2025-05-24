@@ -430,8 +430,13 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err != nil {
-			log.Printf("Process %d exited with error: %v\n", cmd.Process.Pid, err)
-			r.db.EndJob(ctx, job.JobId, r.runnerId, err.(*exec.ExitError).ExitCode())
+			log.Printf("Process %d exited with error: %v (%T)\n", cmd.Process.Pid, err, err)
+			switch e2 := err.(type) {
+			case *exec.ExitError:
+				r.db.EndJob(ctx, job.JobId, r.runnerId, e2.ExitCode())
+			default:
+				r.db.EndJob(ctx, job.JobId, r.runnerId, -1)
+			}
 		} else {
 			log.Printf("Process %d exited successfully\n", cmd.Process.Pid)
 			r.db.EndJob(ctx, job.JobId, r.runnerId, 0)
