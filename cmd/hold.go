@@ -121,7 +121,8 @@ var cancelCmd = &cobra.Command{
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// this can propagate, so it can take a while...
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 		defer cancel()
 
 		if jobq, err := db.OpenDB(dbpath); err != nil {
