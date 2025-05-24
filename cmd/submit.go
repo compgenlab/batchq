@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -107,12 +108,15 @@ var submitCmd = &cobra.Command{
 					incomment = false
 				}
 				if !slurmMode {
-					// batchq mode, with #BASTCHQ headers
+					// batchq mode, with #BATCHQ headers
 					if len(line) > 9 && line[:9] == "#BATCHQ -" {
 						sub := line[9:]
 						spl := strings.SplitN(sub, " ", 2)
 						k := strings.TrimSpace(spl[0])
-						v := strings.TrimSpace(spl[1])
+						v := ""
+						if len(spl) > 1 {
+							v = strings.TrimSpace(spl[1])
+						}
 
 						switch k {
 						case "procs":
@@ -301,6 +305,18 @@ var submitCmd = &cobra.Command{
 			}
 		}
 
+		// if stderr/stdout are directories, then point to dir/batchq-%JOBID.stderr/out
+		if val, ok := details["stdout"]; ok {
+			if isdir, err := isDirectory(val); err == nil && isdir {
+				details["stdout"] = path.Join(val, "batchq-%JOBID.stdout")
+			}
+		}
+		if val, ok := details["stderr"]; ok {
+			if isdir, err := isDirectory(val); err == nil && isdir {
+				details["stderr"] = path.Join(val, "batchq-%JOBID.stdout")
+			}
+		}
+
 		// replace env for the actual env...
 		if jobEnv {
 			env := ""
@@ -364,6 +380,14 @@ var submitCmd = &cobra.Command{
 	},
 }
 
+func isDirectory(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false, err // path doesn't exist or other error
+	}
+	return info.IsDir(), nil
+}
+
 var jobName string
 var jobDeps string
 var jobProcs int
@@ -384,9 +408,9 @@ func init() {
 	submitCmd.Flags().BoolVar(&slurmMode, "slurm", false, "Script has SLURM-compatible configuration values (#SBATCH)")
 
 	submitCmd.Flags().StringVar(&jobWd, "wd", ".", "Working directory")
-	submitCmd.Flags().StringVar(&jobStdout, "stdout", "./job-%JOBID.stdout", "Stdout output file")
-	submitCmd.Flags().StringVar(&jobStderr, "stderr", "./job-%JOBID.stderr", "Stderr output file")
-	submitCmd.Flags().StringVar(&jobName, "name", "job-%JOBID", "Job name")
+	submitCmd.Flags().StringVar(&jobStdout, "stdout", "./batchq-%JOBID.stdout", "Stdout output file")
+	submitCmd.Flags().StringVar(&jobStderr, "stderr", "./batchq-%JOBID.stderr", "Stderr output file")
+	submitCmd.Flags().StringVar(&jobName, "name", "batchq-%JOBID", "Job name")
 	submitCmd.Flags().StringVar(&jobDeps, "deps", "", "Dependencies (comma delimited job ids)")
 	submitCmd.Flags().BoolVar(&jobEnv, "env", false, "Capture current environment")
 	submitCmd.Flags().BoolVar(&jobHold, "hold", false, "Hold job")
