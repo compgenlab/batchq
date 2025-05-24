@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/mbreese/batchq/support"
 )
 
 func GetBatchqHome() string {
@@ -15,7 +18,13 @@ func GetBatchqHome() string {
 		batchqHome = "~/.batchq"
 	}
 
-	return batchqHome
+	if ret, err := support.ExpandPathAbs(batchqHome); err == nil {
+		return ret
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".batchq")
+	}
+	return "."
 }
 
 type Config struct {
