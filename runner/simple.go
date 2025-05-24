@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/mbreese/batchq/db"
 	"github.com/mbreese/batchq/jobs"
+	"github.com/mbreese/batchq/support"
 )
 
 type simpleRunner struct {
@@ -23,7 +25,7 @@ type simpleRunner struct {
 	maxMemoryMb    int
 	maxWalltimeSec int
 	foreverMode    bool
-	useSystemdRun  bool
+	useCgroups     bool
 	curJobs        []jobStatus
 	availProcs     int
 	availMem       int
@@ -81,16 +83,12 @@ func (r *simpleRunner) SetShell(shell string) *simpleRunner {
 	r.shellBin = shell
 	return r
 }
-func (r *simpleRunner) SetSystemdRun(useSystemdRun bool) Runner {
-	if useSystemdRun {
-		_, err := exec.LookPath("systemd-run")
-		if err != nil {
-			log.SetFlags(0)
-			log.Fatalln("ERROR: systemd-run requested, but systemd-run not found in $PATH")
-		} else {
-			r.useSystemdRun = useSystemdRun
-		}
+func (r *simpleRunner) SetCgroups(useCgroups bool) Runner {
+	if useCgroups && !support.AmIRoot() {
+		log.Fatalln("cgroup support requires running as root.")
 	}
+
+	r.useCgroups = useCgroups
 
 	return r
 }
@@ -246,31 +244,32 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		}
 	}
 
-	prog := r.shellBin
-	args := []string{}
-	if r.useSystemdRun {
-		prog = "systemd-run"
+	// prog := r.shellBin
+	// args := []string{}
+	// if r.useSystemdRun {
+	// 	prog = "systemd-run"
 
-		uname := job.GetDetail("user", "")
-		if uname == "" {
-			log.Printf("Unable to start job: %d. Missing username and trying to run under systemd-run.\n", job.JobId)
-			os.Exit(1)
-		}
-		args = []string{"--scope", "--uid", uname}
+	// 	uname := job.GetDetail("user", "")
+	// 	if uname == "" {
+	// 		log.Printf("Unable to start job: %d. Missing username and trying to run under systemd-run.\n", job.JobId)
+	// 		os.Exit(1)
+	// 	}
+	// 	args = []string{"--scope", "--uid", uname}
 
-		if jobProcs > 0 {
-			args = append(args, "-p", fmt.Sprintf("CPUQuota=%d%%", jobProcs*100))
-		}
-		if jobMem > 0 {
-			args = append(args, "-p", fmt.Sprintf("MemoryMax=%dM", jobMem))
-		}
+	// 	if jobProcs > 0 {
+	// 		args = append(args, "-p", fmt.Sprintf("CPUQuota=%d%%", jobProcs*100))
+	// 	}
+	// 	if jobMem > 0 {
+	// 		args = append(args, "-p", fmt.Sprintf("MemoryMax=%dM", jobMem))
+	// 	}
 
-		args = append(args, r.shellBin)
-	}
+	// 	args = append(args, r.shellBin)
+	// }
 
-	log.Println(prog, args)
+	// log.Println(prog, args)
 
-	cmd := exec.CommandContext(context.Background(), prog, args...)
+	// cmd := exec.CommandContext(context.Background(), prog, args...)
+	cmd := exec.CommandContext(context.Background(), r.shellBin)
 
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
@@ -278,7 +277,8 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 			log.Printf("Cancelling job: %d [%d]\n", job.JobId, cmd.Process.Pid)
 			log.Println("Killing process group:", pgid)
 			syscall.Kill(-pgid, syscall.SIGTERM)
-			// cmd.Process.Kill()
+			cmd.Process.Wait()
+			log.Println("Process killed")
 		} else {
 			log.Printf("Cancelling job: %d, but process already done\n", job.JobId)
 			// cmd.Process.Kill()
@@ -287,11 +287,6 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	}
 
 	cmd.WaitDelay = 30 * time.Second
-
-	// create a new progress group for this job (so we can kill them all if necessary)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
 
 	cmd.Stdin = strings.NewReader(job.GetDetail("script", ""))
 	cmd.Stdout = nil
@@ -319,9 +314,64 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	}
 	cmd.Dir = job.GetDetail("wd", "")
 
+	// create a new progress group for this job (so we can kill them all if necessary)
+	if support.AmIRoot() {
+		uidS := job.GetDetail("uid", "")
+		gidS := job.GetDetail("gid", "")
+
+		uid, err := strconv.Atoi(uidS)
+		if err != nil {
+			log.Fatalf("Missing UID from job details: %d\n", job.JobId)
+		}
+		gid, err := strconv.Atoi(gidS)
+
+		if err != nil {
+			log.Fatalf("Missing GID from job details: %d\n", job.JobId)
+		}
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: true,
+			Credential: &syscall.Credential{
+				Uid: uint32(uid),
+				Gid: uint32(gid),
+			},
+		}
+
+		if stdoutFile != nil {
+			stdoutFile.Chown(uid, gid)
+		}
+		if stderrFile != nil {
+			stderrFile.Chown(uid, gid)
+		}
+	} else {
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			Setpgid: true,
+		}
+	}
+
+	cgroupPath := fmt.Sprintf("/sys/fs/cgroup/batchq-%d", job.JobId)
+	if r.useCgroups && support.AmIRoot() {
+		// setup cgroups
+
+		// Create the cgroup directory
+		if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+			panic(err)
+		}
+
+		if jobProcs > 0 {
+			support.MustWriteFile(filepath.Join(cgroupPath, "cpu.max"), fmt.Sprintf("%d 100000", 100000*jobProcs)) // 2 CPUs (200ms every 100ms)
+		}
+		if jobMem > 0 {
+			support.MustWriteFile(filepath.Join(cgroupPath, "memory.max"), fmt.Sprintf("%dM", jobMem)) // 100MB limit
+		}
+	}
+
 	err := cmd.Start()
 	if err != nil {
 		log.Fatal(err)
+	}
+	if r.useCgroups && support.AmIRoot() {
+		pid := strconv.Itoa(cmd.Process.Pid)
+		support.MustWriteFile(filepath.Join(cgroupPath, "cgroup.procs"), pid)
 	}
 
 	myStatus := jobStatus{job: job, running: false, returnCode: 0, cmd: cmd, startTime: time.Now()}
@@ -359,6 +409,10 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 			r.db.EndJob(ctx, job.JobId, r.runnerId, 0)
 		}
 		ctx.Done()
+
+		if r.useCgroups && support.AmIRoot() {
+			os.RemoveAll(cgroupPath)
+		}
 
 		r.lock.Lock()
 		var newJobs []jobStatus

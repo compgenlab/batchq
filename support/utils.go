@@ -1,6 +1,7 @@
 package support
 
 import (
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -40,6 +41,13 @@ func JoinInt(nums []int, sep string) string {
 
 }
 
+func AmIRoot() bool {
+	if u, err := user.Current(); err == nil {
+		return u.Uid == "0"
+	}
+	return false
+}
+
 func GetCurrentUsername() string {
 	u, err := user.Current()
 	if err == nil {
@@ -67,4 +75,10 @@ func ExpandPathAbs(path string) (string, error) {
 
 func GetNowTS() string {
 	return time.Now().Format("2006-01-02 15:04:05 UTC")
+}
+
+func MustWriteFile(path, content string) {
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		panic(fmt.Sprintf("Failed to write to %s: %v", path, err))
+	}
 }

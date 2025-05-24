@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"fmt"
+	"os/user"
 	"strconv"
 	"strings"
 	"time"
@@ -66,11 +67,14 @@ func NewJobDef(name string, src string) *JobDef {
 	jobdef := &JobDef{JobId: -1, Status: UNKNOWN, Name: name}
 	jobdef.Details = make([]JobDefDetail, 0)
 
-	username := support.GetCurrentUsername()
+	// username := support.GetCurrentUsername()
+	if u, err := user.Current(); err == nil {
+		jobdef.
+			AddDetail("uid", u.Uid).
+			AddDetail("gid", u.Gid)
+	}
 
-	jobdef.
-		AddDetail("user", username).
-		AddDetail("script", src)
+	jobdef.AddDetail("script", src)
 
 	return jobdef
 }

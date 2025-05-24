@@ -1,14 +1,11 @@
 package cmd
 
 import (
-	"fmt"
 	"log"
-	"os"
 
 	"github.com/mbreese/batchq/db"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/runner"
-	"github.com/mbreese/batchq/support"
 	"github.com/spf13/cobra"
 )
 
@@ -16,11 +13,6 @@ var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run jobs",
 	Run: func(cmd *cobra.Command, args []string) {
-
-		if useSystemdRun && support.GetCurrentUsername() != "root" {
-			fmt.Println("--use-systemd-run requires root permissions")
-			os.Exit(1)
-		}
 
 		if jobq, err := db.OpenDB(dbpath); err != nil {
 			log.Fatalln(err)
@@ -46,9 +38,9 @@ var runCmd = &cobra.Command{
 						}
 					}
 
-					if !useSystemdRun {
+					if !useCgroups {
 						if val, ok := Config.GetBool("simple_runner", "use_systemd_run"); ok {
-							useSystemdRun = val
+							useCgroups = val
 						}
 					}
 
@@ -60,7 +52,7 @@ var runCmd = &cobra.Command{
 						SetMaxWalltimeSec(jobs.ParseWalltimeString(maxTimeStr)).
 						SetForever(forever).
 						SetShell(shell).
-						SetSystemdRun(useSystemdRun)
+						SetCgroups(useCgroups)
 
 					runr.Start()
 				}
@@ -73,14 +65,14 @@ var maxProcs int
 var maxMemStr string
 var maxTimeStr string
 var forever bool
-var useSystemdRun bool
+var useCgroups bool
 
 func init() {
 	runCmd.Flags().IntVar(&maxProcs, "max-procs", -1, "Maximum processors to use")
 	runCmd.Flags().StringVar(&maxMemStr, "max-mem", "", "Max-memory (MB,GB)")
 	runCmd.Flags().StringVar(&maxTimeStr, "max-walltime", "", "Max-time (D-HH:MM:SS)")
 	runCmd.Flags().BoolVar(&forever, "forever", false, "Run forever, waiting for new jobs")
-	runCmd.Flags().BoolVar(&useSystemdRun, "use-systemd-run", false, "Use systemd-run to spawn jobs (requires root)")
+	runCmd.Flags().BoolVar(&useCgroups, "use-cgroups", false, "Use cgroups to control resources (requires root)")
 
 	rootCmd.AddCommand(runCmd)
 }
