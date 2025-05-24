@@ -313,7 +313,7 @@ var submitCmd = &cobra.Command{
 		}
 		if val, ok := details["stderr"]; ok {
 			if isdir, err := isDirectory(val); err == nil && isdir {
-				details["stderr"] = path.Join(val, "batchq-%JOBID.stdout")
+				details["stderr"] = path.Join(val, "batchq-%JOBID.stderr")
 			}
 		}
 
