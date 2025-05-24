@@ -319,7 +319,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		}
 	}
 	if env := job.GetDetail("env", ""); env != "" {
-		cmd.Env = strings.Split(fmt.Sprintf("%s\nJOB_ID=%d", env, job.JobId), "\n")
+		cmd.Env = strings.Split(fmt.Sprintf("%s\n-|-\nJOB_ID=%d", env, job.JobId), "\n-|-\n")
 	} else {
 		cmd.Env = append(os.Environ(), fmt.Sprintf("JOB_ID=%d", job.JobId))
 	}

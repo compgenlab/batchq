@@ -324,7 +324,7 @@ var submitCmd = &cobra.Command{
 				if env == "" {
 					env = e
 				} else {
-					env = fmt.Sprintf("%s\n%s", env, e)
+					env = fmt.Sprintf("%s\n-|-\n%s", env, e)
 				}
 			}
 			details["env"] = env
