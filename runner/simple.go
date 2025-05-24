@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -267,20 +268,30 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 		args = append(args, r.shellBin)
 	}
 
+	log.Println(prog, args)
+
 	cmd := exec.CommandContext(context.Background(), prog, args...)
 
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
+			pgid, _ := syscall.Getpgid(cmd.Process.Pid)
 			log.Printf("Cancelling job: %d [%d]\n", job.JobId, cmd.Process.Pid)
-			cmd.Process.Kill()
+			log.Println("Killing process group:", pgid)
+			syscall.Kill(-pgid, syscall.SIGTERM)
+			// cmd.Process.Kill()
 		} else {
 			log.Printf("Cancelling job: %d, but process already done\n", job.JobId)
-			cmd.Process.Kill()
+			// cmd.Process.Kill()
 		}
 		return nil
 	}
 
 	cmd.WaitDelay = 30 * time.Second
+
+	// create a new progress group for this job (so we can kill them all if necessary)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
 
 	cmd.Stdin = strings.NewReader(job.GetDetail("script", ""))
 	cmd.Stdout = nil
