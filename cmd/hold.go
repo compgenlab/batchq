@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mbreese/batchq/db"
@@ -28,13 +29,32 @@ var holdCmd = &cobra.Command{
 		} else {
 			defer jobq.Close()
 			for _, arg := range args {
-				if jobid, err := strconv.Atoi(arg); err != nil {
-					fmt.Printf("Bad job-id: %s\n", arg)
-				} else {
-					if jobq.HoldJob(ctx, jobid) {
-						fmt.Printf("Job: %d held\n", jobid)
+				if strings.Count(arg, "-") == 1 {
+					spl := strings.Split(arg, "-")
+					if jobid1, err := strconv.Atoi(spl[0]); err != nil {
+						fmt.Printf("Bad job-id: %s\n", spl[0])
 					} else {
-						fmt.Printf("Error holding job: %d\n", jobid)
+						if jobid2, err := strconv.Atoi(spl[1]); err != nil {
+							fmt.Printf("Bad job-id: %s\n", spl[1])
+						} else {
+							for jobid := jobid1; jobid <= jobid2; jobid++ {
+								if jobq.HoldJob(ctx, jobid) {
+									fmt.Printf("Job: %d held\n", jobid)
+								} else {
+									fmt.Printf("Error holding job: %d\n", jobid)
+								}
+							}
+						}
+					}
+				} else {
+					if jobid, err := strconv.Atoi(arg); err != nil {
+						fmt.Printf("Bad job-id: %s\n", arg)
+					} else {
+						if jobq.HoldJob(ctx, jobid) {
+							fmt.Printf("Job: %d held\n", jobid)
+						} else {
+							fmt.Printf("Error holding job: %d\n", jobid)
+						}
 					}
 				}
 			}
@@ -59,13 +79,32 @@ var releaseCmd = &cobra.Command{
 		} else {
 			defer jobq.Close()
 			for _, arg := range args {
-				if jobid, err := strconv.Atoi(arg); err != nil {
-					fmt.Printf("Bad job-id: %s\n", arg)
-				} else {
-					if jobq.ReleaseJob(ctx, jobid) {
-						fmt.Printf("Job: %d released\n", jobid)
+				if strings.Count(arg, "-") == 1 {
+					spl := strings.Split(arg, "-")
+					if jobid1, err := strconv.Atoi(spl[0]); err != nil {
+						fmt.Printf("Bad job-id: %s\n", spl[0])
 					} else {
-						fmt.Printf("Error releasing job: %d\n", jobid)
+						if jobid2, err := strconv.Atoi(spl[1]); err != nil {
+							fmt.Printf("Bad job-id: %s\n", spl[1])
+						} else {
+							for jobid := jobid1; jobid <= jobid2; jobid++ {
+								if jobq.ReleaseJob(ctx, jobid) {
+									fmt.Printf("Job: %d released\n", jobid)
+								} else {
+									fmt.Printf("Error releasing job: %d\n", jobid)
+								}
+							}
+						}
+					}
+				} else {
+					if jobid, err := strconv.Atoi(arg); err != nil {
+						fmt.Printf("Bad job-id: %s\n", arg)
+					} else {
+						if jobq.ReleaseJob(ctx, jobid) {
+							fmt.Printf("Job: %d released\n", jobid)
+						} else {
+							fmt.Printf("Error releasing job: %d\n", jobid)
+						}
 					}
 				}
 			}
@@ -90,13 +129,32 @@ var cancelCmd = &cobra.Command{
 		} else {
 			defer jobq.Close()
 			for _, arg := range args {
-				if jobid, err := strconv.Atoi(arg); err != nil {
-					fmt.Printf("Bad job-id: %s\n", arg)
-				} else {
-					if jobq.CancelJob(ctx, jobid) {
-						fmt.Printf("Job: %d cancelled\n", jobid)
+				if strings.Count(arg, "-") == 1 {
+					spl := strings.Split(arg, "-")
+					if jobid1, err := strconv.Atoi(spl[0]); err != nil {
+						fmt.Printf("Bad job-id: %s\n", spl[0])
 					} else {
-						fmt.Printf("Error cancelling job: %d\n", jobid)
+						if jobid2, err := strconv.Atoi(spl[1]); err != nil {
+							fmt.Printf("Bad job-id: %s\n", spl[1])
+						} else {
+							for jobid := jobid1; jobid <= jobid2; jobid++ {
+								if jobq.CancelJob(ctx, jobid) {
+									fmt.Printf("Job: %d cancelled\n", jobid)
+								} else {
+									fmt.Printf("Error cancelling job: %d\n", jobid)
+								}
+							}
+						}
+					}
+				} else {
+					if jobid, err := strconv.Atoi(arg); err != nil {
+						fmt.Printf("Bad job-id: %s\n", arg)
+					} else {
+						if jobq.CancelJob(ctx, jobid) {
+							fmt.Printf("Job: %d cancelled\n", jobid)
+						} else {
+							fmt.Printf("Error cancelling job: %d\n", jobid)
+						}
 					}
 				}
 			}
