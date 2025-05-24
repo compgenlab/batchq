@@ -250,7 +250,12 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	if r.useSystemdRun {
 		prog = "systemd-run"
 
-		args = []string{"--user", "--slice"}
+		uname := job.GetDetail("user", "")
+		if uname == "" {
+			log.Printf("Unable to start job: %d. Missing username and trying to run under systemd-run.\n", job.JobId)
+			os.Exit(1)
+		}
+		args = []string{"--scope", "--uid", uname}
 
 		if jobProcs > 0 {
 			args = append(args, "-p", fmt.Sprintf("CPUQuota=%d%%", jobProcs*100))
