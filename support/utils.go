@@ -82,3 +82,12 @@ func MustWriteFile(path, content string) {
 		panic(fmt.Sprintf("Failed to write to %s: %v", path, err))
 	}
 }
+
+func Contains[T comparable](slice []T, val T) bool {
+	for _, v := range slice {
+		if v == val {
+			return true
+		}
+	}
+	return false
+}

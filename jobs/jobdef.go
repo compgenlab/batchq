@@ -97,9 +97,12 @@ func (job *JobDef) AddDetail(key string, val string) *JobDef {
 }
 
 func (job *JobDef) AddAfterOk(depId int) *JobDef {
+	// can only alter a job that hasn't been submitted.
 	if job.JobId == -1 {
-		// can only alter a job that hasn't been submitted.
-		job.AfterOk = append(job.AfterOk, depId)
+		// must be unique... (DB constraint)
+		if !support.Contains(job.AfterOk, depId) {
+			job.AfterOk = append(job.AfterOk, depId)
+		}
 	}
 	return job
 }
