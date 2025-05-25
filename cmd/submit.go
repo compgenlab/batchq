@@ -61,8 +61,12 @@ var submitCmd = &cobra.Command{
 		}
 
 		details := make(map[string]string)
+
+		// these are the default values...
 		details["stdout"] = "./batchq-%JOBID.stdout"
 		details["stderr"] = "./batchq-%JOBID.stderr"
+		details["name"] = "batchq-%JOBID"
+		details["wd"] = "."
 
 		// get default/config values if not specified
 		if tmp, ok := Config.GetInt("job_defaults", "procs"); ok && tmp > 0 {
@@ -414,10 +418,10 @@ func init() {
 	submitCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
 	submitCmd.Flags().BoolVar(&slurmMode, "slurm", false, "Script has SLURM-compatible configuration values (#SBATCH)")
 
-	submitCmd.Flags().StringVar(&jobWd, "wd", ".", "Working directory")
+	submitCmd.Flags().StringVar(&jobWd, "wd", "", "Working directory")
 	submitCmd.Flags().StringVar(&jobStdout, "stdout", "", "Stdout output file")
 	submitCmd.Flags().StringVar(&jobStderr, "stderr", "", "Stderr output file")
-	submitCmd.Flags().StringVar(&jobName, "name", "batchq-%JOBID", "Job name")
+	submitCmd.Flags().StringVar(&jobName, "name", "", "Job name")
 	submitCmd.Flags().StringVar(&jobDeps, "deps", "", "Dependencies (comma delimited job ids)")
 	submitCmd.Flags().BoolVar(&jobEnv, "env", false, "Capture current environment")
 	submitCmd.Flags().BoolVar(&jobHold, "hold", false, "Hold job")

@@ -634,6 +634,7 @@ func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string,
 
 		if jobRunner != dbJobRunner {
 			// oops, we aren't the runner of record. bailout.
+			fmt.Println("Attempted to end job from a different runner.")
 			return false
 		}
 	}
@@ -663,32 +664,6 @@ func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string,
 	// fmt.Printf("done??\n")
 	return false
 }
-
-// /*
-// Look through the queue for jobs that depend on jobId. If any are found,
-// set the status to CANCELLED if isSuccess == false. Otherwise, if they have
-// no other dependencies, set the job status to QUEUED.
-// */
-// func (db *SqliteBatchQ) scanQueue(ctx context.Context, parentId int, isSuccess bool) {
-// 	conn := db.connect()
-
-// 	// Load job dependencies (we are the child, looking for parents)
-// 	sql2 := "SELECT job_id FROM job_deps WHERE afterok_id = ?"
-// 	rows2, err2 := conn.QueryContext(ctx, sql2, parentId)
-// 	if err2 != nil {
-// 		log.Fatal(err2)
-// 	}
-// 	defer rows2.Close()
-
-// 	for rows2.Next() {
-// 		var jobId int
-// 		rows2.Scan(&jobId)
-
-// 		if !isSuccess {
-// 			// TODO
-// 		}
-// 	}
-// }
 
 func (db *SqliteBatchQ) Close() {
 	if db.dbConn != nil {

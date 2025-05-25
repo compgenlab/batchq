@@ -129,7 +129,7 @@ func (r *simpleRunner) Start() bool {
 	ranAtLeastOneJob := false
 
 	log.Printf("Starting job runner: %s\n", r.runnerId)
-	for keepRunning {
+	for keepRunning || len(r.curJobs) > 0 {
 		now := time.Now()
 		// check to see if we need to cancel a running job
 		for _, curJob := range r.curJobs {
@@ -205,7 +205,10 @@ func (r *simpleRunner) Start() bool {
 				if job, hasMore := r.db.FetchNext(ctx, r.availProcs, r.availMem, r.maxWalltimeSec); job != nil {
 					log.Printf("Processing job: %d\n", job.JobId)
 					r.lock.Lock()
-					r.startJob(job)
+					if !r.startJob(job) {
+						log.Println("Error starting job -- draining")
+						keepRunning = false
+					}
 					r.lock.Unlock()
 					ranAtLeastOneJob = true
 					continue
@@ -262,7 +265,7 @@ func interruptibleSleep(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (r *simpleRunner) startJob(job *jobs.JobDef) {
+func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	jobProcs := -1
 	jobMem := -1
 
@@ -309,7 +312,11 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 	// cmd := exec.CommandContext(context.Background(), r.shellBin, "-s")
 
 	script := filepath.Join(r.spoolDir, fmt.Sprintf("batchq-%d.sh", job.JobId))
-	os.WriteFile(script, []byte(job.GetDetail("script", "")), 0755)
+	if err := os.WriteFile(script, []byte(job.GetDetail("script", "")), 0755); err != nil {
+		log.Printf("Error writing script: %v\n", err)
+		return false
+	}
+
 	os.Chmod(script, 0755) // just in case it existed before
 
 	cmd := exec.CommandContext(context.Background(), script)
@@ -438,7 +445,8 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 
 	err := cmd.Start()
 	if err != nil {
-		log.Fatal(err)
+		log.Printf("Error starting jobs: %v\n", err)
+		return false
 	}
 	if r.useCgroupV2 && support.AmIRoot() {
 		pid := strconv.Itoa(cmd.Process.Pid)
@@ -523,6 +531,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) {
 
 	}()
 
+	return true
 }
 
 func cleanupCgroupV1(paths []string) error {
