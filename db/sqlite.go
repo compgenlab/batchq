@@ -35,7 +35,7 @@ func openSqlite3(fname string) *SqliteBatchQ {
 	return &db
 }
 
-func initSqlite3(fname string, force bool) error {
+func initSqlite3(fname string, force bool, startingJobId int) error {
 	fmt.Printf("Initializing sqlite db: %s\n", fname)
 
 	if f, err := os.Open(fname); err == nil {
@@ -111,6 +111,18 @@ func initSqlite3(fname string, force bool) error {
 	if err != nil {
 		// log.Fatalf("Exec error: %v", err)
 		return err
+	}
+	if startingJobId > 0 {
+		// see: https://stackoverflow.com/questions/692856/set-start-value-for-autoincrement-in-sqlite
+		sql = fmt.Sprintf(`BEGIN TRANSACTION;
+UPDATE sqlite_sequence SET seq = %d WHERE name = 'jobs';
+INSERT INTO sqlite_sequence (name,seq) SELECT 'jobs', %d WHERE NOT EXISTS (SELECT changes() AS change FROM sqlite_sequence WHERE change <> 0);
+COMMIT;`, startingJobId, startingJobId)
+		_, err = db.ExecContext(ctx, sql)
+		if err != nil {
+			// log.Fatalf("Exec error: %v", err)
+			return err
+		}
 	}
 	fmt.Println("Done.")
 	return nil
@@ -332,7 +344,9 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 	}
 	for _, jobId := range queueJobIds {
 		job := db.GetJob(ctx, jobId)
-		runnable := true
+		passProc := true
+		passMem := true
+		passTime := true
 
 		if freeProc > 0 {
 			if val := job.GetDetail("procs", ""); val != "" {
@@ -340,7 +354,7 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 					log.Fatal(err)
 				} else {
 					if jobProcs > freeProc {
-						runnable = false
+						passProc = false
 					}
 				}
 			}
@@ -352,7 +366,7 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 					log.Fatal(err)
 				} else {
 					if jobMem > freeMemMB {
-						runnable = false
+						passMem = false
 					}
 				}
 			}
@@ -364,14 +378,21 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 					log.Fatal(err)
 				} else {
 					if jobTime > freeTimeSec {
-						runnable = false
+						passTime = false
 					}
 				}
 			}
 		}
 
-		if runnable {
+		if passProc && passMem && passTime {
 			return job, true
+		} else {
+			log.Printf("QUEUED job %d (%s, %s, %s) => (proc: %t, mem: %t, time: %t)\n",
+				jobId,
+				job.GetDetail("procs", ""),
+				job.GetDetail("mem", ""),
+				job.GetDetail("walltime", ""),
+				passProc, passMem, passTime)
 		}
 	}
 

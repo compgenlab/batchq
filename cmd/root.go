@@ -24,7 +24,7 @@ var initdbCmd = &cobra.Command{
 	Use:   "initdb",
 	Short: "Initialize the job database",
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := db.InitDB(dbpath, force); err != nil {
+		if err := db.InitDB(dbpath, force, startJobId); err != nil {
 			fmt.Printf("Error initializing DB: %v\n", err)
 		}
 	},
@@ -61,11 +61,13 @@ var batchqHome string
 var configFile string
 var dbpath string
 var force bool
+var startJobId int
 
 func init() {
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
 	initdbCmd.Flags().BoolVar(&force, "force", false, "Force overwriting existing DB")
+	initdbCmd.Flags().IntVar(&startJobId, "start", -1, "Starting job ID")
 
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(licenseCmd)

@@ -28,9 +28,9 @@ func OpenDB(dbpath string) (BatchDB, error) {
 	return nil, fmt.Errorf("bad dbpath: %s", dbpath)
 }
 
-func InitDB(dbpath string, force bool) error {
+func InitDB(dbpath string, force bool, startJobId int) error {
 	if dbpath[:10] == "sqlite3://" {
-		return initSqlite3(dbpath[10:], force)
+		return initSqlite3(dbpath[10:], force, startJobId)
 	}
 	return fmt.Errorf("bad dbpath: %s", dbpath)
 }
