@@ -149,39 +149,40 @@ func (r *simpleRunner) Start() bool {
 
 	// Start signal handler in a goroutine
 	go func() {
-		sig := <-sigs
-		fmt.Printf("\n\n*** Received signal: %v ***\n\n", sig)
-		r.logf("")
-		sigCount++
+		for sig := range sigs {
+			fmt.Printf("\n\n*** Received signal: %v ***\n\n", sig)
+			r.logf("")
+			sigCount++
 
-		if sigCount == 1 {
-			keepRunning = false
-			r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything\n")
-			r.lock.Lock()
-			if r.interrupt != nil {
-				r.interrupt()
-			}
-			r.lock.Unlock()
-		} else if sigCount == 2 {
-			r.logf("Killing all running jobs...\n")
-			for len(r.curJobs) > 0 {
-				curJob := r.curJobs[0]
-				r.curJobs = r.curJobs[1:]
-				r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				r.db.CancelJob(ctx, curJob.job.JobId)
-				go curJob.cmd.Cancel()
-			}
-			r.lock.Lock()
-			if r.interrupt != nil {
-				r.interrupt()
-			}
-			r.lock.Unlock()
-		} else {
-			r.logf("Exiting... you may need to cleanup processes manually!!!!\n")
+			if sigCount == 1 {
+				keepRunning = false
+				r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything\n")
+				r.lock.Lock()
+				if r.interrupt != nil {
+					r.interrupt()
+				}
+				r.lock.Unlock()
+			} else if sigCount == 2 {
+				r.logf("Killing all running jobs...\n")
+				for len(r.curJobs) > 0 {
+					curJob := r.curJobs[0]
+					r.curJobs = r.curJobs[1:]
+					r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+					r.db.CancelJob(ctx, curJob.job.JobId)
+					go curJob.cmd.Cancel()
+				}
+				r.lock.Lock()
+				if r.interrupt != nil {
+					r.interrupt()
+				}
+				r.lock.Unlock()
+			} else {
+				r.logf("Exiting... you may need to cleanup processes manually!!!!\n")
 
-			os.Exit(1)
+				os.Exit(1)
+			}
 		}
 	}()
 
