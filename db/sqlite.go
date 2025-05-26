@@ -599,21 +599,22 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int) bool {
 
 func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId int, jobRunner string, runDetail map[string]string) bool {
 	conn := db.connect()
-	defer db.close()
 
 	sql := "INSERT INTO job_running (job_id, job_runner) VALUES (?,?)"
 	_, err := conn.ExecContext(ctx, sql, jobId, jobRunner)
 	if err != nil {
+		db.close()
 		return false
 	}
 
-	db.Close()
+	db.close()
 
 	// The UNIQUE constraint on the row should mean we are the ones that inserted
 	// this row. But we will double check.
 	time.Sleep(time.Duration((50 + rand.Intn(100))) * time.Millisecond)
 
 	conn = db.connect()
+	defer db.close()
 
 	sql1 := "SELECT job_runner FROM job_running WHERE job_id = ?"
 	rows1, err1 := conn.QueryContext(ctx, sql1, jobId)
