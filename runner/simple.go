@@ -144,7 +144,8 @@ func (r *simpleRunner) Start() bool {
 
 	// Channel to receive OS signals
 	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigs, os.Interrupt)
+
 	sigCount := 0
 
 	// Start signal handler in a goroutine
@@ -168,9 +169,11 @@ func (r *simpleRunner) Start() bool {
 					curJob := r.curJobs[0]
 					r.curJobs = r.curJobs[1:]
 					r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-					r.db.CancelJob(ctx, curJob.job.JobId)
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+						r.db.CancelJob(ctx, curJob.job.JobId)
+					}()
 					go curJob.cmd.Cancel()
 				}
 				r.lock.Lock()
@@ -179,7 +182,7 @@ func (r *simpleRunner) Start() bool {
 				}
 				r.lock.Unlock()
 			} else {
-				r.logf("Exiting... you may need to cleanup processes manually!!!!\n")
+				r.logf("Exiting... cleanup running jobs manually!!!\n")
 
 				os.Exit(1)
 			}
@@ -283,12 +286,14 @@ func (r *simpleRunner) Start() bool {
 
 		if keepRunning {
 			ctx, cancel := context.WithCancel(context.Background())
+			r.lock.Lock()
 			r.interrupt = cancel
+			r.lock.Unlock()
 			// fmt.Println("Sleeping")
 
 			// sleep for 60 seconds to see if jobs complete
 			if err := interruptibleSleep(ctx, 60*time.Second); err != nil {
-				// fmt.Println("Woken up...")
+				r.logf("Interrupted\n")
 			}
 			r.lock.Lock()
 			r.interrupt = nil
@@ -515,8 +520,6 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	}
 
 	myStatus := jobStatus{job: job, running: false, returnCode: 0, cmd: cmd, startTime: time.Now()}
-
-	r.lock.Lock()
 	r.curJobs = append(r.curJobs, myStatus)
 
 	if r.availProcs != -1 && jobProcs > 0 {
@@ -525,7 +528,6 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	if r.availMem != -1 && jobMem > 0 {
 		r.availMem = r.availMem - jobMem
 	}
-	r.lock.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
