@@ -11,6 +11,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -22,6 +23,7 @@ type SqliteBatchQ struct {
 	fname        string
 	dbConn       *sql.DB
 	connectCount int
+	conLock      sync.Mutex
 }
 
 func openSqlite3(fname string) *SqliteBatchQ {
@@ -134,8 +136,10 @@ COMMIT;`, startingJobId-1, startingJobId-1)
 // keep locking to a minimum, we'll just open the db and close it for each function call.
 
 func (db *SqliteBatchQ) connect() *sql.DB {
+	db.conLock.Lock()
 	if db.dbConn != nil {
 		db.connectCount++
+		db.conLock.Unlock()
 		return db.dbConn
 	}
 	// fmt.Printf("Opening database: %s\n", db.fname)
@@ -150,16 +154,20 @@ func (db *SqliteBatchQ) connect() *sql.DB {
 	conn.SetMaxOpenConns(1)
 	db.dbConn = conn
 	db.connectCount = 1
+	db.conLock.Unlock()
 	return conn
 }
 
 func (db *SqliteBatchQ) close() {
+	db.conLock.Lock()
 	db.connectCount--
 	if db.connectCount == 0 {
 		if db.dbConn != nil {
 			db.dbConn.Close()
+			db.dbConn = nil
 		}
 	}
+	db.conLock.Unlock()
 }
 
 func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.JobDef {
