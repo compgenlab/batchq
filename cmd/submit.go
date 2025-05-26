@@ -126,7 +126,7 @@ var submitCmd = &cobra.Command{
 						}
 
 						switch k {
-						case "procs":
+						case "procs", "p":
 							if procs, err := strconv.Atoi(v); err != nil {
 								log.Fatalf("Bad value for -procs: %s", v)
 							} else {
@@ -136,12 +136,12 @@ var submitCmd = &cobra.Command{
 									log.Fatalf("Bad value for -procs: %s", v)
 								}
 							}
-						case "mem":
+						case "mem", "m":
 							if v == "" {
 								log.Fatal("Missing value for -mem")
 							}
 							details["mem"] = strconv.Itoa(jobs.ParseMemoryString(v))
-						case "walltime":
+						case "walltime", "t":
 							if v == "" {
 								log.Fatal("Missing value for -walltime")
 							}
@@ -200,8 +200,7 @@ var submitCmd = &cobra.Command{
 					}
 					if k != "" {
 						switch k {
-						case "c":
-						case "cpus-per-task":
+						case "c", "cpus-per-task":
 							if procs, err := strconv.Atoi(v); err != nil {
 								log.Fatalf("Bad value for -c: %s", v)
 							} else {
@@ -216,14 +215,12 @@ var submitCmd = &cobra.Command{
 								log.Fatal("Missing value for --mem")
 							}
 							details["mem"] = strconv.Itoa(jobs.ParseMemoryString(v))
-						case "t":
-						case "time":
+						case "t", "time":
 							if v == "" {
 								log.Fatal("Missing value for -walltime")
 							}
 							details["walltime"] = strconv.Itoa(jobs.ParseWalltimeString(v))
-						case "J":
-						case "job-name":
+						case "J", "job-name":
 							if v == "" {
 								log.Fatal("Missing value for -J")
 							}
@@ -231,20 +228,17 @@ var submitCmd = &cobra.Command{
 								// if this is set in the cmdline, don't reset it here.
 								jobName = v
 							}
-						case "D":
-						case "chdir":
+						case "D", "chdir":
 							if v == "" {
 								log.Fatal("Missing value for -D")
 							}
 							details["wd"] = v
-						case "o":
-						case "output":
+						case "o", "output":
 							if v == "" {
 								log.Fatal("Missing value for -stdout")
 							}
 							details["stdout"] = strings.Replace(v, "%j", "%JOBID", 1)
-						case "e":
-						case "error":
+						case "e", "error":
 							if v == "" {
 								log.Fatal("Missing value for -stderr")
 							}
@@ -255,11 +249,9 @@ var submitCmd = &cobra.Command{
 							} else {
 								log.Fatal("Bad value for --export. Only --export=ALL is supported by batchq!")
 							}
-						case "H":
-						case "hold":
+						case "H", "hold":
 							jobHold = true
-						case "d":
-						case "dependency":
+						case "d", "dependency":
 							if jobDeps == "" {
 								if v[:8] == "afterok:" {
 									jobDeps = strings.Join(strings.Split(v[8:], ":"), ",")
