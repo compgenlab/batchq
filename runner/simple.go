@@ -173,8 +173,8 @@ func (r *simpleRunner) Start() bool {
 						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 						defer cancel()
 						r.db.CancelJob(ctx, curJob.job.JobId)
+						curJob.cmd.Cancel()
 					}()
-					go curJob.cmd.Cancel()
 				}
 				r.lock.Lock()
 				if r.interrupt != nil {
