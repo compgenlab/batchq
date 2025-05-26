@@ -19,8 +19,9 @@ import (
 )
 
 type SqliteBatchQ struct {
-	fname  string
-	dbConn *sql.DB
+	fname        string
+	dbConn       *sql.DB
+	connectCount int
 }
 
 func openSqlite3(fname string) *SqliteBatchQ {
@@ -134,9 +135,9 @@ COMMIT;`, startingJobId-1, startingJobId-1)
 
 func (db *SqliteBatchQ) connect() *sql.DB {
 	if db.dbConn != nil {
+		db.connectCount++
 		return db.dbConn
 	}
-
 	// fmt.Printf("Opening database: %s\n", db.fname)
 	if _, err := os.Open(db.fname); err != nil {
 		log.Fatal("Missing database. Please initialize it first!")
@@ -146,13 +147,24 @@ func (db *SqliteBatchQ) connect() *sql.DB {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// conn.SetMaxOpenConns(1)
+	conn.SetMaxOpenConns(1)
 	db.dbConn = conn
+	db.connectCount = 1
 	return conn
+}
+
+func (db *SqliteBatchQ) close() {
+	db.connectCount--
+	if db.connectCount == 0 {
+		if db.dbConn != nil {
+			db.dbConn.Close()
+		}
+	}
 }
 
 func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.JobDef {
 	conn := db.connect()
+	defer db.close()
 	if tx, err := conn.BeginTx(ctx, nil); err != nil {
 		log.Fatal(err)
 	} else {
@@ -226,6 +238,7 @@ func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.J
 
 func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool) []jobs.JobDef {
 	conn := db.connect()
+	defer db.close()
 
 	var sql string
 	var args []any
@@ -324,6 +337,7 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 
 	// Next, look for a QUEUED job that first the proc/mem/time limits
 	conn := db.connect()
+	defer db.close()
 
 	sql := "SELECT id FROM jobs WHERE status = ?"
 	var queueJobIds []int
@@ -401,6 +415,7 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 
 func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 	conn := db.connect()
+	defer db.close()
 
 	sql := "SELECT id FROM jobs WHERE status = ? OR status = ?"
 	var possibleJobIds []int
@@ -465,6 +480,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 
 func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 	conn := db.connect()
+	defer db.close()
 
 	sql := "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs WHERE id = ?"
 	rows, err := conn.QueryContext(ctx, sql, jobId)
@@ -546,6 +562,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 }
 func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
+	defer db.close()
 
 	sql2 := "UPDATE jobs SET status = ?, end_time = ? WHERE id = ? AND status != ? AND status != ?"
 	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, support.GetNowTS(), jobId, jobs.FAILED, jobs.SUCCESS)
@@ -569,6 +586,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int) bool {
 		}
 
 		for _, cid := range childIds {
+			// recursively delete
 			if !db.CancelJob(ctx, cid) {
 				return false
 			}
@@ -581,6 +599,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int) bool {
 
 func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId int, jobRunner string, runDetail map[string]string) bool {
 	conn := db.connect()
+	defer db.close()
 
 	sql := "INSERT INTO job_running (job_id, job_runner) VALUES (?,?)"
 	_, err := conn.ExecContext(ctx, sql, jobId, jobRunner)
@@ -642,6 +661,8 @@ func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId int, jobRunner strin
 
 func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string, returnCode int) bool {
 	conn := db.connect()
+	defer db.close()
+
 	sql1 := "SELECT job_runner FROM job_running WHERE job_id = ?"
 	rows1, err1 := conn.QueryContext(ctx, sql1, jobId)
 	if err1 != nil {
@@ -695,6 +716,7 @@ func (db *SqliteBatchQ) Close() {
 
 func (db *SqliteBatchQ) CleanupJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
+	defer db.close()
 
 	sql := []string{
 		"DELETE FROM job_running_details WHERE job_id = ?",
@@ -723,6 +745,7 @@ func (db *SqliteBatchQ) CleanupJob(ctx context.Context, jobId int) bool {
 
 func (db *SqliteBatchQ) HoldJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
+	defer db.close()
 
 	sql2 := "UPDATE jobs SET status = ? WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
 	res, err := conn.ExecContext(ctx, sql2, jobs.USERHOLD, jobId, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
@@ -736,6 +759,7 @@ func (db *SqliteBatchQ) HoldJob(ctx context.Context, jobId int) bool {
 }
 func (db *SqliteBatchQ) ReleaseJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
+	defer db.close()
 
 	sql2 := "UPDATE jobs SET status = ? WHERE id = ? AND status = ?"
 	res, err := conn.ExecContext(ctx, sql2, jobs.WAITING, jobId, jobs.USERHOLD)
