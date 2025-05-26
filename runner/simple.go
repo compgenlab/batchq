@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -118,6 +119,10 @@ func (r *simpleRunner) logf(msg string, v ...any) {
 }
 
 func (r *simpleRunner) Start() bool {
+	// Channel to receive OS signals
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+
 	if path, err := support.ExpandPathAbs(filepath.Join(iniconfig.GetBatchqHome(), "drain")); err == nil {
 		os.Remove(path)
 	}
@@ -138,8 +143,29 @@ func (r *simpleRunner) Start() bool {
 
 	keepRunning := true
 	ranAtLeastOneJob := false
+	sigCount := 0
+
+	// Start signal handler in a goroutine
+	go func() {
+		sig := <-sigs
+		r.logf("Received signal: %v", sig)
+		sigCount++
+
+		if sigCount == 1 {
+			r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything\n")
+			keepRunning = false
+		} else {
+			for _, curJob := range r.curJobs {
+				r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
+				curJob.cmd.Cancel()
+			}
+		}
+	}()
 
 	r.logf("Starting job runner: %s\n", r.runnerId)
+	if r.foreverMode {
+		r.logf("Hit Ctrl+C to exit. Will try to drain jobs first.")
+	}
 	for keepRunning || len(r.curJobs) > 0 {
 		now := time.Now()
 		// check to see if we need to cancel a running job
@@ -173,11 +199,6 @@ func (r *simpleRunner) Start() bool {
 						}
 					}
 				}
-
-				// TODO: also check here to see if the job has been running for
-				//       too long. We can check the wall-time here. If the job
-				//       has been running too long, then just kill it here.
-
 			}
 		}
 
