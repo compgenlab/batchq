@@ -148,17 +148,27 @@ func (r *simpleRunner) Start() bool {
 	// Start signal handler in a goroutine
 	go func() {
 		sig := <-sigs
-		r.logf("Received signal: %v", sig)
+		r.logf("\n\n*** Received signal: %v ***\n\n", sig)
 		sigCount++
 
 		if sigCount == 1 {
-			r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything\n")
 			keepRunning = false
+			r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything\n")
+			r.lock.Lock()
+			if r.interrupt != nil {
+				r.interrupt()
+			}
+			r.lock.Unlock()
 		} else {
 			for _, curJob := range r.curJobs {
 				r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
 				curJob.cmd.Cancel()
 			}
+			r.lock.Lock()
+			if r.interrupt != nil {
+				r.interrupt()
+			}
+			r.lock.Unlock()
 		}
 	}()
 
@@ -261,10 +271,6 @@ func (r *simpleRunner) Start() bool {
 			ctx, cancel := context.WithCancel(context.Background())
 			r.interrupt = cancel
 			// fmt.Println("Sleeping")
-
-			// TODO: check for SIGTERM / Ctrl-C
-			//       if we get the signal, prompt the user to hit ctrl-c again
-			//       then kill all running jobs before exiting!
 
 			// sleep for 60 seconds to see if jobs complete
 			if err := interruptibleSleep(ctx, 60*time.Second); err != nil {
@@ -404,7 +410,10 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 		}
 	}
 	if env := job.GetDetail("env", ""); env != "" {
-		cmd.Env = strings.Split(fmt.Sprintf("%s\n-|-\nJOB_ID=%d", env, job.JobId), "\n-|-\n")
+		cmd.Env = strings.Split(env, "\n-|-\n")
+		cmd.Env = append(cmd.Env, fmt.Sprintf("JOB_ID=%d", job.JobId))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("BATCHQ_JOB_ID=%d", job.JobId))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("BATCHQ_RUNNER_ID=%s", r.runnerId))
 	} else {
 		cmd.Env = []string{fmt.Sprintf("JOB_ID=%d", job.JobId)}
 		//cmd.Env = append(os.Environ(), fmt.Sprintf("JOB_ID=%d", job.JobId))
