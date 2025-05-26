@@ -136,9 +136,12 @@ COMMIT;`, startingJobId-1, startingJobId-1)
 // keep locking to a minimum, we'll just open the db and close it for each function call.
 
 func (db *SqliteBatchQ) connect() *sql.DB {
+	// debug.PrintStack()
+
 	db.conLock.Lock()
 	if db.dbConn != nil {
 		db.connectCount++
+		// fmt.Printf("connect existing (%d):\n", db.connectCount)
 		db.conLock.Unlock()
 		return db.dbConn
 	}
@@ -151,9 +154,10 @@ func (db *SqliteBatchQ) connect() *sql.DB {
 	if err != nil {
 		log.Fatal(err)
 	}
-	conn.SetMaxOpenConns(1)
+	// conn.SetMaxOpenConns(1)
 	db.dbConn = conn
 	db.connectCount = 1
+	// fmt.Printf("connect new (%d):\n", db.connectCount)
 	db.conLock.Unlock()
 	return conn
 }
@@ -163,9 +167,12 @@ func (db *SqliteBatchQ) close() {
 	db.connectCount--
 	if db.connectCount == 0 {
 		if db.dbConn != nil {
+			// fmt.Printf("disconnect (%d) closing:\n", db.connectCount)
 			db.dbConn.Close()
 			db.dbConn = nil
 		}
+	} else {
+		// fmt.Printf("disconnect (%d):\n", db.connectCount)
 	}
 	db.conLock.Unlock()
 }
