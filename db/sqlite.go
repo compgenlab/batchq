@@ -717,10 +717,13 @@ func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string,
 }
 
 func (db *SqliteBatchQ) Close() {
+	db.conLock.Lock()
+	db.connectCount = 0
 	if db.dbConn != nil {
 		db.dbConn.Close()
 		db.dbConn = nil
 	}
+	db.conLock.Unlock()
 }
 
 func (db *SqliteBatchQ) CleanupJob(ctx context.Context, jobId int) bool {
