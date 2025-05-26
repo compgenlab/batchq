@@ -67,7 +67,7 @@ func init() {
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
 	initdbCmd.Flags().BoolVar(&force, "force", false, "Force overwriting existing DB")
-	initdbCmd.Flags().IntVar(&startJobId, "start", -1, "Starting job ID")
+	initdbCmd.Flags().IntVar(&startJobId, "start", 1, "Starting job ID")
 
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(licenseCmd)

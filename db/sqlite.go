@@ -112,12 +112,12 @@ func initSqlite3(fname string, force bool, startingJobId int) error {
 		// log.Fatalf("Exec error: %v", err)
 		return err
 	}
-	if startingJobId > 0 {
+	if startingJobId > 1 {
 		// see: https://stackoverflow.com/questions/692856/set-start-value-for-autoincrement-in-sqlite
 		sql = fmt.Sprintf(`BEGIN TRANSACTION;
 UPDATE sqlite_sequence SET seq = %d WHERE name = 'jobs';
 INSERT INTO sqlite_sequence (name,seq) SELECT 'jobs', %d WHERE NOT EXISTS (SELECT changes() AS change FROM sqlite_sequence WHERE change <> 0);
-COMMIT;`, startingJobId, startingJobId)
+COMMIT;`, startingJobId-1, startingJobId-1)
 		_, err = db.ExecContext(ctx, sql)
 		if err != nil {
 			// log.Fatalf("Exec error: %v", err)

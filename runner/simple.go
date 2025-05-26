@@ -112,17 +112,15 @@ func (r *simpleRunner) SetCgroupV1(useCgroupV1 bool) *simpleRunner {
 func (r *simpleRunner) logf(msg string, v ...any) {
 	if msg != r.lastMsg {
 		r.logLock.Lock()
-		log.Printf(msg, v...)
+		if msg != "" {
+			log.Printf(msg, v...)
+		}
 		r.lastMsg = msg
 		r.logLock.Unlock()
 	}
 }
 
 func (r *simpleRunner) Start() bool {
-	// Channel to receive OS signals
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
 	if path, err := support.ExpandPathAbs(filepath.Join(iniconfig.GetBatchqHome(), "drain")); err == nil {
 		os.Remove(path)
 	}
@@ -143,12 +141,17 @@ func (r *simpleRunner) Start() bool {
 
 	keepRunning := true
 	ranAtLeastOneJob := false
+
+	// Channel to receive OS signals
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	sigCount := 0
 
 	// Start signal handler in a goroutine
 	go func() {
 		sig := <-sigs
-		r.logf("\n\n*** Received signal: %v ***\n\n", sig)
+		fmt.Printf("\n\n*** Received signal: %v ***\n\n", sig)
+		r.logf("")
 		sigCount++
 
 		if sigCount == 1 {
@@ -159,16 +162,26 @@ func (r *simpleRunner) Start() bool {
 				r.interrupt()
 			}
 			r.lock.Unlock()
-		} else {
-			for _, curJob := range r.curJobs {
+		} else if sigCount == 2 {
+			r.logf("Killing all running jobs...\n")
+			for len(r.curJobs) > 0 {
+				curJob := r.curJobs[0]
+				r.curJobs = r.curJobs[1:]
 				r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
-				curJob.cmd.Cancel()
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				r.db.CancelJob(ctx, curJob.job.JobId)
+				go curJob.cmd.Cancel()
 			}
 			r.lock.Lock()
 			if r.interrupt != nil {
 				r.interrupt()
 			}
 			r.lock.Unlock()
+		} else {
+			r.logf("Exiting... you may need to cleanup processes manually!!!!\n")
+
+			os.Exit(1)
 		}
 	}()
 
@@ -501,6 +514,8 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	}
 
 	myStatus := jobStatus{job: job, running: false, returnCode: 0, cmd: cmd, startTime: time.Now()}
+
+	r.lock.Lock()
 	r.curJobs = append(r.curJobs, myStatus)
 
 	if r.availProcs != -1 && jobProcs > 0 {
@@ -509,6 +524,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	if r.availMem != -1 && jobMem > 0 {
 		r.availMem = r.availMem - jobMem
 	}
+	r.lock.Unlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
