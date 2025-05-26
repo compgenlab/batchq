@@ -150,41 +150,61 @@ func (r *simpleRunner) Start() bool {
 
 	// Start signal handler in a goroutine
 	go func() {
+		draining := false
+		lastIntT := time.Now().Add(-60 * time.Second)
+
 		for sig := range sigs {
 			fmt.Printf("\n\n*** Received signal: %v ***\n\n", sig)
 			r.logf("")
-			sigCount++
 
-			if sigCount == 1 {
-				keepRunning = false
-				r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything\n")
-				r.lock.Lock()
-				if r.interrupt != nil {
-					r.interrupt()
+			if !draining {
+				if time.Since(lastIntT).Seconds() < 10 {
+					draining = true
+				} else {
+					r.logf("Currently running jobs:")
+					for _, curJob := range r.curJobs {
+						r.logf("  Job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
+					}
+					lastIntT = time.Now()
+					r.logf("Hit Ctrl+C within 10 seconds to start draining jobs.\n")
 				}
-				r.lock.Unlock()
-			} else if sigCount == 2 {
-				r.logf("Killing all running jobs...\n")
-				for len(r.curJobs) > 0 {
-					curJob := r.curJobs[0]
-					r.curJobs = r.curJobs[1:]
-					r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
-					go func() {
-						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-						defer cancel()
-						r.db.CancelJob(ctx, curJob.job.JobId)
-						curJob.cmd.Cancel()
-					}()
-				}
-				r.lock.Lock()
-				if r.interrupt != nil {
-					r.interrupt()
-				}
-				r.lock.Unlock()
-			} else {
-				r.logf("Exiting... cleanup running jobs manually!!!\n")
+			}
 
-				os.Exit(1)
+			if draining {
+
+				sigCount++
+
+				if sigCount == 1 {
+					keepRunning = false
+					r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything.\n")
+					r.lock.Lock()
+					if r.interrupt != nil {
+						r.interrupt()
+					}
+					r.lock.Unlock()
+				} else if sigCount == 2 {
+					r.logf("Killing all running jobs...\n")
+					for len(r.curJobs) > 0 {
+						curJob := r.curJobs[0]
+						r.curJobs = r.curJobs[1:]
+						r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
+						go func() {
+							ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+							defer cancel()
+							r.db.CancelJob(ctx, curJob.job.JobId)
+							curJob.cmd.Cancel()
+						}()
+					}
+					r.lock.Lock()
+					if r.interrupt != nil {
+						r.interrupt()
+					}
+					r.lock.Unlock()
+				} else {
+					r.logf("Exiting... cleanup running jobs manually!!!\n")
+
+					os.Exit(1)
+				}
 			}
 		}
 	}()
@@ -194,7 +214,6 @@ func (r *simpleRunner) Start() bool {
 		r.logf("Hit Ctrl+C to exit. Will try to drain jobs first.")
 	}
 	for keepRunning || len(r.curJobs) > 0 {
-		now := time.Now()
 		// check to see if we need to cancel a running job
 		for _, curJob := range r.curJobs {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -218,7 +237,7 @@ func (r *simpleRunner) Start() bool {
 					if jobTime, err := strconv.Atoi(val); err != nil {
 						log.Fatal(err)
 					} else if jobTime > 0 {
-						duration := now.Sub(curJob.startTime)
+						duration := time.Since(curJob.startTime)
 						if duration.Seconds() > float64(jobTime) {
 							r.logf("Job: %d exceeded wall-time (%s sec limit, %.2f sec elapsed)", curJob.job.JobId, val, duration.Seconds())
 							curJob.cmd.Cancel()
@@ -238,7 +257,7 @@ func (r *simpleRunner) Start() bool {
 		} else {
 			// check to see if we have the resources to run a job
 			findJob := false
-			r.logf("Available resources (procs:%d, mem:%d)\n", r.availProcs, r.availMem)
+			r.logf("Available resources (c:%d, m:%d)\n", r.availProcs, r.availMem)
 			if maxJobs > 0 {
 				if len(r.curJobs) < maxJobs {
 					findJob = true
@@ -524,6 +543,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 
 	if r.availProcs != -1 && jobProcs > 0 {
 		r.availProcs = r.availProcs - jobProcs
+		r.logf("Job %d: Reserving %d proc (%d remaining)\n", job.JobId, jobProcs, r.availProcs)
 	}
 	if r.availMem != -1 && jobMem > 0 {
 		r.availMem = r.availMem - jobMem
@@ -533,7 +553,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	defer cancel()
 	r.db.StartJob(ctx, job.JobId, r.runnerId, map[string]string{"pid": strconv.Itoa(cmd.Process.Pid)})
 	ctx.Done()
-	r.logf("Started job: %d [proc: %d]\n", job.JobId, cmd.Process.Pid)
+	r.logf("Started job: %d [proc: %d] (c:%d, m:%d)\n", job.JobId, cmd.Process.Pid, jobProcs, jobMem)
 
 	// Track it in the background
 	go func() {
@@ -581,6 +601,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 		r.curJobs = newJobs
 		if r.availProcs != -1 && jobProcs > 0 {
 			r.availProcs = r.availProcs + jobProcs
+			r.logf("Job %d: Returning %d proc (%d remaining)\n", job.JobId, jobProcs, r.availProcs)
 		}
 		if r.availMem != -1 && jobMem > 0 {
 			r.availMem = r.availMem + jobMem
