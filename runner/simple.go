@@ -35,7 +35,9 @@ type simpleRunner struct {
 	runnerId       string
 	interrupt      context.CancelFunc
 	lock           sync.Mutex
+	logLock        sync.Mutex
 	spoolDir       string
+	lastMsg        string
 }
 
 type jobStatus struct {
@@ -106,6 +108,15 @@ func (r *simpleRunner) SetCgroupV1(useCgroupV1 bool) *simpleRunner {
 	return r
 }
 
+func (r *simpleRunner) logf(msg string, v ...any) {
+	if msg != r.lastMsg {
+		r.logLock.Lock()
+		log.Printf(msg, v...)
+		r.lastMsg = msg
+		r.logLock.Unlock()
+	}
+}
+
 func (r *simpleRunner) Start() bool {
 	if path, err := support.ExpandPathAbs(filepath.Join(iniconfig.GetBatchqHome(), "drain")); err == nil {
 		os.Remove(path)
@@ -128,7 +139,7 @@ func (r *simpleRunner) Start() bool {
 	keepRunning := true
 	ranAtLeastOneJob := false
 
-	log.Printf("Starting job runner: %s\n", r.runnerId)
+	r.logf("Starting job runner: %s\n", r.runnerId)
 	for keepRunning || len(r.curJobs) > 0 {
 		now := time.Now()
 		// check to see if we need to cancel a running job
@@ -144,7 +155,7 @@ func (r *simpleRunner) Start() bool {
 					curJob.cmd.Cancel()
 					continue
 				} else {
-					log.Printf("Trying to cancel job: %d, but Cancel() is nil.\n", curJob.job.JobId)
+					r.logf("Trying to cancel job: %d, but Cancel() is nil.\n", curJob.job.JobId)
 				}
 			}
 
@@ -156,7 +167,7 @@ func (r *simpleRunner) Start() bool {
 					} else if jobTime > 0 {
 						duration := now.Sub(curJob.startTime)
 						if duration.Seconds() > float64(jobTime) {
-							log.Printf("Job: %d exceeded wall-time (%s sec limit, %.2f sec elapsed)", curJob.job.JobId, val, duration.Seconds())
+							r.logf("Job: %d exceeded wall-time (%s sec limit, %.2f sec elapsed)", curJob.job.JobId, val, duration.Seconds())
 							curJob.cmd.Cancel()
 							continue
 						}
@@ -170,16 +181,16 @@ func (r *simpleRunner) Start() bool {
 			}
 		}
 
-		if r.IsDrain() {
-			log.Printf("Draining jobs (remaining:%d)\n", len(r.curJobs))
+		if r.IsDrain() || !keepRunning {
+			r.logf("Draining jobs (remaining:%d)\n", len(r.curJobs))
 			if r.IsDrain() && len(r.curJobs) == 0 {
 				keepRunning = false
-				log.Println("Done processing jobs")
+				r.logf("Done processing jobs")
 			}
 		} else {
 			// check to see if we have the resources to run a job
 			findJob := false
-			log.Printf("Available resources (procs:%d, mem:%d)\n", r.availProcs, r.availMem)
+			r.logf("Available resources (procs:%d, mem:%d)\n", r.availProcs, r.availMem)
 			if maxJobs > 0 {
 				if len(r.curJobs) < maxJobs {
 					findJob = true
@@ -203,10 +214,10 @@ func (r *simpleRunner) Start() bool {
 				// log.Printf("Looking for a job (%d, %d, %d)\n", r.availProcs, r.availMem, r.maxWalltimeSec)
 
 				if job, hasMore := r.db.FetchNext(ctx, r.availProcs, r.availMem, r.maxWalltimeSec); job != nil {
-					log.Printf("Processing job: %d\n", job.JobId)
+					r.logf("Processing job: %d\n", job.JobId)
 					r.lock.Lock()
 					if !r.startJob(job) {
-						log.Println("Error starting job -- draining")
+						r.logf("Error starting job -- draining")
 						keepRunning = false
 					}
 					r.lock.Unlock()
@@ -217,7 +228,7 @@ func (r *simpleRunner) Start() bool {
 						// we are done here
 						// no jobs running, none left in queue, and we aren't waiting...
 						keepRunning = false
-						log.Println("Done processing jobs")
+						r.logf("Done processing jobs")
 					}
 				}
 			}
@@ -313,7 +324,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 
 	script := filepath.Join(r.spoolDir, fmt.Sprintf("batchq-%d.sh", job.JobId))
 	if err := os.WriteFile(script, []byte(job.GetDetail("script", "")), 0755); err != nil {
-		log.Printf("Error writing script: %v\n", err)
+		r.logf("Error writing script: %v\n", err)
 		return false
 	}
 
@@ -324,13 +335,13 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
 			pgid, _ := syscall.Getpgid(cmd.Process.Pid)
-			log.Printf("Cancelling job: %d [%d]\n", job.JobId, cmd.Process.Pid)
-			log.Println("Killing process group:", pgid)
-			syscall.Kill(-pgid, syscall.SIGTERM)
+			r.logf("Cancelling job: %d [%d]\n", job.JobId, cmd.Process.Pid)
+			r.logf("Killing process group: %d\n", pgid)
+			syscall.Kill(-pgid, syscall.SIGKILL)
 			cmd.Process.Wait()
 			// log.Println("Process killed")
 		} else {
-			log.Printf("Cancelling job: %d, but process already done\n", job.JobId)
+			r.logf("Cancelling job: %d, but process already done\n", job.JobId)
 			// cmd.Process.Kill()
 		}
 		return nil
@@ -386,12 +397,14 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 
 		uid, err := strconv.Atoi(uidS)
 		if err != nil {
-			log.Fatalf("Missing UID from job details: %d\n", job.JobId)
+			r.logf("Missing UID from job details: %d\n", job.JobId)
+			return false
 		}
 		gid, err := strconv.Atoi(gidS)
 
 		if err != nil {
-			log.Fatalf("Missing GID from job details: %d\n", job.JobId)
+			r.logf("Missing GID from job details: %d\n", job.JobId)
+			return false
 		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Setpgid: true,
@@ -445,7 +458,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 
 	err := cmd.Start()
 	if err != nil {
-		log.Printf("Error starting jobs: %v\n", err)
+		r.logf("Error starting jobs: %v\n", err)
 		return false
 	}
 	if r.useCgroupV2 && support.AmIRoot() {
@@ -471,7 +484,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	defer cancel()
 	r.db.StartJob(ctx, job.JobId, r.runnerId, map[string]string{"pid": strconv.Itoa(cmd.Process.Pid)})
 	ctx.Done()
-	log.Printf("Started job: %d [proc: %d]\n", job.JobId, cmd.Process.Pid)
+	r.logf("Started job: %d [proc: %d]\n", job.JobId, cmd.Process.Pid)
 
 	// Track it in the background
 	go func() {
@@ -486,7 +499,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		r.lock.Lock()
-		log.Printf("Job %d [proc: %d] exited: %s\n", job.JobId, cmd.Process.Pid, state.String())
+		r.logf("Job %d [proc: %d] exited: %s\n", job.JobId, cmd.Process.Pid, state.String())
 		if state != nil && state.Success() {
 			// log.Printf("Process %d exited successfully\n", cmd.Process.Pid)
 			r.db.EndJob(ctx, job.JobId, r.runnerId, 0)

@@ -384,15 +384,15 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 			}
 		}
 
+		// log.Printf("QUEUED job %d (%s, %s, %s) => (c:%t, m:%t, t:%t)\n",
+		// 	jobId,
+		// 	job.GetDetail("procs", ""),
+		// 	job.GetDetail("mem", ""),
+		// 	job.GetDetail("walltime", ""),
+		// 	passProc, passMem, passTime)
+
 		if passProc && passMem && passTime {
 			return job, true
-		} else {
-			log.Printf("QUEUED job %d (%s, %s, %s) => (proc: %t, mem: %t, time: %t)\n",
-				jobId,
-				job.GetDetail("procs", ""),
-				job.GetDetail("mem", ""),
-				job.GetDetail("walltime", ""),
-				passProc, passMem, passTime)
 		}
 	}
 
