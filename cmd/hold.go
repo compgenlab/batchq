@@ -35,7 +35,7 @@ var holdCmd = &cobra.Command{
 							fmt.Printf("Bad job-id: %s\n", spl[1])
 						} else {
 							for jobid := jobid1; jobid <= jobid2; jobid++ {
-								ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+								ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 								defer cancel()
 
 								if jobq.HoldJob(ctx, jobid) {
@@ -50,7 +50,7 @@ var holdCmd = &cobra.Command{
 					if jobid, err := strconv.Atoi(arg); err != nil {
 						fmt.Printf("Bad job-id: %s\n", arg)
 					} else {
-						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 						defer cancel()
 
 						if jobq.HoldJob(ctx, jobid) {
@@ -88,7 +88,7 @@ var releaseCmd = &cobra.Command{
 							fmt.Printf("Bad job-id: %s\n", spl[1])
 						} else {
 							for jobid := jobid1; jobid <= jobid2; jobid++ {
-								ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+								ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 								defer cancel()
 
 								if jobq.ReleaseJob(ctx, jobid) {
@@ -103,7 +103,7 @@ var releaseCmd = &cobra.Command{
 					if jobid, err := strconv.Atoi(arg); err != nil {
 						fmt.Printf("Bad job-id: %s\n", arg)
 					} else {
-						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 						defer cancel()
 
 						if jobq.ReleaseJob(ctx, jobid) {

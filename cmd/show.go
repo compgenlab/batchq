@@ -79,14 +79,17 @@ var queueCmd = &cobra.Command{
 				fmt.Printf("| %-3.3s ", job.GetDetail("procs", ""))
 				fmt.Printf("| %-8.8s ", jobs.PrintMemoryString(job.GetDetail("mem", "")))
 				if job.Status == jobs.FAILED || job.Status == jobs.CANCELLED || job.Status == jobs.SUCCESS {
-					elapsed := job.EndTime.Sub(job.StartTime)
-					fmt.Printf("| %-11.11s ", jobs.PrintWalltime(int(elapsed.Seconds())))
 					if job.Status == jobs.CANCELLED {
+						fmt.Printf("| %-11.11s ", "")
 						fmt.Printf("| %-20.20s\n", job.Notes)
-					} else if job.Status == jobs.FAILED {
-						fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
-					} else {
+					} else if job.Status == jobs.SUCCESS {
+						elapsed := job.EndTime.Sub(job.StartTime)
+						fmt.Printf("| %-11.11s ", jobs.PrintWalltime(int(elapsed.Seconds())))
 						fmt.Println("|")
+					} else if job.Status == jobs.FAILED {
+						elapsed := job.EndTime.Sub(job.StartTime)
+						fmt.Printf("| %-11.11s ", jobs.PrintWalltime(int(elapsed.Seconds())))
+						fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
 					}
 				} else if job.Status == jobs.RUNNING {
 					elapsed := time.Now().UTC().Sub(job.StartTime)
