@@ -161,8 +161,8 @@ func (r *simpleRunner) Start() bool {
 				if time.Since(lastIntT).Seconds() < 10 {
 					draining = true
 				} else {
-					r.logf("Currently running jobs:")
 					r.lock.Lock()
+					r.logf("Currently running jobs (%d):\n", len(r.curJobs))
 					for _, curJob := range r.curJobs {
 						r.logf("  Job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
 					}
