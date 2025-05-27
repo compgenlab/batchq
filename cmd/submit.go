@@ -30,7 +30,7 @@ var submitCmd = &cobra.Command{
 				data, err := io.ReadAll(f)
 				if err != nil {
 					fmt.Println("Error:", err)
-					return
+					os.Exit(1)
 				}
 				scriptSrc = string(data)
 			} else {
@@ -46,7 +46,7 @@ var submitCmd = &cobra.Command{
 				data, err := io.ReadAll(os.Stdin)
 				if err != nil {
 					fmt.Println("Error:", err)
-					return
+					os.Exit(1)
 				}
 				scriptSrc = string(data)
 			}
@@ -357,10 +357,11 @@ var submitCmd = &cobra.Command{
 					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 
+					// fmt.Println("Checking dep: ", depid)
 					dep := jobq.GetJob(ctx, depid)
-					if dep == nil || dep.Status == jobs.CANCELLED || dep.Status == jobs.FAILED {
+					if dep == nil || dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
 						// bad dependency
-						fmt.Printf("Bad job dependency: %d\n", depid)
+						fmt.Printf("ERROR: Bad job dependency: %d\n", depid)
 						baddep = true
 					}
 					job.AddAfterOk(depid)
@@ -369,11 +370,12 @@ var submitCmd = &cobra.Command{
 		}
 
 		if baddep {
-			return
+			os.Exit(1)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		// fmt.Println("Submitting job")
 		job = jobq.SubmitJob(ctx, job)
 		fmt.Printf("%d\n", job.JobId)
 

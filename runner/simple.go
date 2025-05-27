@@ -224,7 +224,7 @@ func (r *simpleRunner) Start() bool {
 			// this could be optimized, but just iterating over jobs
 			// is the easiest thing to do
 			job := r.db.GetJob(ctx, curJob.job.JobId)
-			if job.Status == jobs.CANCELLED {
+			if job.Status == jobs.CANCELED {
 				if curJob.cmd != nil && curJob.cmd.Cancel != nil {
 					curJob.cmd.Cancel()
 					continue
@@ -404,13 +404,13 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
 			pgid, _ := syscall.Getpgid(cmd.Process.Pid)
-			r.logf("Cancelling job: %d [%d]\n", job.JobId, cmd.Process.Pid)
+			r.logf("Canceling job: %d [%d]\n", job.JobId, cmd.Process.Pid)
 			r.logf("Killing process group: %d\n", pgid)
 			syscall.Kill(-pgid, syscall.SIGKILL)
 			cmd.Process.Wait()
 			// log.Println("Process killed")
 		} else {
-			r.logf("Cancelling job: %d, but process already done\n", job.JobId)
+			r.logf("Canceling job: %d, but process already done\n", job.JobId)
 			// cmd.Process.Kill()
 		}
 		return nil

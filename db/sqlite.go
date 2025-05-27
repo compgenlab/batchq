@@ -183,27 +183,28 @@ func (db *SqliteBatchQ) close() {
 func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.JobDef {
 	conn := db.connect()
 	defer db.close()
+
+	for _, depid := range job.AfterOk {
+		dep := db.GetJob(ctx, depid)
+		if dep == nil || dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
+			// bad dependency
+			return nil
+		}
+	}
+
+	newStatus := job.Status
+	if newStatus != jobs.USERHOLD {
+		if len(job.AfterOk) == 0 {
+			newStatus = jobs.QUEUED
+		} else {
+			newStatus = jobs.WAITING
+		}
+	}
+
 	if tx, err := conn.BeginTx(ctx, nil); err != nil {
-		log.Fatal(err)
+		log.Println(err)
+		return nil
 	} else {
-
-		for _, depid := range job.AfterOk {
-			dep := db.GetJob(ctx, depid)
-			if dep == nil || dep.Status == jobs.CANCELLED || dep.Status == jobs.FAILED {
-				// bad dependency
-				return nil
-			}
-		}
-
-		newStatus := job.Status
-		if newStatus != jobs.USERHOLD {
-			if len(job.AfterOk) == 0 {
-				newStatus = jobs.QUEUED
-			} else {
-				newStatus = jobs.WAITING
-			}
-		}
-
 		sql := "INSERT INTO jobs (status,name,notes,submit_time) VALUES (?,?,?,?)"
 		res, err := tx.ExecContext(ctx, sql, newStatus, job.Name, "", support.GetNowUTCString())
 		if err != nil {
@@ -250,6 +251,7 @@ func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.J
 		if err2 := tx.Commit(); err2 != nil {
 			tx.Rollback()
 		}
+
 	}
 	return job
 }
@@ -507,7 +509,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 			if dep.Status != jobs.SUCCESS {
 				enqueue = false
 			}
-			if dep.Status == jobs.CANCELLED || dep.Status == jobs.FAILED {
+			if dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
 				cancel = true
 				if cancelReason == "" {
 					cancelReason = fmt.Sprintf("Depends on %d", depid)
@@ -518,7 +520,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 			}
 		}
 		if cancel {
-			cancelReason = cancelReason + " failed/cancelled"
+			cancelReason = cancelReason + " failed/canceled"
 			cancelJobIds = append(cancelJobIds, jobId)
 			cancelReasons = append(cancelReasons, cancelReason)
 		} else if enqueue {
@@ -528,7 +530,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 	}
 	for i, jobId := range cancelJobIds {
 		sql2 := "UPDATE jobs SET status = ?, notes = ? WHERE id = ?"
-		_, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, cancelReasons[i], jobId)
+		_, err := conn.ExecContext(ctx, sql2, jobs.CANCELED, cancelReasons[i], jobId)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -650,7 +652,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 	defer db.close()
 
 	sql2 := "UPDATE jobs SET status = ?, end_time = ?, notes = ? WHERE id = ? AND status != ? AND status != ? AND status != ?"
-	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, support.GetNowUTCString(), reason, jobId, jobs.FAILED, jobs.SUCCESS, jobs.CANCELLED)
+	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELED, support.GetNowUTCString(), reason, jobId, jobs.FAILED, jobs.SUCCESS, jobs.CANCELED)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -658,7 +660,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 		childIds := []int{}
 		// Load job dependencies
 		sql2 := "SELECT job_id FROM job_deps, jobs WHERE job_deps.afterok_id = ? AND job_deps.job_id = jobs.id AND jobs.status != ?"
-		rows2, err2 := conn.QueryContext(ctx, sql2, jobId, jobs.CANCELLED)
+		rows2, err2 := conn.QueryContext(ctx, sql2, jobId, jobs.CANCELED)
 		if err2 != nil {
 			log.Fatal(err2)
 		}
@@ -771,7 +773,7 @@ func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string,
 
 	// MAYBE: remove job_runner records here if necessary... probably nice
 	//        to keep them around, but this is where you'd remove them. As
-	//        a bonus, cancelled jobs will also end up here, so you could
+	//        a bonus, canceled jobs will also end up here, so you could
 	//        remove the records here too...
 
 	sql2 := "UPDATE jobs SET status = ?, end_time = ?, return_code = ? WHERE id = ? and status = ?"

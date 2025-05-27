@@ -13,14 +13,14 @@ import (
 type StatusCode int
 
 const (
-	UNKNOWN   StatusCode = iota // just created
-	USERHOLD                    // waiting to be manually released
-	WAITING                     // waiting for a dependency to finish
-	QUEUED                      // ready to run, pending resources
-	RUNNING                     // job is currently running
-	CANCELLED                   // job was cancelled
-	SUCCESS                     // job finished successfully
-	FAILED                      // job finished unsuccessfully
+	UNKNOWN  StatusCode = iota // just created
+	USERHOLD                   // waiting to be manually released
+	WAITING                    // waiting for a dependency to finish
+	QUEUED                     // ready to run, pending resources
+	RUNNING                    // job is currently running
+	CANCELED                   // job was canceled
+	SUCCESS                    // job finished successfully
+	FAILED                     // job finished unsuccessfully
 )
 
 func (s StatusCode) String() string {
@@ -35,8 +35,8 @@ func (s StatusCode) String() string {
 		return "QUEUED"
 	case RUNNING:
 		return "RUNNING"
-	case CANCELLED:
-		return "CANCELLED"
+	case CANCELED:
+		return "CANCELED"
 	case SUCCESS:
 		return "SUCCESS"
 	case FAILED:

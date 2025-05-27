@@ -50,7 +50,7 @@ var queueCmd = &cobra.Command{
 		} else {
 			defer jobq.Close()
 			fmt.Printf("| %-6.6s ", "jobid")
-			fmt.Printf("| %-10.10s ", "status")
+			fmt.Printf("| %-8.8s ", "status")
 			fmt.Printf("| %-20.20s ", "job-name")
 			if val, _ := Config.GetBool("batchq", "multiuser", false); val {
 				fmt.Printf("| %-12.12s ", "username")
@@ -60,9 +60,9 @@ var queueCmd = &cobra.Command{
 			fmt.Printf("| %-11.11s ", "walltime")
 			fmt.Println("|")
 			if val, _ := Config.GetBool("batchq", "multiuser", false); val {
-				fmt.Println("|--------|------------|----------------------|--------------|-----|----------|-------------|")
+				fmt.Println("|--------|----------|----------------------|--------------|-----|----------|-------------|")
 			} else {
-				fmt.Println("|--------|------------|----------------------|-----|----------|-------------|")
+				fmt.Println("|--------|----------|----------------------|-----|----------|-------------|")
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -71,15 +71,15 @@ var queueCmd = &cobra.Command{
 			for _, job := range jobq.GetJobs(ctx, jobShowAll, true) {
 				// job.Print()
 				fmt.Printf("| %-6.d ", job.JobId)
-				fmt.Printf("| %-10.10s ", job.Status.String())
+				fmt.Printf("| %-8.8s ", job.Status.String())
 				fmt.Printf("| %-20.20s ", job.Name)
 				if val, _ := Config.GetBool("batchq", "multiuser", false); val {
 					fmt.Printf("| %-12.12s ", job.GetDetail("user", ""))
 				}
 				fmt.Printf("| %-3.3s ", job.GetDetail("procs", ""))
 				fmt.Printf("| %-8.8s ", jobs.PrintMemoryString(job.GetDetail("mem", "")))
-				if job.Status == jobs.FAILED || job.Status == jobs.CANCELLED || job.Status == jobs.SUCCESS {
-					if job.Status == jobs.CANCELLED {
+				if job.Status == jobs.FAILED || job.Status == jobs.CANCELED || job.Status == jobs.SUCCESS {
+					if job.Status == jobs.CANCELED {
 						fmt.Printf("| %-11.11s ", "")
 						fmt.Printf("| %-20.20s\n", job.Notes)
 					} else if job.Status == jobs.SUCCESS {

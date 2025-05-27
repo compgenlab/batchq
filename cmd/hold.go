@@ -146,9 +146,9 @@ var cancelCmd = &cobra.Command{
 								defer cancel()
 
 								if jobq.CancelJob(ctx, jobid, cancelReason) {
-									fmt.Printf("Job: %d cancelled\n", jobid)
+									fmt.Printf("Job: %d canceled\n", jobid)
 								} else {
-									fmt.Printf("Error cancelling job: %d\n", jobid)
+									fmt.Printf("Error canceling job: %d\n", jobid)
 								}
 							}
 						}
@@ -162,9 +162,9 @@ var cancelCmd = &cobra.Command{
 						defer cancel()
 
 						if jobq.CancelJob(ctx, jobid, cancelReason) {
-							fmt.Printf("Job: %d cancelled\n", jobid)
+							fmt.Printf("Job: %d canceled\n", jobid)
 						} else {
-							fmt.Printf("Error cancelling job: %d\n", jobid)
+							fmt.Printf("Error canceling job: %d\n", jobid)
 						}
 					}
 				}
@@ -176,7 +176,7 @@ var cancelCmd = &cobra.Command{
 var cancelReason string
 
 func init() {
-	cancelCmd.Flags().StringVar(&cancelReason, "reason", "Cancelled by user", "Reason for cancelling")
+	cancelCmd.Flags().StringVar(&cancelReason, "reason", "Canceled by user", "Reason for canceling")
 
 	rootCmd.AddCommand(holdCmd)
 	rootCmd.AddCommand(releaseCmd)
