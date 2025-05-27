@@ -51,7 +51,7 @@ jobs:
       - name: Install cross-compilers
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu gcc  musl musl-tools curl
+          sudo apt-get install -y gcc-aarch64-linux-gnu gcc musl musl-tools curl
 
       - name: Install musl cross compiler for aarch64
         run: |
