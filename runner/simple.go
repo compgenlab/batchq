@@ -191,12 +191,12 @@ func (r *simpleRunner) Start() bool {
 						curJob := r.curJobs[0]
 						r.curJobs = r.curJobs[1:]
 						r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
-						go func() {
-							ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-							defer cancel()
-							r.db.CancelJob(ctx, curJob.job.JobId, "Shutting down runner")
-							curJob.cmd.Cancel()
-						}()
+						// go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						r.db.CancelJob(ctx, curJob.job.JobId, "Shutting down runner")
+						cancel()
+						curJob.cmd.Cancel()
+						// }()
 					}
 					r.lock.Lock()
 					if r.interrupt != nil {
@@ -404,10 +404,17 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
 			pgid, _ := syscall.Getpgid(cmd.Process.Pid)
-			r.logf("Canceling job: %d [%d]\n", job.JobId, cmd.Process.Pid)
-			r.logf("Killing process group: %d\n", pgid)
+			r.logf("Canceling job: %d [%d]\n", job.JobId, pgid)
+			// the negative should kill all members of the pgid
 			syscall.Kill(-pgid, syscall.SIGKILL)
-			cmd.Process.Wait()
+			ps, err := cmd.Process.Wait()
+			if err != nil {
+				r.logf("Error killing process %d: %v\n", pgid, err)
+			} else if ps != nil {
+				r.logf("Killing process %d: %v\n", pgid, ps.String())
+			} else {
+				r.logf("Killing process %d: done\n", pgid)
+			}
 			// log.Println("Process killed")
 		} else {
 			r.logf("Canceling job: %d, but process already done\n", job.JobId)
