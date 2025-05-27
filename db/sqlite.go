@@ -202,8 +202,8 @@ func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.J
 			}
 		}
 
-		sql := "INSERT INTO jobs (status,name,submit_time) VALUES (?,?,?)"
-		res, err := tx.ExecContext(ctx, sql, newStatus, job.Name, support.GetNowUTCString())
+		sql := "INSERT INTO jobs (status,name,notes,submit_time) VALUES (?,?,?,?)"
+		res, err := tx.ExecContext(ctx, sql, newStatus, job.Name, "", support.GetNowUTCString())
 		if err != nil {
 			tx.Rollback()
 			log.Fatal(err)
@@ -217,7 +217,7 @@ func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.J
 				job.JobId = int(jobId)
 				job.Status = newStatus
 				if job.Name == "" {
-					job.Name = "job-%JOBID"
+					job.Name = "batchq-%JOBID"
 				}
 				if strings.Contains(job.Name, "%JOBID") {
 					job.Name = strings.Replace(job.Name, "%JOBID", fmt.Sprintf("%d", jobId), -1)
@@ -260,16 +260,16 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 	var args []any
 	if showAll {
 		if sortByStatus {
-			sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs ORDER BY status DESC, end_time, start_time, id"
+			sql = "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs ORDER BY status DESC, end_time, start_time, id"
 		} else {
-			sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs ORDER BY id"
+			sql = "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs ORDER BY id"
 		}
 		args = []any{}
 	} else {
 		if sortByStatus {
-			sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY status DESC, end_time, start_time, id"
+			sql = "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY status DESC, end_time, start_time, id"
 		} else {
-			sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY id"
+			sql = "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY id"
 		}
 		args = []any{jobs.RUNNING}
 	}
@@ -287,7 +287,7 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 		var startTime string
 		var endTime string
 
-		err := rows.Scan(&job.JobId, &job.Status, &job.Name, &submitTime, &startTime, &endTime, &job.ReturnCode)
+		err := rows.Scan(&job.JobId, &job.Status, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -535,7 +535,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 	conn := db.connect()
 	defer db.close()
 
-	sql := "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs WHERE id = ?"
+	sql := "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE id = ?"
 	rows, err := conn.QueryContext(ctx, sql, jobId)
 	if err != nil {
 		log.Fatal(err)
@@ -548,7 +548,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 		var startTime string
 		var endTime string
 
-		err := rows.Scan(&job.JobId, &job.Status, &job.Name, &submitTime, &startTime, &endTime, &job.ReturnCode)
+		err := rows.Scan(&job.JobId, &job.Status, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode)
 		if err != nil {
 			log.Fatal(err)
 		}

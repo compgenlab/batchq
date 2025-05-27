@@ -65,7 +65,6 @@ var submitCmd = &cobra.Command{
 		// these are the default values...
 		details["stdout"] = "./batchq-%JOBID.stdout"
 		details["stderr"] = "./batchq-%JOBID.stderr"
-		details["name"] = "batchq-%JOBID"
 		details["wd"] = "."
 
 		// get default/config values if not specified

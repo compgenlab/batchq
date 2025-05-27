@@ -126,6 +126,7 @@ func (job *JobDef) Print() {
 	fmt.Printf("jobid    : %d\n", job.JobId)
 	fmt.Printf("status   : %s\n", job.Status.String())
 	fmt.Printf("name     : %s\n", job.Name)
+	fmt.Printf("notes    : %s\n", job.Notes)
 	fmt.Printf("submit   : %v\n", job.SubmitTime)
 	fmt.Printf("start    : %v\n", job.StartTime)
 	fmt.Printf("end      : %v\n", job.EndTime)
@@ -138,11 +139,13 @@ func (job *JobDef) Print() {
 	for _, detail := range job.Details {
 		if detail.Key == "script" {
 			script = detail.Value
+		} else if detail.Key == "env" {
+			fmt.Printf("  -%-8s : %-60.60s...\n", detail.Key, strings.ReplaceAll(detail.Value, "\n-|-\n", ";"))
 		} else {
-			fmt.Printf("%-8s : %s\n", detail.Key, detail.Value)
+			fmt.Printf("  -%-8s : %s\n", detail.Key, detail.Value)
 		}
 	}
-	fmt.Printf("\n%s\n", script)
+	fmt.Printf("---\n%s\n", script)
 }
 
 // Return value in MB (trim M/MB/G/GB suffix, if ends in G or GB, multiply by 1000)
