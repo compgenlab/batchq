@@ -162,9 +162,11 @@ func (r *simpleRunner) Start() bool {
 					draining = true
 				} else {
 					r.logf("Currently running jobs:")
+					r.lock.Lock()
 					for _, curJob := range r.curJobs {
 						r.logf("  Job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
 					}
+					r.lock.Unlock()
 					lastIntT = time.Now()
 					r.logf("Hit Ctrl+C within 10 seconds to start draining jobs.\n")
 				}
@@ -191,7 +193,7 @@ func (r *simpleRunner) Start() bool {
 						go func() {
 							ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 							defer cancel()
-							r.db.CancelJob(ctx, curJob.job.JobId)
+							r.db.CancelJob(ctx, curJob.job.JobId, "Shutting down runner")
 							curJob.cmd.Cancel()
 						}()
 					}
@@ -202,7 +204,6 @@ func (r *simpleRunner) Start() bool {
 					r.lock.Unlock()
 				} else {
 					r.logf("Exiting... cleanup running jobs manually!!!\n")
-
 					os.Exit(1)
 				}
 			}
@@ -240,6 +241,7 @@ func (r *simpleRunner) Start() bool {
 						duration := time.Since(curJob.startTime)
 						if duration.Seconds() > float64(jobTime) {
 							r.logf("Job: %d exceeded wall-time (%s sec limit, %.2f sec elapsed)", curJob.job.JobId, val, duration.Seconds())
+							r.db.CancelJob(ctx, job.JobId, "exceeded wall-time")
 							curJob.cmd.Cancel()
 							continue
 						}

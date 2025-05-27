@@ -139,7 +139,7 @@ var cancelCmd = &cobra.Command{
 							fmt.Printf("Bad job-id: %s\n", spl[1])
 						} else {
 							for jobid := jobid1; jobid <= jobid2; jobid++ {
-								if jobq.CancelJob(ctx, jobid) {
+								if jobq.CancelJob(ctx, jobid, cancelReason) {
 									fmt.Printf("Job: %d cancelled\n", jobid)
 								} else {
 									fmt.Printf("Error cancelling job: %d\n", jobid)
@@ -151,7 +151,7 @@ var cancelCmd = &cobra.Command{
 					if jobid, err := strconv.Atoi(arg); err != nil {
 						fmt.Printf("Bad job-id: %s\n", arg)
 					} else {
-						if jobq.CancelJob(ctx, jobid) {
+						if jobq.CancelJob(ctx, jobid, cancelReason) {
 							fmt.Printf("Job: %d cancelled\n", jobid)
 						} else {
 							fmt.Printf("Error cancelling job: %d\n", jobid)
@@ -163,7 +163,11 @@ var cancelCmd = &cobra.Command{
 	},
 }
 
+var cancelReason string
+
 func init() {
+	cancelCmd.Flags().StringVar(&cancelReason, "reason", "Cancelled by user", "Reason for cancelling")
+
 	rootCmd.AddCommand(holdCmd)
 	rootCmd.AddCommand(releaseCmd)
 	rootCmd.AddCommand(cancelCmd)

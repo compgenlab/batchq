@@ -73,6 +73,7 @@ func initSqlite3(fname string, force bool, startingJobId int) error {
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		status INT DEFAULT 0 NOT NULL,
 		name TEXT,
+		notes TEXT,
 		submit_time TEXT DEFAULT "",
 		start_time TEXT DEFAULT "",
 		end_time TEXT DEFAULT "",
@@ -251,17 +252,25 @@ func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.J
 	return job
 }
 
-func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool) []jobs.JobDef {
+func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus bool) []jobs.JobDef {
 	conn := db.connect()
 	defer db.close()
 
 	var sql string
 	var args []any
 	if showAll {
-		sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs ORDER BY submit_time"
+		if sortByStatus {
+			sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs ORDER BY status DESC, id"
+		} else {
+			sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs ORDER BY id"
+		}
 		args = []any{}
 	} else {
-		sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY submit_time"
+		if sortByStatus {
+			sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY status DESC, id"
+		} else {
+			sql = "SELECT id,status,name,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY id"
+		}
 		args = []any{jobs.RUNNING}
 	}
 
@@ -339,6 +348,26 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool) []jobs.JobDef
 		}
 
 		job.Details = details
+
+		if job.Status == jobs.RUNNING {
+			sql4 := "SELECT key, value FROM job_running_details WHERE job_id = ?"
+			rows4, err4 := conn.QueryContext(ctx, sql4, job.JobId)
+			if err4 != nil {
+				log.Fatal(err4)
+			}
+			defer rows4.Close()
+			var runningDetails []jobs.JobRunningDetail
+
+			for rows4.Next() {
+				var key string
+				var val string
+				rows4.Scan(&key, &val)
+				runningDetails = append(runningDetails, jobs.JobRunningDetail{Key: key, Value: val})
+			}
+
+			job.RunningDetails = runningDetails
+
+		}
 
 		retjobs = append(retjobs, job)
 	}
@@ -436,6 +465,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 	var possibleJobIds []int
 	var queueJobIds []int
 	var cancelJobIds []int
+	var cancelReasons []string
 	if rows, err := conn.QueryContext(ctx, sql, jobs.UNKNOWN, jobs.WAITING); err != nil {
 		log.Fatal(err)
 	} else {
@@ -458,6 +488,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 		job := db.GetJob(ctx, jobId)
 		enqueue := true
 		cancel := false
+		cancelReason := ""
 		for _, depid := range job.AfterOk {
 			dep := db.GetJob(ctx, depid)
 			if dep.Status != jobs.SUCCESS {
@@ -465,19 +496,26 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 			}
 			if dep.Status == jobs.CANCELLED || dep.Status == jobs.FAILED {
 				cancel = true
+				if cancelReason == "" {
+					cancelReason = fmt.Sprintf("Depends on %d", depid)
+				} else {
+					cancelReason = fmt.Sprintf("%s, %d", cancelReason, depid)
+				}
 				enqueue = false
 			}
 		}
 		if cancel {
+			cancelReason = cancelReason + " failed/cancelled"
 			cancelJobIds = append(cancelJobIds, jobId)
+			cancelReasons = append(cancelReasons, cancelReason)
 		} else if enqueue {
 			// fmt.Printf("moving to queue: %d\n", jobId)
 			queueJobIds = append(queueJobIds, jobId)
 		}
 	}
-	for _, jobId := range cancelJobIds {
-		sql2 := "UPDATE jobs SET status = ? WHERE id = ?"
-		_, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, jobId)
+	for i, jobId := range cancelJobIds {
+		sql2 := "UPDATE jobs SET status = ?, notes = ? WHERE id = ?"
+		_, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, cancelReasons[i], jobId)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -551,9 +589,9 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 		}
 
 		job.AfterOk = deps
-		// Load job dependencies (we are the child, looking for parents)
+
+		// Load job details (procs, mem, env, etc...)
 		sql3 := "SELECT key, value FROM job_details WHERE job_id = ?"
-		// TODO: confirm afterok_id exists
 		rows3, err3 := conn.QueryContext(ctx, sql3, job.JobId)
 		if err3 != nil {
 			log.Fatal(err3)
@@ -570,24 +608,44 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 
 		job.Details = details
 
+		if job.Status == jobs.RUNNING {
+			sql4 := "SELECT key, value FROM job_running_details WHERE job_id = ?"
+			rows4, err4 := conn.QueryContext(ctx, sql4, job.JobId)
+			if err4 != nil {
+				log.Fatal(err4)
+			}
+			defer rows4.Close()
+			var runningDetails []jobs.JobRunningDetail
+
+			for rows4.Next() {
+				var key string
+				var val string
+				rows4.Scan(&key, &val)
+				runningDetails = append(runningDetails, jobs.JobRunningDetail{Key: key, Value: val})
+			}
+
+			job.RunningDetails = runningDetails
+
+		}
+
 		return &job
 	}
 
 	return nil
 }
-func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int) bool {
+func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string) bool {
 	conn := db.connect()
 	defer db.close()
 
-	sql2 := "UPDATE jobs SET status = ?, end_time = ? WHERE id = ? AND status != ? AND status != ?"
-	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, support.GetNowTS(), jobId, jobs.FAILED, jobs.SUCCESS)
+	sql2 := "UPDATE jobs SET status = ?, end_time = ?, notes = ? WHERE id = ? AND status != ? AND status != ? AND status != ?"
+	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, support.GetNowTS(), reason, jobId, jobs.FAILED, jobs.SUCCESS, jobs.CANCELLED)
 	if err != nil {
 		log.Fatal(err)
 	}
 	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
 		childIds := []int{}
 		// Load job dependencies
-		sql2 := "SELECT job_id FROM job_deps, jobs WHERE afterok_id = ? AND job_deps.job_id = jobs.id AND jobs.status != ?"
+		sql2 := "SELECT job_id FROM job_deps, jobs WHERE job_deps.afterok_id = ? AND job_deps.job_id = jobs.id AND jobs.status != ?"
 		rows2, err2 := conn.QueryContext(ctx, sql2, jobId, jobs.CANCELLED)
 		if err2 != nil {
 			log.Fatal(err2)
@@ -602,7 +660,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int) bool {
 
 		for _, cid := range childIds {
 			// recursively delete
-			if !db.CancelJob(ctx, cid) {
+			if !db.CancelJob(ctx, cid, reason) {
 				return false
 			}
 		}

@@ -47,18 +47,25 @@ func (s StatusCode) String() string {
 }
 
 type JobDef struct {
-	JobId      int
-	Status     StatusCode
-	Name       string
-	SubmitTime time.Time
-	StartTime  time.Time
-	EndTime    time.Time
-	ReturnCode int
-	AfterOk    []int
-	Details    []JobDefDetail
+	JobId          int
+	Status         StatusCode
+	Name           string
+	Notes          string
+	SubmitTime     time.Time
+	StartTime      time.Time
+	EndTime        time.Time
+	ReturnCode     int
+	AfterOk        []int
+	Details        []JobDefDetail
+	RunningDetails []JobRunningDetail
 }
 
 type JobDefDetail struct {
+	Key   string
+	Value string
+}
+
+type JobRunningDetail struct {
 	Key   string
 	Value string
 }
@@ -94,6 +101,14 @@ func (job *JobDef) AddDetail(key string, val string) *JobDef {
 		job.Details = append(job.Details, JobDefDetail{Key: key, Value: val})
 	}
 	return job
+}
+func (job *JobDef) GetRunningDetail(key string, defval string) string {
+	for _, detail := range job.RunningDetails {
+		if detail.Key == key {
+			return detail.Value
+		}
+	}
+	return defval
 }
 
 func (job *JobDef) AddAfterOk(depId int) *JobDef {
@@ -188,6 +203,7 @@ func ParseWalltimeString(val string) int {
 	minutes := 0
 	seconds := -1
 
+	// DD-HH:MM:SS
 	if strings.Contains(val, "-") {
 		spl := strings.SplitN(val, "-", 2)
 		if num, err := strconv.Atoi(spl[0]); err != nil {
@@ -198,45 +214,33 @@ func ParseWalltimeString(val string) int {
 			val = spl[1]
 		}
 	}
+
+	// HH:MM:SS
 	if strings.Contains(val, ":") {
 		spl := strings.Split(val, ":")
-		if len(spl) == 3 {
-			// HH:MM:SS
-			if num, err := strconv.Atoi(spl[0]); err != nil {
+
+		if len(spl) > 2 && spl[len(spl)-3] != "" {
+			if num, err := strconv.Atoi(spl[len(spl)-3]); err != nil {
 				return -1
 			} else {
 				hours = num
 			}
-			if num, err := strconv.Atoi(spl[1]); err != nil {
+		}
+		if len(spl) > 1 && spl[len(spl)-2] != "" {
+			if num, err := strconv.Atoi(spl[len(spl)-2]); err != nil {
 				return -1
 			} else {
 				minutes = num
 			}
-			if num, err := strconv.Atoi(spl[2]); err != nil {
-				return -1
-			} else {
-				seconds = num
-			}
-		} else if len(spl) == 2 {
-			// MM:SS
-			if num, err := strconv.Atoi(spl[1]); err != nil {
-				return -1
-			} else {
-				minutes = num
-			}
-			if num, err := strconv.Atoi(spl[2]); err != nil {
-				return -1
-			} else {
-				seconds = num
-			}
-		} else if len(spl) == 1 {
-			// SS
-			if num, err := strconv.Atoi(spl[2]); err != nil {
+		}
+		if spl[len(spl)-1] != "" {
+			if num, err := strconv.Atoi(spl[len(spl)-1]); err != nil {
 				return -1
 			} else {
 				seconds = num
 			}
 		}
+
 	} else {
 		// Treat everything else as the number of seconds...
 		if num, err := strconv.Atoi(val); err != nil {
@@ -260,23 +264,28 @@ func PrintWalltime(secs int) string {
 	hours := 0
 	days := 0
 
-	if secs > 60 {
+	if secs >= 60 {
 		mins = secs / 60
 		secs = secs - mins*60
 	}
-	if mins > 60 {
+	if mins >= 60 {
 		hours = mins / 60
 		mins = mins - hours*60
 	}
-	if hours > 24 {
+	if hours >= 24 {
 		days = hours / 24
 		hours = hours - days*24
 	}
 
 	if days > 0 {
-		return fmt.Sprintf("%d-%02d:%02d:%02d", days, hours, mins, secs)
+		return fmt.Sprintf("%dd%dh%dm%ds", days, hours, mins, secs)
+	} else if hours > 0 {
+		return fmt.Sprintf("%dh%dm%ds", hours, mins, secs)
+	} else if mins > 0 {
+		return fmt.Sprintf("%dm%ds", mins, secs)
+	} else {
+		return fmt.Sprintf("%ds", secs)
 	}
-	return fmt.Sprintf("%02d:%02d:%02d", hours, mins, secs)
 }
 
 // write walltime as a string (input is sec as string)
