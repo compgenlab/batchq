@@ -110,12 +110,13 @@ func (r *simpleRunner) SetCgroupV1(useCgroupV1 bool) *simpleRunner {
 }
 
 func (r *simpleRunner) logf(msg string, v ...any) {
-	if msg != r.lastMsg {
+	out := fmt.Sprintf(msg, v...)
+	if out != r.lastMsg {
 		r.logLock.Lock()
-		if msg != "" {
-			log.Printf(msg, v...)
+		if out != "" {
+			log.Print(out)
 		}
-		r.lastMsg = msg
+		r.lastMsg = out
 		r.logLock.Unlock()
 	}
 }
@@ -302,10 +303,11 @@ func (r *simpleRunner) Start() bool {
 				}
 			}
 		}
-		// do we have more jobs to run? should we keep waiting to
-		// run more jobs?
 
-		if keepRunning {
+		// do we have more jobs to run? should we keep waiting to
+		// run more jobs? if we are draining, let's wait to see if the jobs finish...
+
+		if keepRunning || len(r.curJobs) > 0 {
 			ctx, cancel := context.WithCancel(context.Background())
 			r.lock.Lock()
 			r.interrupt = cancel

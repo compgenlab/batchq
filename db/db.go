@@ -11,7 +11,7 @@ type BatchDB interface {
 	SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.JobDef
 	FetchNext(ctx context.Context, freeProc int, freeMemMB int, freeTimeSec int) (*jobs.JobDef, bool)
 	GetJob(ctx context.Context, jobId int) *jobs.JobDef
-	GetJobs(ctx context.Context, showAll bool, sortByStatus bool) []jobs.JobDef
+	GetJobs(ctx context.Context, showAll bool, sortByStatus bool) []*jobs.JobDef
 	CancelJob(ctx context.Context, jobId int, reason string) bool
 	StartJob(ctx context.Context, jobId int, jobRunner string, details map[string]string) bool // was the starting successful?
 	EndJob(ctx context.Context, jobId int, jobRunner string, returnCode int) bool

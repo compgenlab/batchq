@@ -155,7 +155,9 @@ func (db *SqliteBatchQ) connect() *sql.DB {
 	if err != nil {
 		log.Fatal(err)
 	}
-	// conn.SetMaxOpenConns(1)
+
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
 	db.dbConn = conn
 	db.connectCount = 1
 	// fmt.Printf("connect new (%d):\n", db.connectCount)
@@ -166,7 +168,7 @@ func (db *SqliteBatchQ) connect() *sql.DB {
 func (db *SqliteBatchQ) close() {
 	db.conLock.Lock()
 	db.connectCount--
-	if db.connectCount == 0 {
+	if db.connectCount <= 0 {
 		if db.dbConn != nil {
 			// fmt.Printf("disconnect (%d) closing:\n", db.connectCount)
 			db.dbConn.Close()
@@ -252,7 +254,7 @@ func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.J
 	return job
 }
 
-func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus bool) []jobs.JobDef {
+func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus bool) []*jobs.JobDef {
 	conn := db.connect()
 	defer db.close()
 
@@ -278,9 +280,9 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer rows.Close()
 
-	var retjobs []jobs.JobDef
+	var retjobs []*jobs.JobDef
+
 	for rows.Next() {
 		var job jobs.JobDef
 		var submitTime string
@@ -312,6 +314,11 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 			}
 		}
 
+		retjobs = append(retjobs, &job)
+	}
+	rows.Close()
+
+	for _, job := range retjobs {
 		// Load job dependencies (we are the child, looking for parents)
 		sql2 := "SELECT afterok_id FROM job_deps WHERE job_id = ? ORDER BY afterok_id"
 		// TODO: confirm afterok_id exists
@@ -319,7 +326,6 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 		if err2 != nil {
 			log.Fatal(err2)
 		}
-		defer rows2.Close()
 		var deps []int
 
 		for rows2.Next() {
@@ -327,6 +333,7 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 			rows2.Scan(&parentId)
 			deps = append(deps, parentId)
 		}
+		rows2.Close()
 
 		job.AfterOk = deps
 
@@ -337,7 +344,6 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 		if err3 != nil {
 			log.Fatal(err3)
 		}
-		defer rows3.Close()
 		var details []jobs.JobDefDetail
 
 		for rows3.Next() {
@@ -346,6 +352,7 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 			rows3.Scan(&key, &val)
 			details = append(details, jobs.JobDefDetail{Key: key, Value: val})
 		}
+		rows3.Close()
 
 		job.Details = details
 
@@ -355,7 +362,6 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 			if err4 != nil {
 				log.Fatal(err4)
 			}
-			defer rows4.Close()
 			var runningDetails []jobs.JobRunningDetail
 
 			for rows4.Next() {
@@ -364,12 +370,11 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 				rows4.Scan(&key, &val)
 				runningDetails = append(runningDetails, jobs.JobRunningDetail{Key: key, Value: val})
 			}
+			rows4.Close()
 
 			job.RunningDetails = runningDetails
 
 		}
-
-		retjobs = append(retjobs, job)
 	}
 
 	return retjobs
@@ -377,18 +382,22 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 
 func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB int, freeTimeSec int) (*jobs.JobDef, bool) {
 	// First, update all WAITING jobs to QUEUED if they have no outstanding dependencies
+	// fmt.Println("Updating queue...")
 	db.updateQueue(ctx)
+	// fmt.Println("done...")
 
 	// Next, look for a QUEUED job that first the proc/mem/time limits
+	// fmt.Println("getting connection...", db.connectCount)
 	conn := db.connect()
+	// fmt.Println("got connection...", db.connectCount)
 	defer db.close()
 
+	// fmt.Println("Getting jobs...")
 	sql := "SELECT id FROM jobs WHERE status = ?"
 	var queueJobIds []int
 	if rows, err := conn.QueryContext(ctx, sql, jobs.QUEUED); err != nil {
 		log.Fatal(err)
 	} else {
-		defer rows.Close()
 		for rows.Next() {
 			var jobId int
 
@@ -399,8 +408,12 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 			// fmt.Printf("found queued job: %d\n", jobId)
 			queueJobIds = append(queueJobIds, jobId)
 		}
+		rows.Close()
 	}
+	// fmt.Println(queueJobIds)
+
 	for _, jobId := range queueJobIds {
+		// fmt.Println("getting job: ", jobId)
 		job := db.GetJob(ctx, jobId)
 		passProc := true
 		passMem := true
@@ -469,7 +482,6 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 	if rows, err := conn.QueryContext(ctx, sql, jobs.UNKNOWN, jobs.WAITING); err != nil {
 		log.Fatal(err)
 	} else {
-		defer rows.Close()
 		for rows.Next() {
 			var jobId int
 
@@ -480,6 +492,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 			// fmt.Printf("found waiting/unknown job: %d\n", jobId)
 			possibleJobIds = append(possibleJobIds, jobId)
 		}
+		rows.Close()
 	}
 
 	// fmt.Printf("found waiting/unknown jobs: %v\n", possibleJobIds)
@@ -540,7 +553,6 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer rows.Close()
 
 	if rows.Next() {
 		var job jobs.JobDef
@@ -552,7 +564,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 		if err != nil {
 			log.Fatal(err)
 		}
-
+		rows.Close()
 		// We need to parse the stored timestamps...
 		if submitTime != "" {
 			job.SubmitTime, err = time.Parse("2006-01-02 15:04:05 MST", submitTime)
@@ -579,7 +591,6 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 		if err2 != nil {
 			log.Fatal(err2)
 		}
-		defer rows2.Close()
 		var deps []int
 
 		for rows2.Next() {
@@ -587,6 +598,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 			rows2.Scan(&parentId)
 			deps = append(deps, parentId)
 		}
+		rows2.Close()
 
 		job.AfterOk = deps
 
@@ -596,7 +608,6 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 		if err3 != nil {
 			log.Fatal(err3)
 		}
-		defer rows3.Close()
 		var details []jobs.JobDefDetail
 
 		for rows3.Next() {
@@ -605,6 +616,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 			rows3.Scan(&key, &val)
 			details = append(details, jobs.JobDefDetail{Key: key, Value: val})
 		}
+		rows3.Close()
 
 		job.Details = details
 
@@ -614,7 +626,6 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 			if err4 != nil {
 				log.Fatal(err4)
 			}
-			defer rows4.Close()
 			var runningDetails []jobs.JobRunningDetail
 
 			for rows4.Next() {
@@ -623,6 +634,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 				rows4.Scan(&key, &val)
 				runningDetails = append(runningDetails, jobs.JobRunningDetail{Key: key, Value: val})
 			}
+			rows4.Close()
 
 			job.RunningDetails = runningDetails
 
@@ -630,7 +642,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 
 		return &job
 	}
-
+	rows.Close()
 	return nil
 }
 func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string) bool {
@@ -650,13 +662,13 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 		if err2 != nil {
 			log.Fatal(err2)
 		}
-		defer rows2.Close()
 
 		for rows2.Next() {
 			var childId int
 			rows2.Scan(&childId)
 			childIds = append(childIds, childId)
 		}
+		rows2.Close()
 
 		for _, cid := range childIds {
 			// recursively delete
@@ -694,17 +706,18 @@ func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId int, jobRunner strin
 	if err1 != nil {
 		return false
 	}
-	defer rows1.Close()
 
 	for rows1.Next() {
 		var dbJobRunner string
 		rows1.Scan(&dbJobRunner)
 
 		if jobRunner != dbJobRunner {
+			rows1.Close()
 			// oops, we aren't the runner of record. bailout.
 			return false
 		}
 	}
+	rows1.Close()
 
 	if tx, err := conn.BeginTx(ctx, nil); err == nil {
 		sql2 := "UPDATE jobs SET status = ?, start_time = ? WHERE id = ?"
@@ -742,7 +755,6 @@ func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string,
 	if err1 != nil {
 		log.Fatal(err1)
 	}
-	defer rows1.Close()
 
 	for rows1.Next() {
 		var dbJobRunner string
@@ -751,9 +763,11 @@ func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string,
 		if jobRunner != dbJobRunner {
 			// oops, we aren't the runner of record. bailout.
 			fmt.Println("Attempted to end job from a different runner.")
+			rows1.Close()
 			return false
 		}
 	}
+	rows1.Close()
 
 	// MAYBE: remove job_runner records here if necessary... probably nice
 	//        to keep them around, but this is where you'd remove them. As
