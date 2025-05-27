@@ -87,7 +87,8 @@ var queueCmd = &cobra.Command{
 						fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
 					}
 				} else if job.Status == jobs.RUNNING {
-					elapsed := time.Since(job.StartTime)
+					elapsed := time.Now().UTC().Sub(job.StartTime)
+					//elapsed := time.Since(job.StartTime)
 					fmt.Printf("| %-11.11s ", jobs.PrintWalltime(int(elapsed.Seconds())))
 					fmt.Printf("| %-20.20s\n", fmt.Sprintf("pid:%s", job.GetRunningDetail("pid", "")))
 				} else {

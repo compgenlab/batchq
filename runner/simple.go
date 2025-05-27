@@ -238,7 +238,7 @@ func (r *simpleRunner) Start() bool {
 					if jobTime, err := strconv.Atoi(val); err != nil {
 						log.Fatal(err)
 					} else if jobTime > 0 {
-						duration := time.Since(curJob.startTime)
+						duration := time.Now().UTC().Sub(curJob.startTime)
 						if duration.Seconds() > float64(jobTime) {
 							r.logf("Job: %d exceeded wall-time (%s sec limit, %.2f sec elapsed)", curJob.job.JobId, val, duration.Seconds())
 							r.db.CancelJob(ctx, job.JobId, "exceeded wall-time")

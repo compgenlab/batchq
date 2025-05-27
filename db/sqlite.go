@@ -203,7 +203,7 @@ func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.J
 		}
 
 		sql := "INSERT INTO jobs (status,name,submit_time) VALUES (?,?,?)"
-		res, err := tx.ExecContext(ctx, sql, newStatus, job.Name, support.GetNowTS())
+		res, err := tx.ExecContext(ctx, sql, newStatus, job.Name, support.GetNowUTCString())
 		if err != nil {
 			tx.Rollback()
 			log.Fatal(err)
@@ -638,7 +638,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 	defer db.close()
 
 	sql2 := "UPDATE jobs SET status = ?, end_time = ?, notes = ? WHERE id = ? AND status != ? AND status != ? AND status != ?"
-	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, support.GetNowTS(), reason, jobId, jobs.FAILED, jobs.SUCCESS, jobs.CANCELLED)
+	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELLED, support.GetNowUTCString(), reason, jobId, jobs.FAILED, jobs.SUCCESS, jobs.CANCELLED)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -709,7 +709,7 @@ func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId int, jobRunner strin
 	if tx, err := conn.BeginTx(ctx, nil); err == nil {
 		sql2 := "UPDATE jobs SET status = ?, start_time = ? WHERE id = ?"
 
-		_, err2 := tx.ExecContext(ctx, sql2, jobs.RUNNING, support.GetNowTS(), jobId)
+		_, err2 := tx.ExecContext(ctx, sql2, jobs.RUNNING, support.GetNowUTCString(), jobId)
 		if err2 != nil {
 			tx.Rollback()
 			return false
@@ -767,7 +767,7 @@ func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string,
 		status = jobs.FAILED
 	}
 	// fmt.Printf("updating job final status: %d\n", status)
-	res, err := conn.ExecContext(ctx, sql2, status, support.GetNowTS(), returnCode, jobId, jobs.RUNNING)
+	res, err := conn.ExecContext(ctx, sql2, status, support.GetNowUTCString(), returnCode, jobId, jobs.RUNNING)
 	if err != nil {
 		log.Fatal(err)
 	}
