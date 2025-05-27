@@ -21,9 +21,6 @@ var holdCmd = &cobra.Command{
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		if jobq, err := db.OpenDB(dbpath); err != nil {
 			log.Fatalln(err)
 		} else {
@@ -38,6 +35,9 @@ var holdCmd = &cobra.Command{
 							fmt.Printf("Bad job-id: %s\n", spl[1])
 						} else {
 							for jobid := jobid1; jobid <= jobid2; jobid++ {
+								ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+								defer cancel()
+
 								if jobq.HoldJob(ctx, jobid) {
 									fmt.Printf("Job: %d held\n", jobid)
 								} else {
@@ -50,6 +50,9 @@ var holdCmd = &cobra.Command{
 					if jobid, err := strconv.Atoi(arg); err != nil {
 						fmt.Printf("Bad job-id: %s\n", arg)
 					} else {
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+
 						if jobq.HoldJob(ctx, jobid) {
 							fmt.Printf("Job: %d held\n", jobid)
 						} else {
@@ -71,9 +74,6 @@ var releaseCmd = &cobra.Command{
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		if jobq, err := db.OpenDB(dbpath); err != nil {
 			log.Fatalln(err)
 		} else {
@@ -88,6 +88,9 @@ var releaseCmd = &cobra.Command{
 							fmt.Printf("Bad job-id: %s\n", spl[1])
 						} else {
 							for jobid := jobid1; jobid <= jobid2; jobid++ {
+								ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+								defer cancel()
+
 								if jobq.ReleaseJob(ctx, jobid) {
 									fmt.Printf("Job: %d released\n", jobid)
 								} else {
@@ -100,6 +103,9 @@ var releaseCmd = &cobra.Command{
 					if jobid, err := strconv.Atoi(arg); err != nil {
 						fmt.Printf("Bad job-id: %s\n", arg)
 					} else {
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+
 						if jobq.ReleaseJob(ctx, jobid) {
 							fmt.Printf("Job: %d released\n", jobid)
 						} else {
@@ -121,10 +127,6 @@ var cancelCmd = &cobra.Command{
 			return
 		}
 
-		// this can propagate, so it can take a while...
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-		defer cancel()
-
 		if jobq, err := db.OpenDB(dbpath); err != nil {
 			log.Fatalln(err)
 		} else {
@@ -139,6 +141,10 @@ var cancelCmd = &cobra.Command{
 							fmt.Printf("Bad job-id: %s\n", spl[1])
 						} else {
 							for jobid := jobid1; jobid <= jobid2; jobid++ {
+								// this can propagate, so it can take a while...
+								ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+								defer cancel()
+
 								if jobq.CancelJob(ctx, jobid, cancelReason) {
 									fmt.Printf("Job: %d cancelled\n", jobid)
 								} else {
@@ -151,6 +157,10 @@ var cancelCmd = &cobra.Command{
 					if jobid, err := strconv.Atoi(arg); err != nil {
 						fmt.Printf("Bad job-id: %s\n", arg)
 					} else {
+						// this can propagate, so it can take a while...
+						ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+						defer cancel()
+
 						if jobq.CancelJob(ctx, jobid, cancelReason) {
 							fmt.Printf("Job: %d cancelled\n", jobid)
 						} else {

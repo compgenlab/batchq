@@ -22,9 +22,6 @@ var submitCmd = &cobra.Command{
 	Short: "Submit a new job",
 
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		var scriptSrc string
 
 		if len(args) > 0 {
@@ -357,6 +354,9 @@ var submitCmd = &cobra.Command{
 				if depid, err := strconv.Atoi(val); err != nil {
 					log.Fatal(err)
 				} else {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					defer cancel()
+
 					dep := jobq.GetJob(ctx, depid)
 					if dep == nil || dep.Status == jobs.CANCELLED || dep.Status == jobs.FAILED {
 						// bad dependency
@@ -372,6 +372,8 @@ var submitCmd = &cobra.Command{
 			return
 		}
 
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		job = jobq.SubmitJob(ctx, job)
 		fmt.Printf("%d\n", job.JobId)
 

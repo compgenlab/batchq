@@ -45,9 +45,6 @@ var queueCmd = &cobra.Command{
 	Use:   "queue",
 	Short: "Show the job queue",
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		if jobq, err := db.OpenDB(dbpath); err != nil {
 			log.Fatalln(err)
 		} else {
@@ -67,6 +64,9 @@ var queueCmd = &cobra.Command{
 			} else {
 				fmt.Println("|--------|------------|----------------------|-----|----------|-------------|")
 			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
 
 			for _, job := range jobq.GetJobs(ctx, jobShowAll, true) {
 				// job.Print()
@@ -110,14 +110,14 @@ var statusCmd = &cobra.Command{
 	Use:   "status {job1 job2...}",
 	Short: "Status for a job",
 	Run: func(cmd *cobra.Command, args []string) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
 		if jobq, err := db.OpenDB(dbpath); err != nil {
 			log.Fatalln(err)
 		} else {
 			defer jobq.Close()
 			if len(args) == 0 {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
 				for _, job := range jobq.GetJobs(ctx, jobShowAll, false) {
 					fmt.Printf("%d %s\n", job.JobId, job.Status.String())
 				}
@@ -127,6 +127,9 @@ var statusCmd = &cobra.Command{
 						if jobid, err := strconv.Atoi(spl); err != nil {
 							log.Fatal(err)
 						} else {
+							ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+							defer cancel()
+
 							if job := jobq.GetJob(ctx, jobid); job != nil {
 								fmt.Printf("%d %s\n", job.JobId, job.Status.String())
 							}
