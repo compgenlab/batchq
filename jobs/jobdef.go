@@ -277,15 +277,20 @@ func PrintWalltime(secs int) string {
 		hours = hours - days*24
 	}
 
+	ret := ""
 	if days > 0 {
-		return fmt.Sprintf("%dd%dh%dm%ds", days, hours, mins, secs)
-	} else if hours > 0 {
-		return fmt.Sprintf("%dh%dm%ds", hours, mins, secs)
-	} else if mins > 0 {
-		return fmt.Sprintf("%dm%ds", mins, secs)
-	} else {
-		return fmt.Sprintf("%ds", secs)
+		ret += fmt.Sprintf("%dd", days)
 	}
+	if hours > 0 {
+		ret += fmt.Sprintf("%dh", hours)
+	}
+	if mins > 0 {
+		ret += fmt.Sprintf("%dm", mins)
+	}
+	if secs > 0 {
+		ret += fmt.Sprintf("%ds", secs)
+	}
+	return ret
 }
 
 // write walltime as a string (input is sec as string)
