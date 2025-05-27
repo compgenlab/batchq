@@ -82,7 +82,7 @@ func ExpandPathAbs(path string) (string, error) {
 }
 
 func GetNowUTCString() string {
-	return time.Now().Format("2006-01-02 15:04:05 UTC")
+	return time.Now().UTC().Format("2006-01-02 15:04:05 MST")
 }
 
 func MustWriteFile(path, content string) {

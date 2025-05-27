@@ -85,6 +85,8 @@ var queueCmd = &cobra.Command{
 						fmt.Printf("| %-20.20s\n", job.Notes)
 					} else if job.Status == jobs.FAILED {
 						fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
+					} else {
+						fmt.Println("|")
 					}
 				} else if job.Status == jobs.RUNNING {
 					elapsed := time.Now().UTC().Sub(job.StartTime)
