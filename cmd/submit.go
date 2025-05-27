@@ -354,7 +354,7 @@ var submitCmd = &cobra.Command{
 				if depid, err := strconv.Atoi(val); err != nil {
 					log.Fatal(err)
 				} else {
-					ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 					defer cancel()
 
 					dep := jobq.GetJob(ctx, depid)
@@ -372,7 +372,7 @@ var submitCmd = &cobra.Command{
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		job = jobq.SubmitJob(ctx, job)
 		fmt.Printf("%d\n", job.JobId)
