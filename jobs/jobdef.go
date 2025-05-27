@@ -140,10 +140,13 @@ func (job *JobDef) Print() {
 		if detail.Key == "script" {
 			script = detail.Value
 		} else if detail.Key == "env" {
-			fmt.Printf("  -%-8s : %-60.60s...\n", detail.Key, strings.ReplaceAll(detail.Value, "\n-|-\n", ";"))
+			fmt.Printf(" -%-8s : %-60.60s...\n", detail.Key, strings.ReplaceAll(detail.Value, "\n-|-\n", ";"))
 		} else {
-			fmt.Printf("  -%-8s : %s\n", detail.Key, detail.Value)
+			fmt.Printf(" -%-8s : %s\n", detail.Key, detail.Value)
 		}
+	}
+	for _, detail := range job.RunningDetails {
+		fmt.Printf(" +%-8s : %s\n", detail.Key, detail.Value)
 	}
 	fmt.Printf("---\n%s\n", script)
 }
