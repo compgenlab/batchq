@@ -38,7 +38,7 @@ var submitCmd = &cobra.Command{
 					scriptSrc = fmt.Sprintf("#!/bin/sh\n%s\n", strings.Join(args, " "))
 				}
 			} else {
-				scriptSrc = fmt.Sprintf("#!/bin/sh\n%s\n", strings.Join(args[cmd.Flags().ArgsLenAtDash()+1:], " "))
+				scriptSrc = fmt.Sprintf("#!/bin/sh\n%s\n", strings.Join(args[cmd.Flags().ArgsLenAtDash():], " "))
 			}
 		} else {
 			fi, err := os.Stdin.Stat()
