@@ -81,7 +81,8 @@ jobs:
       - name: Install musl cross compiler for aarch64
         run: |
           mkdir -p /opt/musl-cross
-          curl -LO https://musl.cc/aarch64-linux-musl-cross.tgz
+          git clone https://github.com/mbreese/batchq-build.git
+          cat batchq-build/extern/aarch64-linux-musl-cross.tgz.1 batchq-build/extern/aarch64-linux-musl-cross.tgz.2 > aarch64-linux-musl-cross.tgz
           tar -xzf aarch64-linux-musl-cross.tgz -C /opt/musl-cross
           echo "/opt/musl-cross/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
 
