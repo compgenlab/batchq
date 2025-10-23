@@ -25,7 +25,7 @@ var submitCmd = &cobra.Command{
 		var scriptSrc string
 
 		if len(args) > 0 {
-			if args[0] != "--" {
+			if cmd.Flags().ArgsLenAtDash() == -1 {
 				if f, err := os.Open(args[0]); err == nil {
 					defer f.Close()
 					data, err := io.ReadAll(f)
@@ -38,7 +38,7 @@ var submitCmd = &cobra.Command{
 					scriptSrc = fmt.Sprintf("#!/bin/sh\n%s\n", strings.Join(args, " "))
 				}
 			} else {
-					scriptSrc = fmt.Sprintf("#!/bin/sh\n%s\n", strings.Join(args[1:], " "))
+				scriptSrc = fmt.Sprintf("#!/bin/sh\n%s\n", strings.Join(args[cmd.Flags().ArgsLenAtDash()+1:], " "))
 			}
 		} else {
 			fi, err := os.Stdin.Stat()
