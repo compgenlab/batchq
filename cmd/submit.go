@@ -25,16 +25,20 @@ var submitCmd = &cobra.Command{
 		var scriptSrc string
 
 		if len(args) > 0 {
-			if f, err := os.Open(args[0]); err == nil {
-				defer f.Close()
-				data, err := io.ReadAll(f)
-				if err != nil {
-					fmt.Println("Error:", err)
-					os.Exit(1)
+			if args[0] != "--" {
+				if f, err := os.Open(args[0]); err == nil {
+					defer f.Close()
+					data, err := io.ReadAll(f)
+					if err != nil {
+						fmt.Println("Error:", err)
+						os.Exit(1)
+					}
+					scriptSrc = string(data)
+				} else {
+					scriptSrc = fmt.Sprintf("#!/bin/sh\n%s\n", strings.Join(args, " "))
 				}
-				scriptSrc = string(data)
 			} else {
-				scriptSrc = fmt.Sprintf("#!/bin/sh\n%s\n", strings.Join(args, " "))
+					scriptSrc = fmt.Sprintf("#!/bin/sh\n%s\n", strings.Join(args[1:], " "))
 			}
 		} else {
 			fi, err := os.Stdin.Stat()
