@@ -78,25 +78,27 @@ var queueCmd = &cobra.Command{
 				}
 				fmt.Printf("| %-3.3s ", job.GetDetail("procs", ""))
 				fmt.Printf("| %-8.8s ", jobs.PrintMemoryString(job.GetDetail("mem", "")))
-				if job.Status == jobs.FAILED || job.Status == jobs.CANCELED || job.Status == jobs.SUCCESS {
-					if job.Status == jobs.CANCELED {
+				switch job.Status {
+				case jobs.FAILED, jobs.CANCELED, jobs.SUCCESS:
+					switch job.Status {
+					case jobs.CANCELED:
 						fmt.Printf("| %-11.11s ", "")
 						fmt.Printf("| %-20.20s\n", job.Notes)
-					} else if job.Status == jobs.SUCCESS {
+					case jobs.SUCCESS:
 						elapsed := job.EndTime.Sub(job.StartTime)
 						fmt.Printf("| %-11.11s ", jobs.PrintWalltime(int(elapsed.Seconds())))
 						fmt.Println("|")
-					} else if job.Status == jobs.FAILED {
+					case jobs.FAILED:
 						elapsed := job.EndTime.Sub(job.StartTime)
 						fmt.Printf("| %-11.11s ", jobs.PrintWalltime(int(elapsed.Seconds())))
 						fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
 					}
-				} else if job.Status == jobs.RUNNING {
+				case jobs.RUNNING:
 					elapsed := time.Now().UTC().Sub(job.StartTime)
 					//elapsed := time.Since(job.StartTime)
 					fmt.Printf("| %-11.11s ", jobs.PrintWalltime(int(elapsed.Seconds())))
 					fmt.Printf("| %-20.20s\n", fmt.Sprintf("pid:%s", job.GetRunningDetail("pid", "")))
-				} else {
+				default:
 					fmt.Printf("| %-11.11s ", jobs.PrintWalltimeString(job.GetDetail("walltime", "")))
 					if len(job.AfterOk) > 0 {
 						fmt.Printf("| %-20.20s\n", fmt.Sprintf("deps:%s", support.JoinInt(job.AfterOk, ",")))
