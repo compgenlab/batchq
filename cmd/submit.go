@@ -24,7 +24,7 @@ var submitCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		var scriptSrc string
 
-		if len(args) > 0 {
+		if len(args) > 0 && args[0] != "-" {
 			if cmd.Flags().ArgsLenAtDash() == -1 {
 				if f, err := os.Open(args[0]); err == nil {
 					defer f.Close()
