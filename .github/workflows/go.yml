@@ -37,8 +37,33 @@ jobs:
         with:
           name: batchq.macos_arm64
           path: bin/batchq.macos_arm64
+  build-linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
 
-  build-linux:
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.22'
+
+      - name: Install compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc musl musl-tools curl
+
+      - name: Build Linux amd64 (musl static)
+        run: |
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC=musl-gcc \
+          go build -ldflags='-extldflags "-static"' -o bin/batchq.linux_musl_amd64 main.go
+
+      - name: Upload linux_musl_amd64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: batchq.linux_musl_amd64
+          path: bin/batchq.linux_musl_amd64
+
+  build-linux-arm64:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -59,34 +84,6 @@ jobs:
           curl -LO https://musl.cc/aarch64-linux-musl-cross.tgz
           tar -xzf aarch64-linux-musl-cross.tgz -C /opt/musl-cross
           echo "/opt/musl-cross/aarch64-linux-musl-cross/bin" >> $GITHUB_PATH
-
-      # - name: Build Linux amd64
-      #   run: |
-      #     CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC=gcc go build -o bin/batchq.linux_amd64 main.go
-      # - name: Upload linux_amd64 binary
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: batchq.linux_amd64
-      #     path: bin/batchq.linux_amd64
-      # - name: Build Linux arm64
-      #   run: |
-      #     CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -o bin/batchq.linux_arm64 main.go
-      # - name: Upload linux_arm64 binary
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: batchq.linux_arm64
-      #     path: bin/batchq.linux_arm64
-
-      - name: Build Linux amd64 (musl static)
-        run: |
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 CC=musl-gcc \
-          go build -ldflags='-extldflags "-static"' -o bin/batchq.linux_musl_amd64 main.go
-
-      - name: Upload linux_musl_amd64 binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: batchq.linux_musl_amd64
-          path: bin/batchq.linux_musl_amd64
 
       - name: Build Linux arm64 (musl static)
         run: |
