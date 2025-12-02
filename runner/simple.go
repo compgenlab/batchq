@@ -30,6 +30,8 @@ type simpleRunner struct {
 	useCgroupV2    bool
 	useCgroupV1    bool
 	curJobs        []jobStatus
+	maxJobs        int
+	availJobs      int
 	availProcs     int
 	availMem       int
 	shellBin       string
@@ -65,7 +67,7 @@ criterion.
 */
 func NewSimpleRunner(jobq db.BatchDB) *simpleRunner {
 	id := uuid.New()
-	runner := simpleRunner{db: jobq, maxProcs: -1, maxMemoryMb: -1, maxWalltimeSec: -1, foreverMode: false, runnerId: id.String(), spoolDir: filepath.Join(iniconfig.GetBatchqHome(), "spool")}
+	runner := simpleRunner{db: jobq, maxProcs: -1, maxMemoryMb: -1, maxWalltimeSec: -1, maxJobs: -1, foreverMode: false, runnerId: id.String(), spoolDir: filepath.Join(iniconfig.GetBatchqHome(), "spool")}
 	return &runner
 }
 
@@ -79,6 +81,10 @@ func (r *simpleRunner) SetMaxMemMB(mem int) *simpleRunner {
 }
 func (r *simpleRunner) SetMaxWalltimeSec(walltime int) *simpleRunner {
 	r.maxWalltimeSec = walltime
+	return r
+}
+func (r *simpleRunner) SetMaxJobCount(maxJobs int) *simpleRunner {
+	r.maxJobs = maxJobs
 	return r
 }
 func (r *simpleRunner) SetForever(mode bool) *simpleRunner {
@@ -131,14 +137,15 @@ func (r *simpleRunner) Start() bool {
 	// If we have no resource restrictions, then we will only run
 	// one job at a time. That job can take up as many or few CPU/memory
 	// as it wants, but there can be only one.
-	maxJobs := 1
+	maxConcurrentJobs := 1
 	if r.maxProcs > 0 || r.maxMemoryMb > 0 {
 		// jobs to run will be based on available resources
-		maxJobs = -1
+		maxConcurrentJobs = -1
 	}
 
 	r.availProcs = r.maxProcs
 	r.availMem = r.maxMemoryMb
+	r.availJobs = r.maxJobs
 
 	keepRunning := true
 	ranAtLeastOneJob := false
@@ -174,10 +181,9 @@ func (r *simpleRunner) Start() bool {
 			}
 
 			if draining {
-
 				sigCount++
-
-				if sigCount == 1 {
+				switch sigCount {
+				case 1:
 					keepRunning = false
 					r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything.\n")
 					r.lock.Lock()
@@ -185,7 +191,7 @@ func (r *simpleRunner) Start() bool {
 						r.interrupt()
 					}
 					r.lock.Unlock()
-				} else if sigCount == 2 {
+				case 2:
 					r.logf("Killing all running jobs...\n")
 					for len(r.curJobs) > 0 {
 						curJob := r.curJobs[0]
@@ -203,7 +209,7 @@ func (r *simpleRunner) Start() bool {
 						r.interrupt()
 					}
 					r.lock.Unlock()
-				} else {
+				default:
 					r.logf("Exiting... cleanup running jobs manually!!!\n")
 					os.Exit(1)
 				}
@@ -261,8 +267,8 @@ func (r *simpleRunner) Start() bool {
 			// check to see if we have the resources to run a job
 			findJob := false
 			r.logf("Available resources (c:%d, m:%d)\n", r.availProcs, r.availMem)
-			if maxJobs > 0 {
-				if len(r.curJobs) < maxJobs {
+			if maxConcurrentJobs > 0 {
+				if len(r.curJobs) < maxConcurrentJobs {
 					findJob = true
 				}
 			} else {
@@ -275,6 +281,13 @@ func (r *simpleRunner) Start() bool {
 				}
 			}
 
+			if keepRunning && r.availJobs == 0 {
+				// No more jobs allowed
+				findJob = false
+				keepRunning = false
+				r.logf("Reached maximum job count (%d). Not starting new jobs.\n", r.maxJobs)
+			}
+
 			// we have the resources... let's find a job to run
 			if findJob {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -283,7 +296,19 @@ func (r *simpleRunner) Start() bool {
 				// we should be looking for a new job
 				// log.Printf("Looking for a job (%d, %d, %d)\n", r.availProcs, r.availMem, r.maxWalltimeSec)
 
-				if job, hasMore := r.db.FetchNext(ctx, r.availProcs, r.availMem, r.maxWalltimeSec); job != nil {
+				limits := []db.JobLimit{}
+				if r.availProcs > 0 {
+					limits = append(limits, db.JobLimitProc(r.availProcs))
+				}
+				if r.availMem > 0 {
+					limits = append(limits, db.JobLimitMemoryMB(r.availMem))
+				}
+				if r.maxWalltimeSec > 0 {
+					limits = append(limits, db.JobLimitTimeSec(r.maxWalltimeSec))
+				}
+
+				// if job, hasMore := r.db.FetchNext(ctx, r.availProcs, r.availMem, r.maxWalltimeSec); job != nil {
+				if job, hasMore := r.db.FetchNext(ctx, limits); job != nil {
 					r.logf("Processing job: %d\n", job.JobId)
 					r.lock.Lock()
 					if !r.startJob(job) {
@@ -292,6 +317,9 @@ func (r *simpleRunner) Start() bool {
 					}
 					r.lock.Unlock()
 					ranAtLeastOneJob = true
+					if r.availJobs > 0 {
+						r.availJobs--
+					}
 					continue
 				} else {
 					if len(r.curJobs) == 0 && !hasMore && !r.foreverMode {

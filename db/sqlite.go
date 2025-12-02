@@ -358,7 +358,7 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 
 		job.Details = details
 
-		if job.Status == jobs.RUNNING {
+		if job.Status == jobs.RUNNING || job.Status == jobs.PROXYQUEUED {
 			sql4 := "SELECT key, value FROM job_running_details WHERE job_id = ?"
 			rows4, err4 := conn.QueryContext(ctx, sql4, job.JobId)
 			if err4 != nil {
@@ -382,7 +382,8 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 	return retjobs
 }
 
-func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB int, freeTimeSec int) (*jobs.JobDef, bool) {
+// func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB int, freeTimeSec int) (*jobs.JobDef, bool) {
+func (db *SqliteBatchQ) FetchNext(ctx context.Context, limits []JobLimit) (*jobs.JobDef, bool) {
 	// First, update all WAITING jobs to QUEUED if they have no outstanding dependencies
 	// fmt.Println("Updating queue...")
 	db.updateQueue(ctx)
@@ -417,41 +418,41 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 	for _, jobId := range queueJobIds {
 		// fmt.Println("getting job: ", jobId)
 		job := db.GetJob(ctx, jobId)
-		passProc := true
-		passMem := true
-		passTime := true
+		pass := true
 
-		if freeProc > 0 {
-			if val := job.GetDetail("procs", ""); val != "" {
-				if jobProcs, err := strconv.Atoi(val); err != nil {
-					log.Fatal(err)
-				} else {
-					if jobProcs > freeProc {
-						passProc = false
+		for _, limit := range limits {
+			if limit.value == -1 {
+				continue
+			}
+			switch limit.limitType {
+			case JobLimitTypeMemory:
+				if val := job.GetDetail("mem", ""); val != "" {
+					if jobMem, err := strconv.Atoi(val); err != nil {
+						log.Fatal(err)
+					} else {
+						if jobMem > limit.value {
+							pass = false
+						}
 					}
 				}
-			}
-		}
-
-		if freeMemMB > 0 {
-			if val := job.GetDetail("mem", ""); val != "" {
-				if jobMem, err := strconv.Atoi(val); err != nil {
-					log.Fatal(err)
-				} else {
-					if jobMem > freeMemMB {
-						passMem = false
+			case JobLimitTypeProc:
+				if val := job.GetDetail("procs", ""); val != "" {
+					if jobProcs, err := strconv.Atoi(val); err != nil {
+						log.Fatal(err)
+					} else {
+						if jobProcs > limit.value {
+							pass = false
+						}
 					}
 				}
-			}
-		}
-
-		if freeTimeSec > 0 {
-			if val := job.GetDetail("walltime", ""); val != "" {
-				if jobTime, err := strconv.Atoi(val); err != nil {
-					log.Fatal(err)
-				} else {
-					if jobTime > freeTimeSec {
-						passTime = false
+			case JobLimitTypeTime:
+				if val := job.GetDetail("walltime", ""); val != "" {
+					if jobTime, err := strconv.Atoi(val); err != nil {
+						log.Fatal(err)
+					} else {
+						if jobTime > limit.value {
+							pass = false
+						}
 					}
 				}
 			}
@@ -464,12 +465,12 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB i
 		// 	job.GetDetail("walltime", ""),
 		// 	passProc, passMem, passTime)
 
-		if passProc && passMem && passTime {
+		if pass {
 			return job, true
 		}
 	}
 
-	return nil, false
+	return nil, len(queueJobIds) > 0
 }
 
 func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
@@ -506,7 +507,8 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 		cancelReason := ""
 		for _, depid := range job.AfterOk {
 			dep := db.GetJob(ctx, depid)
-			if dep.Status != jobs.SUCCESS {
+			// was dep successful or successfully submitted elsewhere?
+			if dep.Status != jobs.SUCCESS && dep.Status != jobs.PROXYQUEUED {
 				enqueue = false
 			}
 			if dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
@@ -622,7 +624,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 
 		job.Details = details
 
-		if job.Status == jobs.RUNNING {
+		if job.Status == jobs.RUNNING || job.Status == jobs.PROXYQUEUED {
 			sql4 := "SELECT key, value FROM job_running_details WHERE job_id = ?"
 			rows4, err4 := conn.QueryContext(ctx, sql4, job.JobId)
 			if err4 != nil {
@@ -656,6 +658,8 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// cancel any child jobs
 	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
 		childIds := []int{}
 		// Load job dependencies
@@ -682,6 +686,119 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 		return true
 	}
 	return false
+}
+func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, status jobs.StatusCode, startTime string, endTime string, returnCode int) bool {
+	conn := db.connect()
+	defer db.close()
+
+	sql2 := "UPDATE jobs SET status = ?, start_time = ?, end_time = ?, return_code = ? WHERE id = ? and status = ?"
+
+	// fmt.Printf("updating job final status: %d\n", status)
+	res, err := conn.ExecContext(ctx, sql2,
+		status,
+		startTime,
+		endTime,
+		returnCode,
+		jobId,
+		jobs.PROXYQUEUED)
+
+	if err != nil {
+		log.Fatal(err)
+		return false
+	}
+
+	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
+		// fmt.Printf("done\n")
+		// db.scanQueue(ctx, jobId, status == jobs.SUCCESS)
+		return true
+	}
+	// fmt.Printf("done??\n")
+	return false
+}
+
+func (db *SqliteBatchQ) ProxyQueueJob(ctx context.Context, jobId int, jobRunner string, runDetail map[string]string) bool {
+	conn := db.connect()
+
+	sql := "INSERT INTO job_running (job_id, job_runner) VALUES (?,?)"
+	_, err := conn.ExecContext(ctx, sql, jobId, jobRunner)
+	if err != nil {
+		db.close()
+		return false
+	}
+
+	db.close()
+
+	// The UNIQUE constraint on the row should mean we are the ones that inserted
+	// this row. But we will double check.
+	time.Sleep(time.Duration((50 + rand.Intn(100))) * time.Millisecond)
+
+	conn = db.connect()
+	defer db.close()
+
+	sql1 := "SELECT job_runner FROM job_running WHERE job_id = ?"
+	rows1, err1 := conn.QueryContext(ctx, sql1, jobId)
+	if err1 != nil {
+		return false
+	}
+
+	for rows1.Next() {
+		var dbJobRunner string
+		rows1.Scan(&dbJobRunner)
+
+		if jobRunner != dbJobRunner {
+			rows1.Close()
+			// oops, we aren't the runner of record. bailout.
+			return false
+		}
+	}
+	rows1.Close()
+
+	if tx, err := conn.BeginTx(ctx, nil); err == nil {
+		sql2 := "UPDATE jobs SET status = ? WHERE id = ?"
+
+		_, err2 := tx.ExecContext(ctx, sql2, jobs.PROXYQUEUED, jobId)
+		if err2 != nil {
+			tx.Rollback()
+			return false
+		}
+
+		for k, v := range runDetail {
+			sql3 := "INSERT INTO job_running_details (job_id, key, value) VALUES (?,?,?)"
+
+			_, err3 := tx.ExecContext(ctx, sql3, jobId, k, v)
+			if err3 != nil {
+				tx.Rollback()
+				return false
+			}
+		}
+		if err2 := tx.Commit(); err2 != nil {
+			tx.Rollback()
+			return false
+		}
+	}
+	return true
+}
+
+func (db *SqliteBatchQ) UpdateJobRunningDetails(ctx context.Context, jobId int, details map[string]string) bool {
+	conn := db.connect()
+	defer db.close()
+
+	if tx, err := conn.BeginTx(ctx, nil); err == nil {
+		for k, v := range details {
+			sql3 := "INSERT OR REPLACE INTO job_running_details (job_id, key, value) VALUES (?,?,?)"
+
+			_, err3 := tx.ExecContext(ctx, sql3, jobId, k, v)
+			if err3 != nil {
+				tx.Rollback()
+				return false
+			}
+		}
+		if err2 := tx.Commit(); err2 != nil {
+			tx.Rollback()
+			return false
+		}
+	}
+	return true
 }
 
 func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId int, jobRunner string, runDetail map[string]string) bool {
@@ -863,4 +980,115 @@ func (db *SqliteBatchQ) ReleaseJob(ctx context.Context, jobId int) bool {
 		return true
 	}
 	return false
+}
+
+func (db *SqliteBatchQ) GetProxyJobs(ctx context.Context) []*jobs.JobDef {
+	conn := db.connect()
+	defer db.close()
+
+	sql := "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status = ? ORDER BY id"
+	args := []any{jobs.PROXYQUEUED}
+
+	rows, err := conn.QueryContext(ctx, sql, args...)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var retjobs []*jobs.JobDef
+
+	for rows.Next() {
+		var job jobs.JobDef
+		var submitTime string
+		var startTime string
+		var endTime string
+
+		err := rows.Scan(&job.JobId, &job.Status, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		// We need to parse the stored timestamps...
+		if submitTime != "" {
+			job.SubmitTime, err = time.Parse("2006-01-02 15:04:05 MST", submitTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if startTime != "" {
+			job.StartTime, err = time.Parse("2006-01-02 15:04:05 MST", startTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if endTime != "" {
+			job.EndTime, err = time.Parse("2006-01-02 15:04:05 MST", endTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		retjobs = append(retjobs, &job)
+	}
+	rows.Close()
+
+	for _, job := range retjobs {
+		// Load job dependencies (we are the child, looking for parents)
+		sql2 := "SELECT afterok_id FROM job_deps WHERE job_id = ? ORDER BY afterok_id"
+		// TODO: confirm afterok_id exists
+		rows2, err2 := conn.QueryContext(ctx, sql2, job.JobId)
+		if err2 != nil {
+			log.Fatal(err2)
+		}
+		var deps []int
+
+		for rows2.Next() {
+			var parentId int
+			rows2.Scan(&parentId)
+			deps = append(deps, parentId)
+		}
+		rows2.Close()
+
+		job.AfterOk = deps
+
+		// Load job dependencies (we are the child, looking for parents)
+		sql3 := "SELECT key, value FROM job_details WHERE job_id = ?"
+		// TODO: confirm afterok_id exists
+		rows3, err3 := conn.QueryContext(ctx, sql3, job.JobId)
+		if err3 != nil {
+			log.Fatal(err3)
+		}
+		var details []jobs.JobDefDetail
+
+		for rows3.Next() {
+			var key string
+			var val string
+			rows3.Scan(&key, &val)
+			details = append(details, jobs.JobDefDetail{Key: key, Value: val})
+		}
+		rows3.Close()
+
+		job.Details = details
+
+		if job.Status == jobs.RUNNING || job.Status == jobs.PROXYQUEUED {
+			sql4 := "SELECT key, value FROM job_running_details WHERE job_id = ?"
+			rows4, err4 := conn.QueryContext(ctx, sql4, job.JobId)
+			if err4 != nil {
+				log.Fatal(err4)
+			}
+			var runningDetails []jobs.JobRunningDetail
+
+			for rows4.Next() {
+				var key string
+				var val string
+				rows4.Scan(&key, &val)
+				runningDetails = append(runningDetails, jobs.JobRunningDetail{Key: key, Value: val})
+			}
+			rows4.Close()
+
+			job.RunningDetails = runningDetails
+
+		}
+	}
+
+	return retjobs
 }

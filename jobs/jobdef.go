@@ -13,14 +13,31 @@ import (
 type StatusCode int
 
 const (
-	UNKNOWN  StatusCode = iota // just created
-	USERHOLD                   // waiting to be manually released
-	WAITING                    // waiting for a dependency to finish
-	QUEUED                     // ready to run, pending resources
-	RUNNING                    // job is currently running
-	CANCELED                   // job was canceled
-	SUCCESS                    // job finished successfully
-	FAILED                     // job finished unsuccessfully
+	// just created (should be changed shortly)
+	UNKNOWN StatusCode = iota
+
+	// waiting to be manually released
+	USERHOLD
+	// waiting for a dependency to finish
+	WAITING
+	// ready to run, pending resources
+	QUEUED
+
+	// submitted to a different queue (e.g. SLURM),
+	// all dependencies are handled there
+	// next step is CANCELED, SUCCESS, or FAILED
+	PROXYQUEUED
+
+	// job is currently running in a batchq runner
+	// next step is CANCELED, SUCCESS, or FAILED
+	RUNNING
+
+	// end state: job was canceled
+	CANCELED
+	// end state: job finished successfully
+	SUCCESS
+	// end state: job finished unsuccessfully
+	FAILED
 )
 
 func (s StatusCode) String() string {
@@ -37,6 +54,8 @@ func (s StatusCode) String() string {
 		return "RUNNING"
 	case CANCELED:
 		return "CANCELED"
+	case PROXYQUEUED:
+		return "PROXYQUEUED"
 	case SUCCESS:
 		return "SUCCESS"
 	case FAILED:
@@ -135,20 +154,42 @@ func (job *JobDef) Print() {
 		fmt.Printf("after-ok : %s\n", support.JoinInt(job.AfterOk, ","))
 	}
 
+	fmt.Printf("---[job details]---\n")
+
 	var script string
+	maxKeyLen := 0
 	for _, detail := range job.Details {
-		if detail.Key == "script" {
-			script = detail.Value
-		} else if detail.Key == "env" {
-			fmt.Printf(" -%-8s : %-60.60s...\n", detail.Key, strings.ReplaceAll(detail.Value, "\n-|-\n", ";"))
-		} else {
-			fmt.Printf(" -%-8s : %s\n", detail.Key, detail.Value)
+		if len(detail.Key) > maxKeyLen {
+			maxKeyLen = len(detail.Key)
 		}
 	}
-	for _, detail := range job.RunningDetails {
-		fmt.Printf(" +%-8s : %s\n", detail.Key, detail.Value)
+	if len(job.Details) > 1 {
+		// there must be at least "script", so
+		// only do this if there are other details
+		for _, detail := range job.Details {
+			switch detail.Key {
+			case "script":
+				script = detail.Value
+			case "env":
+				fmt.Printf("%-*s : %-60.60s...\n", maxKeyLen, detail.Key, strings.ReplaceAll(detail.Value, "\n-|-\n", ";"))
+			default:
+				fmt.Printf("%-*s : %s\n", maxKeyLen, detail.Key, detail.Value)
+			}
+		}
 	}
-	fmt.Printf("---\n%s\n", script)
+	if len(job.RunningDetails) > 0 {
+		fmt.Printf("---[job running details]---\n")
+		maxKeyLen = 0
+		for _, detail := range job.RunningDetails {
+			if len(detail.Key) > maxKeyLen {
+				maxKeyLen = len(detail.Key)
+			}
+		}
+		for _, detail := range job.RunningDetails {
+			fmt.Printf("%-*s : %s\n", maxKeyLen, detail.Key, detail.Value)
+		}
+	}
+	fmt.Printf("---[job script]---\n%s\n", script)
 }
 
 // Return value in MB (trim M/MB/G/GB suffix, if ends in G or GB, multiply by 1000)
@@ -265,7 +306,7 @@ func ParseWalltimeString(val string) int {
 }
 
 // write walltime as a string
-func PrintWalltime(secs int) string {
+func WalltimeToString(secs int) string {
 	mins := 0
 	hours := 0
 	days := 0
@@ -300,10 +341,10 @@ func PrintWalltime(secs int) string {
 }
 
 // write walltime as a string (input is sec as string)
-func PrintWalltimeString(secs string) string {
+func WalltimeStringToString(secs string) string {
 	if secs != "" {
 		if val, err := strconv.Atoi(secs); err == nil {
-			return PrintWalltime(val)
+			return WalltimeToString(val)
 		}
 	}
 	return ""
