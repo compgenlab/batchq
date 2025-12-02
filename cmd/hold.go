@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -163,6 +164,15 @@ var cancelCmd = &cobra.Command{
 
 						if jobq.CancelJob(ctx, jobid, cancelReason) {
 							fmt.Printf("Job: %d canceled\n", jobid)
+							if job := jobq.GetJob(ctx, jobid); job != nil {
+								if job.GetRunningDetail("slurm_job_id", "") != "" {
+									fmt.Printf("Canceling slurm job: %s\n", job.GetRunningDetail("slurm_job_id", ""))
+									cmd := exec.Command("scancel", job.GetRunningDetail("slurm_job_id", ""))
+									if err := cmd.Run(); err != nil {
+										fmt.Printf("Error canceling slurm job: %v\n", err)
+									}
+								}
+							}
 						} else {
 							fmt.Printf("Error canceling job: %d\n", jobid)
 						}
