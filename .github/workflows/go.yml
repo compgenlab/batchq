@@ -114,10 +114,10 @@ jobs:
     needs: [build-macos, build-linux-amd64, build-linux-arm64]
     runs-on: ubuntu-latest
     steps:
-      - name: Download linux_musl_amd4 artifact
+      - name: Download linux_musl_amd64 artifact
         uses: actions/download-artifact@v4
         with:
-          name: batchq.linux_musl_amd4
+          name: batchq.linux_musl_amd64
           path: ./artifacts/
       - name: Download linux_musl_arm64 artifact
         uses: actions/download-artifact@v4
