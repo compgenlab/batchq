@@ -30,8 +30,8 @@ var submitCmd = &cobra.Command{
 					defer f.Close()
 					data, err := io.ReadAll(f)
 					if err != nil {
-						fmt.Println("Error:", err)
-						os.Exit(1)
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						os.Exit(2)
 					}
 					scriptSrc = string(data)
 				} else {
@@ -49,8 +49,8 @@ var submitCmd = &cobra.Command{
 				// there is data waiting... so read it. (otherwise, stdin is a terminal and has no data)
 				data, err := io.ReadAll(os.Stdin)
 				if err != nil {
-					fmt.Println("Error:", err)
-					os.Exit(1)
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					os.Exit(3)
 				}
 				scriptSrc = string(data)
 			}
@@ -330,10 +330,10 @@ var submitCmd = &cobra.Command{
 		}
 		if verbose {
 			for k, v := range details {
-				fmt.Printf("%s: %s\n", k, v)
+				fmt.Fprintf(os.Stderr, "%s: %s\n", k, v)
 			}
-			fmt.Print("[script]\n")
-			fmt.Print(scriptSrc)
+			fmt.Fprint(os.Stderr, "[script]\n")
+			fmt.Fprint(os.Stderr, scriptSrc)
 		}
 
 		job := jobs.NewJobDef(jobName, scriptSrc)
@@ -365,7 +365,7 @@ var submitCmd = &cobra.Command{
 					dep := jobq.GetJob(ctx, depid)
 					if dep == nil || dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
 						// bad dependency
-						fmt.Printf("ERROR: Bad job dependency: %d\n", depid)
+						fmt.Fprintf(os.Stderr, "ERROR: Bad job dependency: %d\n", depid)
 						baddep = true
 					}
 					job.AddAfterOk(depid)
