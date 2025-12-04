@@ -24,6 +24,7 @@ type slurmRunner struct {
 	availJobs   int
 	account     string
 	username    string
+	partition   string
 }
 
 type SlurmJobState struct {
@@ -111,6 +112,10 @@ func (r *slurmRunner) SetSlurmAccount(account string) *slurmRunner {
 }
 func (r *slurmRunner) SetSlurmUsername(username string) *slurmRunner {
 	r.username = username
+	return r
+}
+func (r *slurmRunner) SetSlurmPartition(partition string) *slurmRunner {
+	r.partition = partition
 	return r
 }
 
@@ -244,6 +249,9 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *jobs.JobDef
 
 	if r.account != "" {
 		src += fmt.Sprintf("#SBATCH -A %s\n", r.account)
+	}
+	if r.partition != "" {
+		src += fmt.Sprintf("#SBATCH -p %s\n", r.partition)
 	}
 	if jobdef.Name != "" {
 		src += fmt.Sprintf("#SBATCH -J %s\n", jobdef.Name)

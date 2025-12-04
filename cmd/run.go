@@ -42,6 +42,11 @@ var runCmd = &cobra.Command{
 						slurmAcct = val
 					}
 				}
+				if slurmPartition == "" {
+					if val, ok := Config.Get("slurm_runner", "partition"); ok {
+						slurmPartition = val
+					}
+				}
 				if slurmUser == "" {
 					if val, ok := Config.Get("slurm_runner", "user"); ok {
 						slurmUser = val
@@ -68,7 +73,8 @@ var runCmd = &cobra.Command{
 					SetSlurmMaxUserJobs(slurmMaxJobs).
 					SetMaxJobCount(maxJobs).
 					SetSlurmUsername(slurmUser).
-					SetSlurmAccount(slurmAcct)
+					SetSlurmAccount(slurmAcct).
+					SetSlurmPartition(slurmPartition)
 
 			case "simple":
 				if maxProcs < 0 {
@@ -130,6 +136,7 @@ var useCgroupV1 bool
 var slurmRunner bool
 var slurmUser string
 var slurmAcct string
+var slurmPartition string
 var slurmMaxJobs int
 
 func init() {
@@ -141,7 +148,8 @@ func init() {
 	runCmd.Flags().BoolVar(&useCgroupV2, "use-cgroupv2", false, "Use cgroup v2 to control resources (requires root)")
 	runCmd.Flags().BoolVar(&useCgroupV1, "use-cgroupv1", false, "Use cgroup v1 to control resources (requires root)")
 	runCmd.Flags().BoolVar(&slurmRunner, "slurm", false, "Use the SLURM runner to proxy jobs to a SLURM scheduler")
-	runCmd.Flags().StringVar(&slurmAcct, "slurm-acct", "", "Use this SLURM account number")
+	runCmd.Flags().StringVar(&slurmAcct, "slurm-account", "", "Use this SLURM account number")
+	runCmd.Flags().StringVar(&slurmPartition, "slurm-partition", "", "Use this SLURM partition")
 	runCmd.Flags().IntVar(&slurmMaxJobs, "slurm-max-jobs", -1, "Max jobs allowed for this user account")
 	runCmd.Flags().StringVar(&slurmUser, "slurm-user", "", "SLURM user (used for calculating job-count)")
 
