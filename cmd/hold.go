@@ -146,10 +146,20 @@ var cancelCmd = &cobra.Command{
 								ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 								defer cancel()
 
-								if jobq.CancelJob(ctx, jobid, cancelReason) {
-									fmt.Printf("Job: %d canceled\n", jobid)
-								} else {
-									fmt.Printf("Error canceling job: %d\n", jobid)
+								if job := jobq.GetJob(ctx, jobid); job != nil {
+									if job.GetRunningDetail("slurm_job_id", "") != "" {
+										cmd := exec.Command("scancel", job.GetRunningDetail("slurm_job_id", ""))
+										if err := cmd.Run(); err != nil {
+											fmt.Printf("Error canceling slurm job: %v\n", err)
+										} else {
+											fmt.Printf("Canceled slurm job: %s\n", job.GetRunningDetail("slurm_job_id", ""))
+										}
+									}
+									if jobq.CancelJob(ctx, jobid, cancelReason) {
+										fmt.Printf("Job: %d canceled\n", jobid)
+									} else {
+										fmt.Printf("Error canceling job: %d\n", jobid)
+									}
 								}
 							}
 						}
@@ -171,11 +181,11 @@ var cancelCmd = &cobra.Command{
 									fmt.Printf("Canceled slurm job: %s\n", job.GetRunningDetail("slurm_job_id", ""))
 								}
 							}
-						}
-						if jobq.CancelJob(ctx, jobid, cancelReason) {
-							fmt.Printf("Job: %d canceled\n", jobid)
-						} else {
-							fmt.Printf("Error canceling job: %d\n", jobid)
+							if jobq.CancelJob(ctx, jobid, cancelReason) {
+								fmt.Printf("Job: %d canceled\n", jobid)
+							} else {
+								fmt.Printf("Error canceling job: %d\n", jobid)
+							}
 						}
 					}
 				}
