@@ -1,0 +1,47 @@
+#!/bin/bash
+#
+# Implements a locking mechanism around batchq to prevent concurrent executions
+# from interfering with each other. It waits up to 120 seconds to acquire the lock.
+# It is based on directory-based locking to ensure atomicity and uses the process ID
+# to identify the lock owner.
+#
+
+MAX_SECS=120
+
+BATCHQBIN=$HOME/.local/bin/batchq.linux_musl_amd64
+LOCK=$HOME/.batchq/lock
+
+START_TS="$(date +%s)"
+CURRENT_TS="$(date +%s)"
+
+SUCCESS=0
+
+let "ELAPSED=$CURRENT_TS-$START_TS"
+
+while [ $ELAPSED -lt $MAX_SECS ]; do
+    if [ -e $LOCK/pid ]; then
+        LOCKPID="$(cat $LOCK/pid)"
+        if [ "$LOCKPID" = "$$" ]; then
+            SUCCESS=1
+            break
+        else
+            random_ms=$(( RANDOM % 799 ))
+            let "random_ms=$random_ms+200"
+            sleep "0.$random_ms"
+            let "LOCKWAIT=$LOCKWAIT+1"
+        fi
+    else
+        mkdir $LOCK &>/dev/null && echo "$$" > $LOCK/pid
+    fi
+
+    CURRENT_TS="$(date +%s)"
+    let "ELAPSED=$CURRENT_TS-$START_TS"
+done
+
+if [ $SUCCESS -eq 1 ]; then
+    $BATCHQBIN $*
+    RET=$?
+    rm $LOCK/pid && rmdir $LOCK
+    exit $RET
+fi
+exit 1
