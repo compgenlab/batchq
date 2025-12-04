@@ -20,10 +20,12 @@ import (
 )
 
 type SqliteBatchQ struct {
-	fname        string
-	dbConn       *sql.DB
-	connectCount int
-	conLock      sync.Mutex
+	fname           string
+	dbConn          *sql.DB
+	connectCount    int
+	conLock         sync.Mutex
+	lastUpdate      *time.Time
+	updateFrequency time.Duration
 }
 
 func openSqlite3(fname string) *SqliteBatchQ {
@@ -34,7 +36,7 @@ func openSqlite3(fname string) *SqliteBatchQ {
 	// 	// InitDB(fname)
 	// }
 
-	db := SqliteBatchQ{fname: fname}
+	db := SqliteBatchQ{fname: fname, updateFrequency: 5 * time.Minute}
 	return &db
 }
 
@@ -154,7 +156,8 @@ func (db *SqliteBatchQ) connect() *sql.DB {
 		log.Fatal("Missing database. Please initialize it first!")
 	}
 
-	conn, err := sql.Open("sqlite3", fmt.Sprintf("%s?_busy_timeout=5000", db.fname))
+	conn, err := sql.Open("sqlite3", fmt.Sprintf("file://%s?_journal_mode=wal&_txlock=immediate&_busy_timeout=5000&_synchronous=full&_fk=true", db.fname))
+	//conn, err := sql.Open("sqlite3", fmt.Sprintf("%s?_busy_timeout=5000", db.fname))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -398,7 +401,7 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, limits []JobLimit) (*jobs
 	// fmt.Println("got connection...", db.connectCount)
 	defer db.close()
 
-	// fmt.Println("Getting jobs...")
+	fmt.Println("Getting jobs...")
 	sql := "SELECT id FROM jobs WHERE status = ?"
 	var queueJobIds []int
 	if rows, err := conn.QueryContext(ctx, sql, jobs.QUEUED); err != nil {
@@ -419,7 +422,7 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, limits []JobLimit) (*jobs
 	// fmt.Println(queueJobIds)
 
 	for _, jobId := range queueJobIds {
-		// fmt.Println("getting job: ", jobId)
+		// fmt.Println("Checking job requirements / limits for job: ", jobId)
 		job := db.GetJob(ctx, jobId)
 		pass := true
 
@@ -469,6 +472,7 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, limits []JobLimit) (*jobs
 		// 	passProc, passMem, passTime)
 
 		if pass {
+			// log.Printf("Returning job %d for execution\n", job.JobId)
 			return job, true
 		}
 	}
@@ -476,16 +480,35 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, limits []JobLimit) (*jobs
 	return nil, len(queueJobIds) > 0
 }
 
-func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
+func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
+	if len(parentJobId) == 0 && db.lastUpdate != nil {
+		now := time.Now().UTC()
+		if now.Sub(*db.lastUpdate) < db.updateFrequency {
+			return
+		}
+	}
+	now := time.Now().UTC()
+	db.lastUpdate = &now
+
 	conn := db.connect()
 	defer db.close()
 
-	sql := "SELECT id FROM jobs WHERE status = ? OR status = ?"
+	var sql string
+	var sqlArgs []any
+
+	if len(parentJobId) == 0 {
+		sql = "SELECT id FROM jobs WHERE status = ? OR status = ?"
+		sqlArgs = []any{jobs.WAITING, jobs.UNKNOWN}
+	} else {
+		sql = "SELECT id FROM jobs, job_deps WHERE jobs.id = job_deps.job_id AND (jobs.status = ? OR jobs.status = ?) AND job_deps.afterok_id = ?"
+		sqlArgs = []any{jobs.WAITING, jobs.UNKNOWN, parentJobId[0]}
+
+	}
 	var possibleJobIds []int
 	var queueJobIds []int
 	var cancelJobIds []int
 	var cancelReasons []string
-	if rows, err := conn.QueryContext(ctx, sql, jobs.UNKNOWN, jobs.WAITING); err != nil {
+	if rows, err := conn.QueryContext(ctx, sql, sqlArgs...); err != nil {
 		log.Fatal(err)
 	} else {
 		for rows.Next() {
@@ -501,13 +524,14 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 		rows.Close()
 	}
 
-	// fmt.Printf("found waiting/unknown jobs: %v\n", possibleJobIds)
+	fmt.Printf("found waiting/unknown jobs (n=%d)\n", len(possibleJobIds))
 
 	for _, jobId := range possibleJobIds {
 		job := db.GetJob(ctx, jobId)
 		enqueue := true
 		cancel := false
 		cancelReason := ""
+		fmt.Printf("  checking job %d dependencies (n=%d)\n", jobId, len(job.AfterOk))
 		for _, depid := range job.AfterOk {
 			dep := db.GetJob(ctx, depid)
 			// was dep successful or successfully submitted elsewhere?
@@ -533,6 +557,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 			queueJobIds = append(queueJobIds, jobId)
 		}
 	}
+	// fmt.Printf("updating waiting => canceled jobs\n")
 	for i, jobId := range cancelJobIds {
 		sql2 := "UPDATE jobs SET status = ?, notes = ? WHERE id = ?"
 		_, err := conn.ExecContext(ctx, sql2, jobs.CANCELED, cancelReasons[i], jobId)
@@ -541,6 +566,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context) {
 		}
 		// fmt.Printf("moved to queue: %d\n", jobId)
 	}
+	// fmt.Printf("updating waiting => queued jobs\n")
 	for _, jobId := range queueJobIds {
 		sql2 := "UPDATE jobs SET status = ? WHERE id = ?"
 		_, err := conn.ExecContext(ctx, sql2, jobs.QUEUED, jobId)
@@ -696,12 +722,14 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 				return false
 			}
 		}
-
+		// force an update of the queue on next call
+		// db.lastUpdate = nil
+		db.updateQueue(ctx, jobId)
 		return true
 	}
 	return false
 }
-func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, status jobs.StatusCode, startTime string, endTime string, returnCode int) bool {
+func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, newStatus jobs.StatusCode, startTime string, endTime string, returnCode int) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -709,7 +737,7 @@ func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, status jobs.
 
 	// fmt.Printf("updating job final status: %d\n", status)
 	res, err := conn.ExecContext(ctx, sql2,
-		status,
+		newStatus,
 		startTime,
 		endTime,
 		returnCode,
@@ -724,6 +752,9 @@ func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, status jobs.
 	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
 		// fmt.Printf("done\n")
 		// db.scanQueue(ctx, jobId, status == jobs.SUCCESS)
+
+		// force an update of the queue on next call
+		db.lastUpdate = nil
 		return true
 	}
 	// fmt.Printf("done??\n")
@@ -790,6 +821,9 @@ func (db *SqliteBatchQ) ProxyQueueJob(ctx context.Context, jobId int, jobRunner 
 			return false
 		}
 	}
+
+	// TODO: Update child jobs to QUEUED too?
+	db.updateQueue(ctx, jobId)
 	return true
 }
 
@@ -875,8 +909,8 @@ func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId int, jobRunner strin
 			return false
 		}
 	}
-	return true
 
+	return true
 }
 
 func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string, returnCode int) bool {
@@ -922,6 +956,10 @@ func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string,
 	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
 		// fmt.Printf("done\n")
 		// db.scanQueue(ctx, jobId, status == jobs.SUCCESS)
+
+		// force an update of the queue on next call
+		db.updateQueue(ctx, jobId)
+
 		return true
 	}
 	// fmt.Printf("done??\n")
@@ -991,6 +1029,8 @@ func (db *SqliteBatchQ) ReleaseJob(ctx context.Context, jobId int) bool {
 		log.Fatal(err)
 	}
 	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
+		// force an update of the queue on next call
+		db.lastUpdate = nil
 		return true
 	}
 	return false

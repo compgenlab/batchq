@@ -125,10 +125,13 @@ func (r *slurmRunner) Start() bool {
 
 	ctx := context.Background()
 
-	r.UpdateJobStatus(ctx)
+	fmt.Println("Updating PROXYQUEUED job SLURM status...")
+	r.UpdateSlurmJobStatus(ctx)
 
 	for {
 		if r.maxUserJobs > 0 {
+			fmt.Println("Getting updated user job count...")
+
 			count, err := SlurmGetUserJobCount(r.username)
 			if err != nil {
 				fmt.Printf("Error getting job count: %v\n", err)
@@ -148,6 +151,7 @@ func (r *slurmRunner) Start() bool {
 		// freeProc, Mem, Time aren't used here
 		// we only care about whole jobs to re-submit.
 		// we'll let SLURM deal with procs, mem, and time.
+		// fmt.Println("Looking for a new job to submit...")
 
 		if jobdef, hasNext := r.db.FetchNext(ctx, nil); jobdef != nil {
 			fmt.Printf("Trying to submit job %d to SLURM\n", jobdef.JobId)
@@ -158,7 +162,7 @@ func (r *slurmRunner) Start() bool {
 				r.db.CancelJob(ctx, jobdef.JobId, err.Error())
 				fmt.Printf("Error trying to build sbatch script for job: %d\n  => %s\n", jobdef.JobId, err.Error())
 			} else if src == "" {
-				fmt.Printf("Error trying to build sbatch script for job: %d (empty script)\n", jobdef.JobId)
+				fmt.Printf("Error trying to build sbatch script for job: %d (empty script, possibly due to SLURM sacct delay)\n", jobdef.JobId)
 				// sleep 1 second to avoid busy-looping
 				time.Sleep(1 * time.Second)
 			} else if src != "" {
@@ -166,8 +170,9 @@ func (r *slurmRunner) Start() bool {
 				if val := jobdef.GetDetail("env", ""); val != "" {
 					jobEnv = strings.Split(val, "\n-|-\n")
 				}
-
+				// fmt.Println("  Submitting job to SLURM... (got sbatch script)")
 				if slurmJobId, err := SlurmSbatch(src, jobEnv); err == nil {
+					// fmt.Println("  Updating batchq job status to ProxyQueued...")
 					if r.db.ProxyQueueJob(ctx, jobdef.JobId, r.runnerId, map[string]string{"slurm_job_id": slurmJobId, "slurm_submit_time": support.GetNowUTCString()}) {
 						submittedOne = true
 						if r.availJobs > 0 {
@@ -188,7 +193,7 @@ func (r *slurmRunner) Start() bool {
 	return submittedOne
 }
 
-func (r *slurmRunner) UpdateJobStatus(ctx context.Context) {
+func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 	proxied := r.db.GetProxyJobs(ctx)
 	for _, job := range proxied {
 		if slurmJobIdStr := job.GetRunningDetail("slurm_job_id", ""); slurmJobIdStr != "" {
