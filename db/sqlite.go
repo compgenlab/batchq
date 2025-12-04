@@ -649,12 +649,21 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 	rows.Close()
 	return nil
 }
+
 func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string) bool {
 	conn := db.connect()
 	defer db.close()
 
-	sql2 := "UPDATE jobs SET status = ?, end_time = ?, notes = ? WHERE id = ? AND status != ? AND status != ? AND status != ?"
-	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELED, support.GetNowUTCString(), reason, jobId, jobs.FAILED, jobs.SUCCESS, jobs.CANCELED)
+	job := db.GetJob(ctx, jobId)
+	switch job.Status {
+	case jobs.CANCELED:
+		return true
+	case jobs.SUCCESS, jobs.FAILED:
+		return false
+	}
+
+	sql2 := "UPDATE jobs SET status = ?, end_time = ?, notes = ? WHERE id = ? AND status < ?"
+	res, err := conn.ExecContext(ctx, sql2, jobs.CANCELED, support.GetNowUTCString(), reason, jobId, jobs.CANCELED)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -663,7 +672,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
 		childIds := []int{}
 		// Load job dependencies
-		sql2 := "SELECT job_id FROM job_deps, jobs WHERE job_deps.afterok_id = ? AND job_deps.job_id = jobs.id AND jobs.status != ?"
+		sql2 := "SELECT job_id FROM job_deps, jobs WHERE job_deps.afterok_id = ? AND job_deps.job_id = jobs.id AND jobs.status < ?"
 		rows2, err2 := conn.QueryContext(ctx, sql2, jobId, jobs.CANCELED)
 		if err2 != nil {
 			log.Fatal(err2)
