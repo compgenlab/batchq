@@ -254,7 +254,7 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *jobs.JobDef
 		src += fmt.Sprintf("#SBATCH -p %s\n", r.partition)
 	}
 	if jobdef.Name != "" {
-		src += fmt.Sprintf("#SBATCH -J %s\n", jobdef.Name)
+		src += fmt.Sprintf("#SBATCH -J bq-%d.%s\n", jobdef.JobId, jobdef.Name)
 	}
 	if val := jobdef.GetDetail("env", ""); val != "" {
 		src += "#SBATCH --export=ALL\n"
