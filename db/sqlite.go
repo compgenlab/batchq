@@ -59,9 +59,12 @@ func initSqlite3(fname string, force bool, startingJobId int) error {
 		log.Fatal(err)
 	}
 	defer db.Close()
+
+	// Not recommended for network drives...
+	//    PRAGMA journal_mode=WAL;
+
 	sql := `
 	PRAGMA foreign_keys = ON;
-    PRAGMA journal_mode=WAL;
 
 	DROP TABLE IF EXISTS job_running_details;
 	DROP TABLE IF EXISTS job_running;
@@ -624,25 +627,22 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 
 		job.Details = details
 
-		if job.Status == jobs.RUNNING || job.Status == jobs.PROXYQUEUED {
-			sql4 := "SELECT key, value FROM job_running_details WHERE job_id = ?"
-			rows4, err4 := conn.QueryContext(ctx, sql4, job.JobId)
-			if err4 != nil {
-				log.Fatal(err4)
-			}
-			var runningDetails []jobs.JobRunningDetail
-
-			for rows4.Next() {
-				var key string
-				var val string
-				rows4.Scan(&key, &val)
-				runningDetails = append(runningDetails, jobs.JobRunningDetail{Key: key, Value: val})
-			}
-			rows4.Close()
-
-			job.RunningDetails = runningDetails
-
+		sql4 := "SELECT key, value FROM job_running_details WHERE job_id = ?"
+		rows4, err4 := conn.QueryContext(ctx, sql4, job.JobId)
+		if err4 != nil {
+			log.Fatal(err4)
 		}
+		var runningDetails []jobs.JobRunningDetail
+
+		for rows4.Next() {
+			var key string
+			var val string
+			rows4.Scan(&key, &val)
+			runningDetails = append(runningDetails, jobs.JobRunningDetail{Key: key, Value: val})
+		}
+		rows4.Close()
+
+		job.RunningDetails = runningDetails
 
 		return &job
 	}
@@ -655,10 +655,15 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 	defer db.close()
 
 	job := db.GetJob(ctx, jobId)
+	if job == nil {
+		return false
+	}
 	switch job.Status {
 	case jobs.CANCELED:
-		return true
+		// already canceled
+		return false
 	case jobs.SUCCESS, jobs.FAILED:
+		// already done
 		return false
 	}
 
