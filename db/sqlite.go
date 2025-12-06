@@ -19,6 +19,8 @@ import (
 	"github.com/mbreese/batchq/support"
 )
 
+const defaultUpdateFrequency = 2 * time.Minute
+
 type SqliteBatchQ struct {
 	fname           string
 	dbConn          *sql.DB
@@ -36,7 +38,7 @@ func openSqlite3(fname string) *SqliteBatchQ {
 	// 	// InitDB(fname)
 	// }
 
-	db := SqliteBatchQ{fname: fname, updateFrequency: 5 * time.Minute}
+	db := SqliteBatchQ{fname: fname, updateFrequency: defaultUpdateFrequency}
 	return &db
 }
 
@@ -487,8 +489,6 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
 			return
 		}
 	}
-	now := time.Now().UTC()
-	db.lastUpdate = &now
 
 	conn := db.connect()
 	defer db.close()
@@ -575,6 +575,10 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
 		}
 		// fmt.Printf("moved to queue: %d\n", jobId)
 	}
+
+	// update the last run time...
+	now := time.Now().UTC()
+	db.lastUpdate = &now
 }
 
 func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
