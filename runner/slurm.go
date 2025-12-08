@@ -173,7 +173,7 @@ func (r *slurmRunner) Start() bool {
 				// fmt.Println("  Submitting job to SLURM... (got sbatch script)")
 				if slurmJobId, err := SlurmSbatch(src, jobEnv); err == nil {
 					// fmt.Println("  Updating batchq job status to ProxyQueued...")
-					if r.db.ProxyQueueJob(ctx, jobdef.JobId, r.runnerId, map[string]string{"slurm_job_id": slurmJobId, "slurm_submit_time": support.GetNowUTCString()}) {
+					if r.db.ProxyQueueJob(ctx, jobdef.JobId, r.runnerId, map[string]string{"slurm_job_id": slurmJobId, "slurm_submit_time": support.GetNowUTCString(), "slurm_script": src}) {
 						submittedOne = true
 						if r.availJobs > 0 {
 							r.availJobs--
@@ -190,6 +190,12 @@ func (r *slurmRunner) Start() bool {
 			break
 		}
 	}
+
+	if submittedOne {
+		fmt.Println("Updating PROXYQUEUED job SLURM status...")
+		r.UpdateSlurmJobStatus(ctx)
+	}
+
 	return submittedOne
 }
 

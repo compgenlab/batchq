@@ -157,6 +157,8 @@ func (job *JobDef) Print() {
 	fmt.Printf("---[job details]---\n")
 
 	var script string
+	var slurmScript string
+
 	maxKeyLen := 0
 	for _, detail := range job.Details {
 		if len(detail.Key) > maxKeyLen {
@@ -170,6 +172,12 @@ func (job *JobDef) Print() {
 			switch detail.Key {
 			case "script":
 				script = detail.Value
+			case "walltime":
+				if wallMins, err := strconv.Atoi(detail.Value); err == nil {
+					fmt.Printf("%-*s : %s\n", maxKeyLen, detail.Key, WalltimeToString(wallMins))
+				} else {
+					fmt.Printf("%-*s : %s\n", maxKeyLen, detail.Key, detail.Value)
+				}
 			case "env":
 				fmt.Printf("%-*s : %-60.60s...\n", maxKeyLen, detail.Key, strings.ReplaceAll(detail.Value, "\n-|-\n", ";"))
 			default:
@@ -186,10 +194,19 @@ func (job *JobDef) Print() {
 			}
 		}
 		for _, detail := range job.RunningDetails {
-			fmt.Printf("%-*s : %s\n", maxKeyLen, detail.Key, detail.Value)
+			switch detail.Key {
+			case "slurm_script":
+				slurmScript = detail.Value
+			default:
+				fmt.Printf("%-*s : %s\n", maxKeyLen, detail.Key, detail.Value)
+			}
 		}
 	}
-	fmt.Printf("---[job script]---\n%s\n", script)
+	if slurmScript != "" {
+		fmt.Printf("---[job slurm script]---\n%s\n", slurmScript)
+	} else {
+		fmt.Printf("---[job script]---\n%s\n", script)
+	}
 }
 
 // Return value in MB (trim M/MB/G/GB suffix, if ends in G or GB, multiply by 1000)

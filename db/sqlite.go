@@ -502,8 +502,8 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
 	} else {
 		sql = "SELECT id FROM jobs, job_deps WHERE jobs.id = job_deps.job_id AND (jobs.status = ? OR jobs.status = ?) AND job_deps.afterok_id = ?"
 		sqlArgs = []any{jobs.WAITING, jobs.UNKNOWN, parentJobId[0]}
-
 	}
+
 	var possibleJobIds []int
 	var queueJobIds []int
 	var cancelJobIds []int
@@ -524,61 +524,66 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
 		rows.Close()
 	}
 
-	fmt.Printf("found waiting/unknown jobs (n=%d)\n", len(possibleJobIds))
+	if len(possibleJobIds) > 0 {
+		fmt.Printf("found waiting/unknown jobs (n=%d)\n", len(possibleJobIds))
 
-	for _, jobId := range possibleJobIds {
-		job := db.GetJob(ctx, jobId)
-		enqueue := true
-		cancel := false
-		cancelReason := ""
-		fmt.Printf("  checking job %d dependencies (n=%d)\n", jobId, len(job.AfterOk))
-		for _, depid := range job.AfterOk {
-			dep := db.GetJob(ctx, depid)
-			// was dep successful or successfully submitted elsewhere?
-			if dep.Status != jobs.SUCCESS && dep.Status != jobs.PROXYQUEUED {
-				enqueue = false
-			}
-			if dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
-				cancel = true
-				if cancelReason == "" {
-					cancelReason = fmt.Sprintf("Depends on %d", depid)
-				} else {
-					cancelReason = fmt.Sprintf("%s, %d", cancelReason, depid)
+		for _, jobId := range possibleJobIds {
+			job := db.GetJob(ctx, jobId)
+			enqueue := true
+			cancel := false
+			cancelReason := ""
+			fmt.Printf("  checking job %d dependencies (n=%d)\n", jobId, len(job.AfterOk))
+			for _, depid := range job.AfterOk {
+				dep := db.GetJob(ctx, depid)
+				// was dep successful or successfully submitted elsewhere?
+				if dep.Status != jobs.SUCCESS && dep.Status != jobs.PROXYQUEUED {
+					enqueue = false
 				}
-				enqueue = false
+				if dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
+					cancel = true
+					if cancelReason == "" {
+						cancelReason = fmt.Sprintf("Depends on %d", depid)
+					} else {
+						cancelReason = fmt.Sprintf("%s, %d", cancelReason, depid)
+					}
+					enqueue = false
+				}
+			}
+			if cancel {
+				cancelReason = cancelReason + " failed/canceled"
+				cancelJobIds = append(cancelJobIds, jobId)
+				cancelReasons = append(cancelReasons, cancelReason)
+			} else if enqueue {
+				// fmt.Printf("moving to queue: %d\n", jobId)
+				queueJobIds = append(queueJobIds, jobId)
 			}
 		}
-		if cancel {
-			cancelReason = cancelReason + " failed/canceled"
-			cancelJobIds = append(cancelJobIds, jobId)
-			cancelReasons = append(cancelReasons, cancelReason)
-		} else if enqueue {
-			// fmt.Printf("moving to queue: %d\n", jobId)
-			queueJobIds = append(queueJobIds, jobId)
+		// fmt.Printf("updating waiting => canceled jobs\n")
+		for i, jobId := range cancelJobIds {
+			sql2 := "UPDATE jobs SET status = ?, notes = ? WHERE id = ?"
+			_, err := conn.ExecContext(ctx, sql2, jobs.CANCELED, cancelReasons[i], jobId)
+			if err != nil {
+				log.Fatal(err)
+			}
+			// fmt.Printf("moved to queue: %d\n", jobId)
 		}
-	}
-	// fmt.Printf("updating waiting => canceled jobs\n")
-	for i, jobId := range cancelJobIds {
-		sql2 := "UPDATE jobs SET status = ?, notes = ? WHERE id = ?"
-		_, err := conn.ExecContext(ctx, sql2, jobs.CANCELED, cancelReasons[i], jobId)
-		if err != nil {
-			log.Fatal(err)
+		// fmt.Printf("updating waiting => queued jobs\n")
+		for _, jobId := range queueJobIds {
+			sql2 := "UPDATE jobs SET status = ? WHERE id = ?"
+			_, err := conn.ExecContext(ctx, sql2, jobs.QUEUED, jobId)
+			if err != nil {
+				log.Fatal(err)
+			}
+			// fmt.Printf("moved to queue: %d\n", jobId)
 		}
-		// fmt.Printf("moved to queue: %d\n", jobId)
-	}
-	// fmt.Printf("updating waiting => queued jobs\n")
-	for _, jobId := range queueJobIds {
-		sql2 := "UPDATE jobs SET status = ? WHERE id = ?"
-		_, err := conn.ExecContext(ctx, sql2, jobs.QUEUED, jobId)
-		if err != nil {
-			log.Fatal(err)
-		}
-		// fmt.Printf("moved to queue: %d\n", jobId)
 	}
 
 	// update the last run time...
-	now := time.Now().UTC()
-	db.lastUpdate = &now
+	// but only if we are doing a full update (no parentJobId)
+	if len(parentJobId) == 0 {
+		now := time.Now().UTC()
+		db.lastUpdate = &now
+	}
 }
 
 func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
@@ -726,9 +731,6 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 				return false
 			}
 		}
-		// force an update of the queue on next call
-		// db.lastUpdate = nil
-		db.updateQueue(ctx, jobId)
 		return true
 	}
 	return false
