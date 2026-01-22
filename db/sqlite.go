@@ -42,7 +42,7 @@ func openSqlite3(fname string) *SqliteBatchQ {
 	return &db
 }
 
-func initSqlite3(fname string, force bool, startingJobId int) error {
+func initSqlite3(fname string, force bool) error {
 	fmt.Printf("Initializing sqlite db: %s\n", fname)
 
 	if f, err := os.Open(fname); err == nil {
@@ -77,7 +77,7 @@ func initSqlite3(fname string, force bool, startingJobId int) error {
 	DROP TABLE IF EXISTS jobs;
 
 	CREATE TABLE jobs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		id TEXT PRIMARY KEY,
 		status INT DEFAULT 0 NOT NULL,
 		priority INT DEFAULT 0 NOT NULL,
 		name TEXT,
@@ -89,25 +89,25 @@ func initSqlite3(fname string, force bool, startingJobId int) error {
 			);
 
 	CREATE TABLE job_details (
-		job_id INTEGER REFERENCES jobs(id),
+		job_id TEXT REFERENCES jobs(id),
 		key TEXT,
 		value TEXT,
 		PRIMARY KEY (job_id, key)
 			);
 
 	CREATE TABLE job_deps (
-		job_id INTEGER REFERENCES jobs(id),
-		afterok_id INTEGER REFERENCES jobs(id),
+		job_id TEXT REFERENCES jobs(id),
+		afterok_id TEXT REFERENCES jobs(id),
 		PRIMARY KEY (job_id, afterok_id)
 			);
 
 	CREATE TABLE job_running (
-		job_id INTEGER REFERENCES jobs(id) UNIQUE PRIMARY KEY,
+		job_id TEXT REFERENCES jobs(id) UNIQUE PRIMARY KEY,
 		job_runner TEXT
 			);
 
 	CREATE TABLE job_running_details (
-		job_id INTEGER REFERENCES jobs(id),
+		job_id TEXT REFERENCES jobs(id),
 		key TEXT,
 		value TEXT,
 		PRIMARY KEY (job_id, key)
@@ -123,18 +123,6 @@ func initSqlite3(fname string, force bool, startingJobId int) error {
 	if err != nil {
 		// log.Fatalf("Exec error: %v", err)
 		return err
-	}
-	if startingJobId > 1 {
-		// see: https://stackoverflow.com/questions/692856/set-start-value-for-autoincrement-in-sqlite
-		sql = fmt.Sprintf(`BEGIN TRANSACTION;
-UPDATE sqlite_sequence SET seq = %d WHERE name = 'jobs';
-INSERT INTO sqlite_sequence (name,seq) SELECT 'jobs', %d WHERE NOT EXISTS (SELECT changes() AS change FROM sqlite_sequence WHERE change <> 0);
-COMMIT;`, startingJobId-1, startingJobId-1)
-		_, err = db.ExecContext(ctx, sql)
-		if err != nil {
-			// log.Fatalf("Exec error: %v", err)
-			return err
-		}
 	}
 	fmt.Println("Done.")
 	return nil
@@ -211,50 +199,46 @@ func (db *SqliteBatchQ) SubmitJob(ctx context.Context, job *jobs.JobDef) *jobs.J
 		}
 	}
 
+	jobId := support.NewUUID()
+	job.JobId = jobId
+
 	if tx, err := conn.BeginTx(ctx, nil); err != nil {
 		log.Println(err)
 		return nil
 	} else {
-		sql := "INSERT INTO jobs (status,name,notes,submit_time) VALUES (?,?,?,?)"
-		res, err := tx.ExecContext(ctx, sql, newStatus, job.Name, "", support.GetNowUTCString())
+		sql := "INSERT INTO jobs (id,status,name,notes,submit_time) VALUES (?,?,?,?,?)"
+		_, err := tx.ExecContext(ctx, sql, jobId, newStatus, job.Name, "", support.GetNowUTCString())
 		if err != nil {
 			tx.Rollback()
 			log.Fatal(err)
 
 		} else {
-			if jobId, err2 := res.LastInsertId(); err2 != nil {
-				tx.Rollback()
-				log.Fatal(err2)
-
-			} else {
-				job.JobId = int(jobId)
-				job.Status = newStatus
-				if job.Name == "" {
-					job.Name = "batchq-%JOBID"
+			job.Status = newStatus
+			if job.Name == "" {
+				job.Name = "batchq-%JOBID"
+			}
+			if strings.Contains(job.Name, "%JOBID") {
+				job.Name = strings.Replace(job.Name, "%JOBID", jobId, -1)
+				sql2 := "UPDATE jobs SET name = ? WHERE id = ?"
+				_, err3 := tx.ExecContext(ctx, sql2, job.Name, jobId)
+				if err3 != nil {
+					tx.Rollback()
+					log.Fatal(err3)
 				}
-				if strings.Contains(job.Name, "%JOBID") {
-					job.Name = strings.Replace(job.Name, "%JOBID", fmt.Sprintf("%d", jobId), -1)
-					sql2 := "UPDATE jobs SET name = ? WHERE id = ?"
-					_, err3 := tx.ExecContext(ctx, sql2, job.Name, jobId)
-					if err3 != nil {
-						tx.Rollback()
-						log.Fatal(err3)
-					}
+			}
+			for _, depid := range job.AfterOk {
+				if _, err3 := tx.ExecContext(ctx, "INSERT INTO job_deps (job_id, afterok_id) VALUES (?,?)", job.JobId, depid); err3 != nil {
+					tx.Rollback()
+					log.Fatal(err3)
 				}
-				for _, depid := range job.AfterOk {
-					if _, err3 := tx.ExecContext(ctx, "INSERT INTO job_deps (job_id, afterok_id) VALUES (?,?)", job.JobId, depid); err3 != nil {
-						tx.Rollback()
-						log.Fatal(err3)
-					}
+			}
+			for _, detail := range job.Details {
+				if detail.Key == "stderr" || detail.Key == "stdout" {
+					detail.Value = strings.Replace(detail.Value, "%JOBID", jobId, -1)
 				}
-				for _, detail := range job.Details {
-					if detail.Key == "stderr" || detail.Key == "stdout" {
-						detail.Value = strings.Replace(detail.Value, "%JOBID", fmt.Sprintf("%d", jobId), -1)
-					}
-					if _, err3 := tx.ExecContext(ctx, "INSERT INTO job_details (job_id, key, value) VALUES (?,?,?)", job.JobId, detail.Key, detail.Value); err3 != nil {
-						tx.Rollback()
-						log.Fatal(err3)
-					}
+				if _, err3 := tx.ExecContext(ctx, "INSERT INTO job_details (job_id, key, value) VALUES (?,?,?)", job.JobId, detail.Key, detail.Value); err3 != nil {
+					tx.Rollback()
+					log.Fatal(err3)
 				}
 			}
 		}
@@ -338,10 +322,10 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 		if err2 != nil {
 			log.Fatal(err2)
 		}
-		var deps []int
+		var deps []string
 
 		for rows2.Next() {
-			var parentId int
+			var parentId string
 			rows2.Scan(&parentId)
 			deps = append(deps, parentId)
 		}
@@ -407,12 +391,12 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, limits []JobLimit) (*jobs
 
 	fmt.Println("Getting jobs...")
 	sql := "SELECT id FROM jobs WHERE status = ? ORDER BY priority DESC, submit_time, id;"
-	var queueJobIds []int
+	var queueJobIds []string
 	if rows, err := conn.QueryContext(ctx, sql, jobs.QUEUED); err != nil {
 		log.Fatal(err)
 	} else {
 		for rows.Next() {
-			var jobId int
+			var jobId string
 
 			err := rows.Scan(&jobId)
 			if err != nil {
@@ -484,7 +468,7 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, limits []JobLimit) (*jobs
 	return nil, len(queueJobIds) > 0
 }
 
-func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
+func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...string) {
 	if len(parentJobId) == 0 && db.lastUpdate != nil {
 		now := time.Now().UTC()
 		if now.Sub(*db.lastUpdate) < db.updateFrequency {
@@ -506,15 +490,15 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
 		sqlArgs = []any{jobs.WAITING, jobs.UNKNOWN, parentJobId[0]}
 	}
 
-	var possibleJobIds []int
-	var queueJobIds []int
-	var cancelJobIds []int
+	var possibleJobIds []string
+	var queueJobIds []string
+	var cancelJobIds []string
 	var cancelReasons []string
 	if rows, err := conn.QueryContext(ctx, sql, sqlArgs...); err != nil {
 		log.Fatal(err)
 	} else {
 		for rows.Next() {
-			var jobId int
+			var jobId string
 
 			err := rows.Scan(&jobId)
 			if err != nil {
@@ -534,7 +518,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
 			enqueue := true
 			cancel := false
 			cancelReason := ""
-			fmt.Printf("  checking job %d dependencies (n=%d)\n", jobId, len(job.AfterOk))
+			fmt.Printf("  checking job %s dependencies (n=%d)\n", jobId, len(job.AfterOk))
 			for _, depid := range job.AfterOk {
 				dep := db.GetJob(ctx, depid)
 				// was dep successful or successfully submitted elsewhere?
@@ -544,9 +528,9 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
 				if dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
 					cancel = true
 					if cancelReason == "" {
-						cancelReason = fmt.Sprintf("Depends on %d", depid)
+						cancelReason = fmt.Sprintf("Depends on %s", depid)
 					} else {
-						cancelReason = fmt.Sprintf("%s, %d", cancelReason, depid)
+						cancelReason = fmt.Sprintf("%s, %s", cancelReason, depid)
 					}
 					enqueue = false
 				}
@@ -588,7 +572,7 @@ func (db *SqliteBatchQ) updateQueue(ctx context.Context, parentJobId ...int) {
 	}
 }
 
-func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
+func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId string) *jobs.JobDef {
 	conn := db.connect()
 	defer db.close()
 
@@ -635,10 +619,10 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 		if err2 != nil {
 			log.Fatal(err2)
 		}
-		var deps []int
+		var deps []string
 
 		for rows2.Next() {
-			var parentId int
+			var parentId string
 			rows2.Scan(&parentId)
 			deps = append(deps, parentId)
 		}
@@ -687,7 +671,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 	return nil
 }
 
-func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string) bool {
+func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId string, reason string) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -712,7 +696,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 
 	// cancel any child jobs
 	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
-		childIds := []int{}
+		childIds := []string{}
 		// Load job dependencies
 		sql2 := "SELECT job_id FROM job_deps, jobs WHERE job_deps.afterok_id = ? AND job_deps.job_id = jobs.id AND jobs.status < ?"
 		rows2, err2 := conn.QueryContext(ctx, sql2, jobId, jobs.CANCELED)
@@ -721,7 +705,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 		}
 
 		for rows2.Next() {
-			var childId int
+			var childId string
 			rows2.Scan(&childId)
 			childIds = append(childIds, childId)
 		}
@@ -737,7 +721,7 @@ func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId int, reason string)
 	}
 	return false
 }
-func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, newStatus jobs.StatusCode, startTime string, endTime string, returnCode int) bool {
+func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId string, newStatus jobs.StatusCode, startTime string, endTime string, returnCode int) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -764,7 +748,7 @@ func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, newStatus jo
 		// if the status is CANCELED or ERROR, look for child jobs to update their queue status
 		// cancel any child jobs
 		if newStatus != jobs.SUCCESS {
-			childIds := []int{}
+			childIds := []string{}
 			// Load job dependencies
 			sql2 := "SELECT job_id FROM job_deps, jobs WHERE job_deps.afterok_id = ? AND job_deps.job_id = jobs.id AND jobs.status < ?"
 			rows2, err2 := conn.QueryContext(ctx, sql2, jobId, jobs.CANCELED)
@@ -773,7 +757,7 @@ func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, newStatus jo
 			}
 
 			for rows2.Next() {
-				var childId int
+				var childId string
 				rows2.Scan(&childId)
 				childIds = append(childIds, childId)
 			}
@@ -781,7 +765,7 @@ func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, newStatus jo
 
 			for _, cid := range childIds {
 				// recursively delete
-				if !db.CancelJob(ctx, cid, fmt.Sprintf("Parent job %d failed/canceled", jobId)) {
+				if !db.CancelJob(ctx, cid, fmt.Sprintf("Parent job %s failed/canceled", jobId)) {
 					return false
 				}
 			}
@@ -794,7 +778,7 @@ func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, newStatus jo
 	return false
 }
 
-func (db *SqliteBatchQ) ProxyQueueJob(ctx context.Context, jobId int, jobRunner string, runDetail map[string]string) bool {
+func (db *SqliteBatchQ) ProxyQueueJob(ctx context.Context, jobId string, jobRunner string, runDetail map[string]string) bool {
 	conn := db.connect()
 
 	sql := "INSERT INTO job_running (job_id, job_runner) VALUES (?,?)"
@@ -860,7 +844,7 @@ func (db *SqliteBatchQ) ProxyQueueJob(ctx context.Context, jobId int, jobRunner 
 	return true
 }
 
-func (db *SqliteBatchQ) UpdateJobRunningDetails(ctx context.Context, jobId int, details map[string]string) bool {
+func (db *SqliteBatchQ) UpdateJobRunningDetails(ctx context.Context, jobId string, details map[string]string) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -882,7 +866,7 @@ func (db *SqliteBatchQ) UpdateJobRunningDetails(ctx context.Context, jobId int, 
 	return true
 }
 
-func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId int, jobRunner string, runDetail map[string]string) bool {
+func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId string, jobRunner string, runDetail map[string]string) bool {
 	conn := db.connect()
 
 	sql := "INSERT INTO job_running (job_id, job_runner) VALUES (?,?)"
@@ -946,7 +930,7 @@ func (db *SqliteBatchQ) StartJob(ctx context.Context, jobId int, jobRunner strin
 	return true
 }
 
-func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId int, jobRunner string, returnCode int) bool {
+func (db *SqliteBatchQ) EndJob(ctx context.Context, jobId string, jobRunner string, returnCode int) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -1009,7 +993,7 @@ func (db *SqliteBatchQ) Close() {
 	db.conLock.Unlock()
 }
 
-func (db *SqliteBatchQ) CleanupJob(ctx context.Context, jobId int) bool {
+func (db *SqliteBatchQ) CleanupJob(ctx context.Context, jobId string) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -1039,7 +1023,7 @@ func (db *SqliteBatchQ) CleanupJob(ctx context.Context, jobId int) bool {
 }
 
 // increase the priority for a queued/held/waiting job to the top of the queue
-func (db *SqliteBatchQ) TopJob(ctx context.Context, jobId int) bool {
+func (db *SqliteBatchQ) TopJob(ctx context.Context, jobId string) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -1055,7 +1039,7 @@ func (db *SqliteBatchQ) TopJob(ctx context.Context, jobId int) bool {
 }
 
 // decrease the priority for a queued/held/waiting job
-func (db *SqliteBatchQ) NiceJob(ctx context.Context, jobId int) bool {
+func (db *SqliteBatchQ) NiceJob(ctx context.Context, jobId string) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -1070,7 +1054,7 @@ func (db *SqliteBatchQ) NiceJob(ctx context.Context, jobId int) bool {
 	return false
 }
 
-func (db *SqliteBatchQ) HoldJob(ctx context.Context, jobId int) bool {
+func (db *SqliteBatchQ) HoldJob(ctx context.Context, jobId string) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -1085,7 +1069,7 @@ func (db *SqliteBatchQ) HoldJob(ctx context.Context, jobId int) bool {
 	return false
 }
 
-func (db *SqliteBatchQ) ReleaseJob(ctx context.Context, jobId int) bool {
+func (db *SqliteBatchQ) ReleaseJob(ctx context.Context, jobId string) bool {
 	conn := db.connect()
 	defer db.close()
 
@@ -1159,10 +1143,10 @@ func (db *SqliteBatchQ) GetProxyJobs(ctx context.Context) []*jobs.JobDef {
 		if err2 != nil {
 			log.Fatal(err2)
 		}
-		var deps []int
+		var deps []string
 
 		for rows2.Next() {
-			var parentId int
+			var parentId string
 			rows2.Scan(&parentId)
 			deps = append(deps, parentId)
 		}

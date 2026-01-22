@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,13 +26,13 @@ var detailsCmd = &cobra.Command{
 			defer jobq.Close()
 			for _, ids := range args {
 				for _, spl := range strings.Split(ids, ",") {
-					if jobid, err := strconv.Atoi(spl); err != nil {
-						log.Fatal(err)
-					} else {
-						if job := jobq.GetJob(ctx, jobid); job != nil {
-							job.Print()
-							fmt.Println("")
-						}
+					jobid := strings.TrimSpace(spl)
+					if jobid == "" {
+						continue
+					}
+					if job := jobq.GetJob(ctx, jobid); job != nil {
+						job.Print()
+						fmt.Println("")
 					}
 				}
 			}
@@ -49,7 +48,7 @@ var queueCmd = &cobra.Command{
 			log.Fatalln(err)
 		} else {
 			defer jobq.Close()
-			fmt.Printf("| %-6.6s ", "jobid")
+			fmt.Printf("| %-36.36s ", "jobid")
 			fmt.Printf("| %-8.8s ", "status")
 			fmt.Printf("| %-20.20s ", "job-name")
 			if val, _ := Config.GetBool("batchq", "multiuser", false); val {
@@ -60,9 +59,9 @@ var queueCmd = &cobra.Command{
 			fmt.Printf("| %-11.11s ", "walltime")
 			fmt.Println("|")
 			if val, _ := Config.GetBool("batchq", "multiuser", false); val {
-				fmt.Println("|--------|----------|----------------------|--------------|-----|----------|-------------|")
+				fmt.Println("|--------------------------------------|----------|----------------------|--------------|-----|----------|-------------|")
 			} else {
-				fmt.Println("|--------|----------|----------------------|-----|----------|-------------|")
+				fmt.Println("|--------------------------------------|----------|----------------------|-----|----------|-------------|")
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -70,7 +69,7 @@ var queueCmd = &cobra.Command{
 
 			for _, job := range jobq.GetJobs(ctx, jobShowAll, true) {
 				// job.Print()
-				fmt.Printf("| %-6.d ", job.JobId)
+				fmt.Printf("| %-36.36s ", job.JobId)
 				fmt.Printf("| %-8.8s ", job.Status.String())
 				fmt.Printf("| %-20.20s ", job.Name)
 				if val, _ := Config.GetBool("batchq", "multiuser", false); val {
@@ -102,7 +101,7 @@ var queueCmd = &cobra.Command{
 						fmt.Printf(" %s", fmt.Sprintf("slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), job.GetRunningDetail("slurm_job_id", "")))
 					}
 					if len(job.AfterOk) > 0 {
-						depStr := fmt.Sprintf("deps:%s", support.JoinInt(job.AfterOk, ","))
+						depStr := fmt.Sprintf("deps:%s", support.JoinStrings(job.AfterOk, ","))
 						if len(depStr) > 20 {
 							fmt.Printf(" %-17.17s...", depStr)
 						} else {
@@ -114,7 +113,7 @@ var queueCmd = &cobra.Command{
 					fmt.Printf("| %-11.11s ", jobs.WalltimeStringToString(job.GetDetail("walltime", "")))
 					fmt.Print("|")
 					if len(job.AfterOk) > 0 {
-						depStr := fmt.Sprintf("deps:%s", support.JoinInt(job.AfterOk, ","))
+						depStr := fmt.Sprintf("deps:%s", support.JoinStrings(job.AfterOk, ","))
 						if len(depStr) > 20 {
 							fmt.Printf(" %-17.17s...", depStr)
 						} else {
@@ -141,20 +140,20 @@ var statusCmd = &cobra.Command{
 				defer cancel()
 
 				for _, job := range jobq.GetJobs(ctx, jobShowAll, false) {
-					fmt.Printf("%d %s\n", job.JobId, job.Status.String())
+					fmt.Printf("%s %s\n", job.JobId, job.Status.String())
 				}
 			} else {
 				for _, ids := range args {
 					for _, spl := range strings.Split(ids, ",") {
-						if jobid, err := strconv.Atoi(spl); err != nil {
-							log.Fatal(err)
-						} else {
-							ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-							defer cancel()
+						jobid := strings.TrimSpace(spl)
+						if jobid == "" {
+							continue
+						}
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
 
-							if job := jobq.GetJob(ctx, jobid); job != nil {
-								fmt.Printf("%d %s\n", job.JobId, job.Status.String())
-							}
+						if job := jobq.GetJob(ctx, jobid); job != nil {
+							fmt.Printf("%s %s\n", job.JobId, job.Status.String())
 						}
 					}
 				}

@@ -354,23 +354,21 @@ var submitCmd = &cobra.Command{
 
 		baddep := false
 		for _, val := range strings.Split(jobDeps, ",") {
-			if val != "" {
-				if depid, err := strconv.Atoi(val); err != nil {
-					log.Fatal(err)
-				} else {
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-
-					// fmt.Println("Checking dep: ", depid)
-					dep := jobq.GetJob(ctx, depid)
-					if dep == nil || dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
-						// bad dependency
-						fmt.Fprintf(os.Stderr, "ERROR: Bad job dependency: %d\n", depid)
-						baddep = true
-					}
-					job.AddAfterOk(depid)
-				}
+			depid := strings.TrimSpace(val)
+			if depid == "" {
+				continue
 			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			// fmt.Println("Checking dep: ", depid)
+			dep := jobq.GetJob(ctx, depid)
+			if dep == nil || dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
+				// bad dependency
+				fmt.Fprintf(os.Stderr, "ERROR: Bad job dependency: %s\n", depid)
+				baddep = true
+			}
+			job.AddAfterOk(depid)
 		}
 
 		if baddep {
@@ -381,7 +379,7 @@ var submitCmd = &cobra.Command{
 		defer cancel()
 		// fmt.Println("Submitting job")
 		job = jobq.SubmitJob(ctx, job)
-		fmt.Printf("%d\n", job.JobId)
+		fmt.Printf("%s\n", job.JobId)
 
 	},
 }

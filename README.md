@@ -17,6 +17,8 @@ Defaults:
 - stdout/stderr: `./batchq-%JOBID.stdout` and `./batchq-%JOBID.stderr` (if a directory is given, files are placed inside it)
 - other defaults can be set under `[job_defaults]` in `~/.batchq/config`
 
+Job IDs are UUID strings and may include hyphens.
+
 ## Submitting jobs
 
 Submit a script file:
@@ -39,7 +41,7 @@ Useful flags:
 - `-p/--procs N`, `-m/--mem MEM`, `-t/--walltime D-HH:MM:SS`
 - `--wd DIR` working directory
 - `--stdout FILE`, `--stderr FILE` (supports `%JOBID`)
-- `--deps 12,13` run after other jobs succeed
+- `--deps <job-id>,<job-id>` run after other jobs succeed
 - `--hold` submit held
 - `--env` capture current environment and replay at run time
 
@@ -54,7 +56,7 @@ Supported SBATCH directives:
 - `-c/--cpus-per-task`, `--mem`, `-t/--time`, `-J/--job-name`, `-D/--chdir`
 - `-o/--output`, `-e/--error` ( `%j` is remapped to `%JOBID` )
 - `--export=ALL` to capture environment
-- `-d afterok:<jobids>` for dependencies
+- `-d afterok:<job-ids>` for dependencies
 
 ## Running jobs
 
