@@ -68,6 +68,7 @@ func (s StatusCode) String() string {
 type JobDef struct {
 	JobId          int
 	Status         StatusCode
+	Priority       int
 	Name           string
 	Notes          string
 	SubmitTime     time.Time

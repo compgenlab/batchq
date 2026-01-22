@@ -79,6 +79,7 @@ func initSqlite3(fname string, force bool, startingJobId int) error {
 	CREATE TABLE jobs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		status INT DEFAULT 0 NOT NULL,
+		priority INT DEFAULT -1 NOT NULL,
 		name TEXT,
 		notes TEXT,
 		submit_time TEXT DEFAULT "",
@@ -158,7 +159,8 @@ func (db *SqliteBatchQ) connect() *sql.DB {
 		log.Fatal("Missing database. Please initialize it first!")
 	}
 
-	conn, err := sql.Open("sqlite3", fmt.Sprintf("file://%s?_journal_mode=wal&_txlock=immediate&_busy_timeout=5000&_synchronous=full&_fk=true", db.fname))
+	conn, err := sql.Open("sqlite3", fmt.Sprintf("file://%s?_txlock=immediate&_busy_timeout=5000&_synchronous=full&_fk=true", db.fname))
+	// conn, err := sql.Open("sqlite3", fmt.Sprintf("file://%s?_journal_mode=wal&_txlock=immediate&_busy_timeout=5000&_synchronous=full&_fk=true", db.fname))
 	//conn, err := sql.Open("sqlite3", fmt.Sprintf("%s?_busy_timeout=5000", db.fname))
 	if err != nil {
 		log.Fatal(err)
@@ -272,16 +274,16 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 	var args []any
 	if showAll {
 		if sortByStatus {
-			sql = "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs ORDER BY status DESC, end_time, start_time, id"
+			sql = "SELECT id,status,priority,name,notes,submit_time,start_time,end_time,return_code FROM jobs ORDER BY status DESC, priority DESC, end_time, start_time, id"
 		} else {
-			sql = "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs ORDER BY id"
+			sql = "SELECT id,status,priority,name,notes,submit_time,start_time,end_time,return_code FROM jobs ORDER BY id"
 		}
 		args = []any{}
 	} else {
 		if sortByStatus {
-			sql = "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY status DESC, end_time, start_time, id"
+			sql = "SELECT id,status,priority,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY status DESC, priority DESC end_time, start_time, id"
 		} else {
-			sql = "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY id"
+			sql = "SELECT id,status,priority,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY id"
 		}
 		args = []any{jobs.RUNNING}
 	}
@@ -299,7 +301,7 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 		var startTime string
 		var endTime string
 
-		err := rows.Scan(&job.JobId, &job.Status, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode)
+		err := rows.Scan(&job.JobId, &job.Status, &job.Priority, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -404,7 +406,7 @@ func (db *SqliteBatchQ) FetchNext(ctx context.Context, limits []JobLimit) (*jobs
 	defer db.close()
 
 	fmt.Println("Getting jobs...")
-	sql := "SELECT id FROM jobs WHERE status = ?"
+	sql := "SELECT id FROM jobs WHERE status = ? ORDER BY priority DESC, submit_time, id;"
 	var queueJobIds []int
 	if rows, err := conn.QueryContext(ctx, sql, jobs.QUEUED); err != nil {
 		log.Fatal(err)
@@ -590,7 +592,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 	conn := db.connect()
 	defer db.close()
 
-	sql := "SELECT id,status,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE id = ?"
+	sql := "SELECT id,status,priority,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE id = ?"
 	rows, err := conn.QueryContext(ctx, sql, jobId)
 	if err != nil {
 		log.Fatal(err)
@@ -602,7 +604,7 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId int) *jobs.JobDef {
 		var startTime string
 		var endTime string
 
-		err := rows.Scan(&job.JobId, &job.Status, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode)
+		err := rows.Scan(&job.JobId, &job.Status, &job.Priority, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -759,6 +761,31 @@ func (db *SqliteBatchQ) ProxyEndJob(ctx context.Context, jobId int, newStatus jo
 		// fmt.Printf("done\n")
 		// db.scanQueue(ctx, jobId, status == jobs.SUCCESS)
 
+		// if the status is CANCELED or ERROR, look for child jobs to update their queue status
+		// cancel any child jobs
+		if newStatus != jobs.SUCCESS {
+			childIds := []int{}
+			// Load job dependencies
+			sql2 := "SELECT job_id FROM job_deps, jobs WHERE job_deps.afterok_id = ? AND job_deps.job_id = jobs.id AND jobs.status < ?"
+			rows2, err2 := conn.QueryContext(ctx, sql2, jobId, jobs.CANCELED)
+			if err2 != nil {
+				log.Fatal(err2)
+			}
+
+			for rows2.Next() {
+				var childId int
+				rows2.Scan(&childId)
+				childIds = append(childIds, childId)
+			}
+			rows2.Close()
+
+			for _, cid := range childIds {
+				// recursively delete
+				if !db.CancelJob(ctx, cid, fmt.Sprintf("Parent job %d failed/canceled", jobId)) {
+					return false
+				}
+			}
+		}
 		// force an update of the queue on next call
 		db.lastUpdate = nil
 		return true
@@ -1011,6 +1038,22 @@ func (db *SqliteBatchQ) CleanupJob(ctx context.Context, jobId int) bool {
 	return true
 }
 
+// increase the priority for a queued/held/waiting job to the top of the queue
+func (db *SqliteBatchQ) TopJob(ctx context.Context, jobId int) bool {
+	conn := db.connect()
+	defer db.close()
+
+	sql2 := "UPDATE jobs SET SET priority = priority + 1 WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
+	res, err := conn.ExecContext(ctx, sql2, jobs.USERHOLD, jobId, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
+		return true
+	}
+	return false
+}
+
 func (db *SqliteBatchQ) HoldJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
 	defer db.close()
@@ -1025,6 +1068,7 @@ func (db *SqliteBatchQ) HoldJob(ctx context.Context, jobId int) bool {
 	}
 	return false
 }
+
 func (db *SqliteBatchQ) ReleaseJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
 	defer db.close()

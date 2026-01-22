@@ -233,7 +233,7 @@ func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 
 func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *jobs.JobDef) (string, error) {
 	// we only support a limited set of SBATCH arguments
-	// -c cpus_per_task (with -n 1 nodes
+	// -c cpus_per_task (with -n 1 nodes)
 	// -A account
 	// --uid uid
 	// --gid gid
@@ -266,6 +266,12 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *jobs.JobDef
 	}
 	if jobdef.Name != "" {
 		src += fmt.Sprintf("#SBATCH -J bq-%d.%s\n", jobdef.JobId, jobdef.Name)
+	}
+	if val := jobdef.GetDetail("procs", ""); val != "" {
+		if procN, err := strconv.Atoi(val); err == nil && procN > 0 {
+			src += fmt.Sprintf("#SBATCH -c %d\n", procN) // N cpus per task
+			src += "#SBATCH -n 1\n"                      // one node
+		}
 	}
 	if val := jobdef.GetDetail("env", ""); val != "" {
 		src += "#SBATCH --export=ALL\n"

@@ -36,6 +36,9 @@ type BatchDB interface {
 	// Remove all job data from the database
 	CleanupJob(ctx context.Context, jobId int) bool
 
+	// Increase a job's priority
+	TopJob(ctx context.Context, jobId int) bool
+
 	// Hold a job from running
 	HoldJob(ctx context.Context, jobId int) bool
 	// Release a held job

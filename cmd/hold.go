@@ -194,6 +194,59 @@ var cancelCmd = &cobra.Command{
 	},
 }
 
+var topCmd = &cobra.Command{
+	Use:   "top job-id...",
+	Short: "Move job to top of queue",
+	Run: func(cmd *cobra.Command, args []string) {
+		if len(args) == 0 {
+			cmd.Help()
+			return
+		}
+
+		if jobq, err := db.OpenDB(dbpath); err != nil {
+			log.Fatalln(err)
+		} else {
+			defer jobq.Close()
+			for _, arg := range args {
+				if strings.Count(arg, "-") == 1 {
+					spl := strings.Split(arg, "-")
+					if jobid1, err := strconv.Atoi(spl[0]); err != nil {
+						fmt.Printf("Bad job-id: %s\n", spl[0])
+					} else {
+						if jobid2, err := strconv.Atoi(spl[1]); err != nil {
+							fmt.Printf("Bad job-id: %s\n", spl[1])
+						} else {
+							for jobid := jobid1; jobid <= jobid2; jobid++ {
+								ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+								defer cancel()
+
+								if jobq.TopJob(ctx, jobid) {
+									fmt.Printf("Job: %d prioritized\n", jobid)
+								} else {
+									fmt.Printf("Error prioritizing job: %d\n", jobid)
+								}
+							}
+						}
+					}
+				} else {
+					if jobid, err := strconv.Atoi(arg); err != nil {
+						fmt.Printf("Bad job-id: %s\n", arg)
+					} else {
+						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+						defer cancel()
+
+						if jobq.TopJob(ctx, jobid) {
+							fmt.Printf("Job: %d prioritized\n", jobid)
+						} else {
+							fmt.Printf("Error prioritizing job: %d\n", jobid)
+						}
+					}
+				}
+			}
+		}
+	},
+}
+
 var cancelReason string
 
 func init() {
@@ -202,4 +255,5 @@ func init() {
 	rootCmd.AddCommand(holdCmd)
 	rootCmd.AddCommand(releaseCmd)
 	rootCmd.AddCommand(cancelCmd)
+	rootCmd.AddCommand(topCmd)
 }
