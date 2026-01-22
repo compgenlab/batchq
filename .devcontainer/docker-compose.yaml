@@ -1,0 +1,9 @@
+# .devcontainer/docker-compose.yaml
+services:
+  devcontainer:
+    build:
+      dockerfile: Dockerfile
+    command: sleep infinity
+    volumes:
+      - ${localWorkspaceFolder:-..}:${containerWorkspaceFolder:-/workspace}:rw
+      - ${GIT_REPO}:${GIT_REPO}:rw
