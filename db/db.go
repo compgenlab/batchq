@@ -38,6 +38,8 @@ type BatchDB interface {
 
 	// Increase a job's priority
 	TopJob(ctx context.Context, jobId int) bool
+	// Decrease a job's priority
+	NiceJob(ctx context.Context, jobId int) bool
 
 	// Hold a job from running
 	HoldJob(ctx context.Context, jobId int) bool

@@ -1043,7 +1043,23 @@ func (db *SqliteBatchQ) TopJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
 	defer db.close()
 
-	sql2 := "UPDATE jobs SET priority = priority + 1 WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
+	sql2 := "UPDATE jobs SET priority = max(1, priority + 1) WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
+	res, err := conn.ExecContext(ctx, sql2, jobId, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if rowcount, err2 := res.RowsAffected(); rowcount == 1 && err2 == nil {
+		return true
+	}
+	return false
+}
+
+// decrease the priority for a queued/held/waiting job
+func (db *SqliteBatchQ) NiceJob(ctx context.Context, jobId int) bool {
+	conn := db.connect()
+	defer db.close()
+
+	sql2 := "UPDATE jobs SET priority = min(-1, priority - 1) WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
 	res, err := conn.ExecContext(ctx, sql2, jobId, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
 	if err != nil {
 		log.Fatal(err)
