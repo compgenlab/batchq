@@ -145,6 +145,7 @@ func (job *JobDef) AddAfterOk(depId int) *JobDef {
 func (job *JobDef) Print() {
 	fmt.Printf("jobid    : %d\n", job.JobId)
 	fmt.Printf("status   : %s\n", job.Status.String())
+	fmt.Printf("priority : %d\n", job.Priority)
 	fmt.Printf("name     : %s\n", job.Name)
 	fmt.Printf("notes    : %s\n", job.Notes)
 	fmt.Printf("submit   : %v\n", job.SubmitTime)
