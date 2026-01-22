@@ -207,11 +207,12 @@ func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 				if slurmState, err := SlurmGetJobState(slurmJobId); err != nil {
 					fmt.Printf("Error getting SLURM job state for job %d (slurm id: %d): %v\n", job.JobId, slurmJobId, err)
 				} else if slurmState != nil {
+					r.db.UpdateJobRunningDetails(ctx, job.JobId, map[string]string{"slurm_status": slurmState.State, "slurm_last_update": support.GetNowUTCString()})
 					switch slurmState.State {
 					case "PENDING":
-						r.db.UpdateJobRunningDetails(ctx, job.JobId, map[string]string{"slurm_status": slurmState.State, "slurm_last_update": support.GetNowUTCString()})
+						// r.db.UpdateJobRunningDetails(ctx, job.JobId, map[string]string{"slurm_status": slurmState.State, "slurm_last_update": support.GetNowUTCString()})
 					case "RUNNING":
-						r.db.UpdateJobRunningDetails(ctx, job.JobId, map[string]string{"slurm_status": slurmState.State, "slurm_last_update": support.GetNowUTCString(), "slurm_start_time": slurmState.StartAsTimeString(), "slurm_node_list": slurmState.NodeList})
+						// r.db.UpdateJobRunningDetails(ctx, job.JobId, map[string]string{"slurm_status": slurmState.State, "slurm_last_update": support.GetNowUTCString(), "slurm_start_time": slurmState.StartAsTimeString(), "slurm_node_list": slurmState.NodeList})
 					case "COMPLETED":
 						// success
 						r.db.ProxyEndJob(ctx, job.JobId, jobs.SUCCESS, slurmState.StartAsTimeString(), slurmState.EndAsTimeString(), slurmState.ExitCodeInt())
