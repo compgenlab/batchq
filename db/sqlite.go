@@ -1043,7 +1043,7 @@ func (db *SqliteBatchQ) TopJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
 	defer db.close()
 
-	sql2 := "UPDATE jobs SET SET priority = priority + 1 WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
+	sql2 := "UPDATE jobs SET priority = priority + 1 WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
 	res, err := conn.ExecContext(ctx, sql2, jobs.USERHOLD, jobId, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
 	if err != nil {
 		log.Fatal(err)
