@@ -274,9 +274,9 @@ var niceCmd = &cobra.Command{
 								defer cancel()
 
 								if jobq.NiceJob(ctx, jobid) {
-									fmt.Printf("Job: %d prioritized\n", jobid)
+									fmt.Printf("Job: %d de-prioritized\n", jobid)
 								} else {
-									fmt.Printf("Error prioritizing job: %d\n", jobid)
+									fmt.Printf("Error de-prioritizing job: %d\n", jobid)
 								}
 							}
 						}
@@ -289,9 +289,9 @@ var niceCmd = &cobra.Command{
 						defer cancel()
 
 						if jobq.NiceJob(ctx, jobid) {
-							fmt.Printf("Job: %d prioritized\n", jobid)
+							fmt.Printf("Job: %d de-prioritized\n", jobid)
 						} else {
-							fmt.Printf("Error prioritizing job: %d\n", jobid)
+							fmt.Printf("Error de-prioritizing job: %d\n", jobid)
 						}
 					}
 				}

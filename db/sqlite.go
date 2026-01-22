@@ -79,7 +79,7 @@ func initSqlite3(fname string, force bool, startingJobId int) error {
 	CREATE TABLE jobs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		status INT DEFAULT 0 NOT NULL,
-		priority INT DEFAULT -1 NOT NULL,
+		priority INT DEFAULT 0 NOT NULL,
 		name TEXT,
 		notes TEXT,
 		submit_time TEXT DEFAULT "",
@@ -1043,7 +1043,7 @@ func (db *SqliteBatchQ) TopJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
 	defer db.close()
 
-	sql2 := "UPDATE jobs SET priority = max(1, priority + 1) WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
+	sql2 := "UPDATE jobs SET priority = max(0, priority + 1) WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
 	res, err := conn.ExecContext(ctx, sql2, jobId, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
 	if err != nil {
 		log.Fatal(err)
@@ -1059,7 +1059,7 @@ func (db *SqliteBatchQ) NiceJob(ctx context.Context, jobId int) bool {
 	conn := db.connect()
 	defer db.close()
 
-	sql2 := "UPDATE jobs SET priority = min(-1, priority - 1) WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
+	sql2 := "UPDATE jobs SET priority = min(0, priority - 1) WHERE id = ? AND (status = ? OR status  = ? OR status  = ?)"
 	res, err := conn.ExecContext(ctx, sql2, jobId, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
 	if err != nil {
 		log.Fatal(err)
