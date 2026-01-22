@@ -281,7 +281,7 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 		args = []any{}
 	} else {
 		if sortByStatus {
-			sql = "SELECT id,status,priority,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY status DESC, priority DESC end_time, start_time, id"
+			sql = "SELECT id,status,priority,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY status DESC, priority DESC, end_time, start_time, id"
 		} else {
 			sql = "SELECT id,status,priority,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status <= ? ORDER BY id"
 		}
