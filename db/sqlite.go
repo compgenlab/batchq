@@ -376,6 +376,356 @@ func (db *SqliteBatchQ) GetJobs(ctx context.Context, showAll bool, sortByStatus 
 	return retjobs
 }
 
+func (db *SqliteBatchQ) GetJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) []*jobs.JobDef {
+	if len(statuses) == 0 {
+		return []*jobs.JobDef{}
+	}
+
+	conn := db.connect()
+	defer db.close()
+
+	placeholders := make([]string, len(statuses))
+	args := make([]any, len(statuses))
+	for i, status := range statuses {
+		placeholders[i] = "?"
+		args[i] = status
+	}
+
+	sql := "SELECT id,status,priority,name,notes,submit_time,start_time,end_time,return_code FROM jobs WHERE status IN (" + strings.Join(placeholders, ",") + ")"
+	if sortByStatus {
+		sql += " ORDER BY status DESC, priority DESC, end_time, start_time, id"
+	} else {
+		sql += " ORDER BY id"
+	}
+
+	rows, err := conn.QueryContext(ctx, sql, args...)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var retjobs []*jobs.JobDef
+
+	for rows.Next() {
+		var job jobs.JobDef
+		var submitTime string
+		var startTime string
+		var endTime string
+
+		err := rows.Scan(&job.JobId, &job.Status, &job.Priority, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		if submitTime != "" {
+			job.SubmitTime, err = time.Parse("2006-01-02 15:04:05 MST", submitTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if startTime != "" {
+			job.StartTime, err = time.Parse("2006-01-02 15:04:05 MST", startTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if endTime != "" {
+			job.EndTime, err = time.Parse("2006-01-02 15:04:05 MST", endTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		retjobs = append(retjobs, &job)
+	}
+	rows.Close()
+
+	return retjobs
+}
+
+func (db *SqliteBatchQ) GetJobStatusCounts(ctx context.Context, showAll bool) map[jobs.StatusCode]int {
+	conn := db.connect()
+	defer db.close()
+
+	counts := map[jobs.StatusCode]int{
+		jobs.USERHOLD:   0,
+		jobs.WAITING:    0,
+		jobs.QUEUED:     0,
+		jobs.PROXYQUEUED: 0,
+		jobs.RUNNING:    0,
+		jobs.SUCCESS:    0,
+		jobs.FAILED:     0,
+		jobs.CANCELED:   0,
+	}
+
+	sql := "SELECT status, COUNT(*) FROM jobs"
+	var args []any
+	if !showAll {
+		sql += " WHERE status <= ?"
+		args = []any{jobs.RUNNING}
+	}
+	sql += " GROUP BY status"
+
+	rows, err := conn.QueryContext(ctx, sql, args...)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var status jobs.StatusCode
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			log.Fatal(err)
+		}
+		counts[status] = count
+	}
+
+	return counts
+}
+
+func (db *SqliteBatchQ) GetQueueJobs(ctx context.Context, showAll bool, sortByStatus bool) []*jobs.JobDef {
+	conn := db.connect()
+	defer db.close()
+
+	query := `
+	SELECT j.id, j.status, j.priority, j.name, j.notes, j.submit_time, j.start_time, j.end_time, j.return_code,
+		deps.deps, details.details, running.running
+	FROM jobs j
+	LEFT JOIN (
+		SELECT job_id, group_concat(afterok_id, '\n') AS deps
+		FROM job_deps
+		GROUP BY job_id
+	) deps ON deps.job_id = j.id
+	LEFT JOIN (
+		SELECT job_id, group_concat(key || '=' || value, '\n') AS details
+		FROM job_details
+		WHERE key IN ('procs', 'mem', 'walltime', 'user')
+		GROUP BY job_id
+	) details ON details.job_id = j.id
+	LEFT JOIN (
+		SELECT job_id, group_concat(key || '=' || value, '\n') AS running
+		FROM job_running_details
+		WHERE key IN ('pid', 'slurm_status', 'slurm_job_id')
+		GROUP BY job_id
+	) running ON running.job_id = j.id
+	`
+	var args []any
+	if !showAll {
+		query += " WHERE j.status IN (?, ?, ?, ?)"
+		args = []any{jobs.WAITING, jobs.QUEUED, jobs.PROXYQUEUED, jobs.RUNNING}
+	}
+	if sortByStatus {
+		query += " ORDER BY j.status DESC, j.priority DESC, j.end_time, j.start_time, j.id"
+	} else {
+		query += " ORDER BY j.id"
+	}
+
+	rows, err := conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+			log.Printf("GetQueueJobs query canceled: %v", err)
+			return nil
+		}
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	var retjobs []*jobs.JobDef
+
+	for rows.Next() {
+		var job jobs.JobDef
+		var submitTime string
+		var startTime string
+		var endTime string
+		var depRaw sql.NullString
+		var detailRaw sql.NullString
+		var runningRaw sql.NullString
+
+		err := rows.Scan(&job.JobId, &job.Status, &job.Priority, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode, &depRaw, &detailRaw, &runningRaw)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+				log.Printf("GetQueueJobs scan canceled: %v", err)
+				return retjobs
+			}
+			log.Fatal(err)
+		}
+
+		if submitTime != "" {
+			job.SubmitTime, err = time.Parse("2006-01-02 15:04:05 MST", submitTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if startTime != "" {
+			job.StartTime, err = time.Parse("2006-01-02 15:04:05 MST", startTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if endTime != "" {
+			job.EndTime, err = time.Parse("2006-01-02 15:04:05 MST", endTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		if depRaw.Valid && depRaw.String != "" {
+			job.AfterOk = strings.Split(depRaw.String, "\n")
+		}
+		if detailRaw.Valid && detailRaw.String != "" {
+			job.Details = parseJobDetails(detailRaw.String)
+		}
+		if runningRaw.Valid && runningRaw.String != "" {
+			job.RunningDetails = parseRunningDetails(runningRaw.String)
+		}
+
+		retjobs = append(retjobs, &job)
+	}
+	if err := rows.Err(); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+			log.Printf("GetQueueJobs rows canceled: %v", err)
+			return retjobs
+		}
+		log.Fatal(err)
+	}
+
+	if len(retjobs) == 0 {
+		var total int
+		row := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM jobs")
+		if err := row.Scan(&total); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+				log.Printf("GetQueueJobs count canceled: %v", err)
+				return retjobs
+			}
+			log.Fatal(err)
+		}
+		if total > 0 {
+			if showAll {
+				log.Printf("GetQueueJobs fast path returned 0 rows (showAll=%t, total=%d); falling back to legacy query", showAll, total)
+			} else {
+				var activeCount int
+				row := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM jobs WHERE status IN (?, ?, ?, ?)",
+					jobs.WAITING, jobs.QUEUED, jobs.PROXYQUEUED, jobs.RUNNING)
+				if err := row.Scan(&activeCount); err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+						log.Printf("GetQueueJobs active count canceled: %v", err)
+						return retjobs
+					}
+					log.Fatal(err)
+				}
+				log.Printf("GetQueueJobs fast path returned 0 rows (showAll=%t, active=%d, total=%d); falling back to legacy query", showAll, activeCount, total)
+			}
+
+			if explainRows, err := conn.QueryContext(ctx, "EXPLAIN QUERY PLAN "+query, args...); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+					log.Printf("GetQueueJobs explain canceled: %v", err)
+					return retjobs
+				}
+				log.Fatal(err)
+			} else {
+				for explainRows.Next() {
+					var id int
+					var parent int
+					var notused int
+					var detail string
+					if err := explainRows.Scan(&id, &parent, &notused, &detail); err != nil {
+						if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+							log.Printf("GetQueueJobs explain scan canceled: %v", err)
+							explainRows.Close()
+							return retjobs
+						}
+						log.Fatal(err)
+					}
+					log.Printf("GetQueueJobs fast path plan: %d %d %d %s", id, parent, notused, detail)
+				}
+				if err := explainRows.Err(); err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+						log.Printf("GetQueueJobs explain rows canceled: %v", err)
+						explainRows.Close()
+						return retjobs
+					}
+					log.Fatal(err)
+				}
+				explainRows.Close()
+			}
+
+			rows, err := conn.QueryContext(ctx, "SELECT CAST(status AS TEXT), typeof(status), COUNT(*) FROM jobs GROUP BY status, typeof(status) ORDER BY status")
+			if err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+					log.Printf("GetQueueJobs histogram canceled: %v", err)
+					return retjobs
+				}
+				log.Fatal(err)
+			}
+			for rows.Next() {
+				var statusText string
+				var statusType string
+				var count int
+				if err := rows.Scan(&statusText, &statusType, &count); err != nil {
+					if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+						log.Printf("GetQueueJobs histogram scan canceled: %v", err)
+						rows.Close()
+						return retjobs
+					}
+					log.Fatal(err)
+				}
+				log.Printf("GetQueueJobs status histogram: status=%s type=%s count=%d", statusText, statusType, count)
+			}
+			if err := rows.Err(); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+					log.Printf("GetQueueJobs histogram rows canceled: %v", err)
+					rows.Close()
+					return retjobs
+				}
+				log.Fatal(err)
+			}
+			rows.Close()
+
+			if showAll {
+				return db.GetJobs(ctx, showAll, sortByStatus)
+			}
+			return db.GetJobsByStatus(ctx, []jobs.StatusCode{
+				jobs.WAITING,
+				jobs.QUEUED,
+				jobs.PROXYQUEUED,
+				jobs.RUNNING,
+			}, sortByStatus)
+		}
+	}
+
+	return retjobs
+}
+
+func parseJobDetails(raw string) []jobs.JobDefDetail {
+	var details []jobs.JobDefDetail
+	for _, line := range strings.Split(raw, "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		details = append(details, jobs.JobDefDetail{Key: parts[0], Value: parts[1]})
+	}
+	return details
+}
+
+func parseRunningDetails(raw string) []jobs.JobRunningDetail {
+	var details []jobs.JobRunningDetail
+	for _, line := range strings.Split(raw, "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		details = append(details, jobs.JobRunningDetail{Key: parts[0], Value: parts[1]})
+	}
+	return details
+}
+
 // func (db *SqliteBatchQ) FetchNext(ctx context.Context, freeProc int, freeMemMB int, freeTimeSec int) (*jobs.JobDef, bool) {
 func (db *SqliteBatchQ) FetchNext(ctx context.Context, limits []JobLimit) (*jobs.JobDef, bool) {
 	// First, update all WAITING jobs to QUEUED if they have no outstanding dependencies
@@ -669,6 +1019,28 @@ func (db *SqliteBatchQ) GetJob(ctx context.Context, jobId string) *jobs.JobDef {
 	}
 	rows.Close()
 	return nil
+}
+
+func (db *SqliteBatchQ) GetJobDependents(ctx context.Context, jobId string) []string {
+	conn := db.connect()
+	defer db.close()
+
+	sql := "SELECT job_id FROM job_deps WHERE afterok_id = ? ORDER BY job_id"
+	rows, err := conn.QueryContext(ctx, sql, jobId)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	var dependents []string
+	for rows.Next() {
+		var childId string
+		if err := rows.Scan(&childId); err != nil {
+			log.Fatal(err)
+		}
+		dependents = append(dependents, childId)
+	}
+	return dependents
 }
 
 func (db *SqliteBatchQ) CancelJob(ctx context.Context, jobId string, reason string) bool {

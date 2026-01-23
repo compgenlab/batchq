@@ -9,7 +9,6 @@ import (
 
 	"github.com/mbreese/batchq/db"
 	"github.com/mbreese/batchq/jobs"
-	"github.com/mbreese/batchq/support"
 	"github.com/spf13/cobra"
 )
 
@@ -67,7 +66,8 @@ var queueCmd = &cobra.Command{
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 
-			for _, job := range jobq.GetJobs(ctx, jobShowAll, true) {
+			list := jobq.GetQueueJobs(ctx, jobShowAll, true)
+			for _, job := range list {
 				// job.Print()
 				fmt.Printf("| %-36.36s ", job.JobId)
 				fmt.Printf("| %-8.8s ", job.Status.String())
@@ -101,7 +101,7 @@ var queueCmd = &cobra.Command{
 						fmt.Printf(" %s", fmt.Sprintf("slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), job.GetRunningDetail("slurm_job_id", "")))
 					}
 					if len(job.AfterOk) > 0 {
-						depStr := fmt.Sprintf("deps:%s", support.JoinStrings(job.AfterOk, ","))
+						depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
 						if len(depStr) > 20 {
 							fmt.Printf(" %-17.17s...", depStr)
 						} else {
@@ -113,7 +113,7 @@ var queueCmd = &cobra.Command{
 					fmt.Printf("| %-11.11s ", jobs.WalltimeStringToString(job.GetDetail("walltime", "")))
 					fmt.Print("|")
 					if len(job.AfterOk) > 0 {
-						depStr := fmt.Sprintf("deps:%s", support.JoinStrings(job.AfterOk, ","))
+						depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
 						if len(depStr) > 20 {
 							fmt.Printf(" %-17.17s...", depStr)
 						} else {
@@ -173,16 +173,7 @@ var summaryCmd = &cobra.Command{
 			if len(args) == 0 {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
-				var counts map[jobs.StatusCode]int = make(map[jobs.StatusCode]int)
-				for _, status := range []jobs.StatusCode{jobs.USERHOLD, jobs.WAITING, jobs.QUEUED, jobs.PROXYQUEUED, jobs.RUNNING, jobs.SUCCESS, jobs.FAILED, jobs.CANCELED} {
-					counts[status] = 0
-				}
-
-				for _, job := range jobq.GetJobs(ctx, jobShowAll, false) {
-					if _, ok := counts[job.Status]; ok {
-						counts[job.Status]++
-					}
-				}
+				counts := jobq.GetJobStatusCounts(ctx, jobShowAll)
 
 				for _, status := range []jobs.StatusCode{jobs.USERHOLD, jobs.WAITING, jobs.QUEUED, jobs.PROXYQUEUED, jobs.RUNNING, jobs.SUCCESS, jobs.FAILED, jobs.CANCELED} {
 					if jobShowAll || counts[status] > 0 {

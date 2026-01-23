@@ -29,13 +29,6 @@ func GetUserHomeFilePath(path ...string) (string, error) {
 	return filepath.Join(tmp...), nil
 }
 
-func JoinStrings(vals []string, sep string) string {
-	if len(vals) == 0 {
-		return ""
-	}
-	return strings.Join(vals, sep)
-}
-
 func AmIRoot() bool {
 	if u, err := user.Current(); err == nil {
 		return u.Uid == "0"

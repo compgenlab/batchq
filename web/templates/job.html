@@ -1,0 +1,178 @@
+{{define "job-content"}}
+  <section class="panel">
+    <div class="grid">
+      <div>
+        <div class="muted">Job ID</div>
+        <div><strong>{{.Job.JobId}}</strong></div>
+      </div>
+      <div>
+        <div class="muted">Status</div>
+        <div><span class="status {{statusClass .Job.Status}}">{{.Job.Status}}</span></div>
+      </div>
+      <div>
+        <div class="muted">Name</div>
+        <div>{{.Job.Name}}</div>
+      </div>
+      <div>
+        <div class="muted">Submit</div>
+        <div>{{formatTime .Job.SubmitTime}}</div>
+      </div>
+      <div>
+        <div class="muted">Start</div>
+        <div>{{formatTime .Job.StartTime}}</div>
+      </div>
+      <div>
+        <div class="muted">End</div>
+        <div>{{formatTime .Job.EndTime}}</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Dependencies</h2>
+    <div class="grid">
+      <div>
+        <div class="muted">Depends on</div>
+        <ul>
+          {{range .Parents}}
+            <li>
+              <a href="/jobs/{{.JobId}}">{{.JobId}}</a>
+              <span class="status {{statusClass .Status}}">{{.Status}}</span>
+              <span class="job-name">{{.Name}}</span>
+            </li>
+          {{end}}
+          {{if not .Parents}}
+            <li class="muted">None</li>
+          {{end}}
+        </ul>
+      </div>
+      <div>
+        <div class="muted">Dependents</div>
+        <ul>
+          {{range .Children}}
+            <li>
+              <a href="/jobs/{{.JobId}}">{{.JobId}}</a>
+              <span class="status {{statusClass .Status}}">{{.Status}}</span>
+              <span class="job-name">{{.Name}}</span>
+            </li>
+          {{end}}
+          {{if not .Children}}
+            <li class="muted">None</li>
+          {{end}}
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Details</h2>
+    <div class="kv">
+      <div class="muted">Priority</div><div>{{.Job.Priority}}</div>
+      <div class="muted">Notes</div><div>{{.Job.Notes}}</div>
+      <div class="muted">Return Code</div><div>{{.Job.ReturnCode}}</div>
+    </div>
+    {{if .DetailRows}}
+      <table>
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .DetailRows}}
+            <tr>
+              <td>{{.Key}}</td>
+              <td>
+                {{if .IsPre}}
+                  <pre>{{.Value}}</pre>
+                {{else}}
+                  {{.Value}}
+                {{end}}
+              </td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+    {{else}}
+      <div class="muted">No job details.</div>
+    {{end}}
+  </section>
+
+  {{if .RunningRows}}
+    <section class="panel">
+      <h2>Running Details</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Key</th>
+            <th>Value</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .RunningRows}}
+            <tr>
+              <td>{{.Key}}</td>
+              <td>
+                {{if .IsPre}}
+                  <pre>{{.Value}}</pre>
+                {{else}}
+                  {{.Value}}
+                {{end}}
+              </td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </section>
+  {{end}}
+
+  {{if .Script}}
+    <section class="panel">
+      <h2>Job Script</h2>
+      <pre>{{.Script}}</pre>
+    </section>
+  {{end}}
+
+  {{if .SlurmScript}}
+    <section class="panel">
+      <h2>SLURM Script</h2>
+      <pre>{{.SlurmScript}}</pre>
+    </section>
+  {{end}}
+
+  <section class="panel">
+    <h2>Dependency Tree (Parents)</h2>
+    {{if .ParentTree}}
+      {{template "tree" .ParentTree}}
+    {{else}}
+      <div class="muted">No parent jobs.</div>
+    {{end}}
+  </section>
+
+  <section class="panel">
+    <h2>Dependency Tree (Children)</h2>
+    {{if .ChildTree}}
+      {{template "tree" .ChildTree}}
+    {{else}}
+      <div class="muted">No children jobs.</div>
+    {{end}}
+  </section>
+{{end}}
+
+{{define "tree"}}
+  <ul class="tree">
+    <li>
+      <a href="/jobs/{{.Job.JobId}}">{{.Job.JobId}}</a>
+      <span class="status {{statusClass .Job.Status}}">{{.Job.Status}}</span>
+      <span class="job-name">{{.Job.Name}}</span>
+      {{if .Children}}
+        <ul>
+          {{range .Children}}
+            {{template "tree" .}}
+          {{end}}
+        </ul>
+      {{end}}
+    </li>
+  </ul>
+{{end}}

@@ -153,7 +153,7 @@ func (job *JobDef) Print() {
 	fmt.Printf("end      : %v\n", job.EndTime)
 
 	if len(job.AfterOk) > 0 {
-		fmt.Printf("after-ok : %s\n", support.JoinStrings(job.AfterOk, ","))
+		fmt.Printf("after-ok : %s\n", strings.Join(job.AfterOk, ","))
 	}
 
 	fmt.Printf("---[job details]---\n")
