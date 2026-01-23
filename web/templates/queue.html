@@ -1,14 +1,42 @@
 {{define "queue-content"}}
   <section class="panel">
+    <form class="filters" method="get" action="/jobs">
+      <fieldset>
+        <legend>Status</legend>
+        <div class="status-list">
+          {{range .StatusOptions}}
+            <label>
+              <input type="checkbox" name="status" value="{{.}}" {{if index $.SelectedStatus .}}checked{{end}}>
+              {{.}}
+            </label>
+          {{end}}
+        </div>
+        <div class="divider"></div>
+        <div class="button-row">
+          <div class="quick-filters">
+            <button type="button" data-filter="active">Active</button>
+            <button type="button" data-filter="all">All</button>
+          </div>
+          <div class="actions">
+            <button type="submit">Apply</button>
+            <button type="button" class="clear">Clear</button>
+          </div>
+        </div>
+      </fieldset>
+    </form>
+  </section>
+
+  <section class="panel">
     <div class="grid">
       <div>
         <strong>Jobs:</strong> {{len .Jobs}}
       </div>
       <div>
+        <strong>Filter:</strong>
         {{if .ShowAll}}
-          <a href="/jobs">Show active only</a>
+          All
         {{else}}
-          <a href="/jobs?all=1">Show all</a>
+          Active
         {{end}}
       </div>
     </div>

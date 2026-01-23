@@ -1,0 +1,85 @@
+{{define "search-content"}}
+  <section class="panel">
+    <form class="filters" method="get" action="/search">
+      <input type="hidden" name="q" value="{{.Query}}">
+      <fieldset>
+        <legend>Status</legend>
+        <div class="status-list">
+          {{range .StatusOptions}}
+            <label>
+              <input type="checkbox" name="status" value="{{.}}" {{if index $.SelectedStatus .}}checked{{end}}>
+              {{.}}
+            </label>
+          {{end}}
+        </div>
+        <div class="divider"></div>
+        <div class="button-row">
+          <div class="quick-filters">
+            <button type="button" data-filter="active">Active</button>
+            <button type="button" data-filter="all">All</button>
+          </div>
+          <div class="actions">
+            <button type="submit">Apply</button>
+            <button type="button" class="clear">Clear</button>
+          </div>
+        </div>
+      </fieldset>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="grid">
+      <div>
+        <strong>Search:</strong>
+        {{if .Query}}
+          {{.Query}}
+        {{else}}
+          <span class="muted">Enter a term to search jobs.</span>
+        {{end}}
+      </div>
+      <div>
+        {{if .Query}}
+          <strong>Results:</strong> {{len .Results}}
+        {{end}}
+      </div>
+    </div>
+  </section>
+
+  {{if .Query}}
+    <section class="panel">
+      <table>
+        <thead>
+          <tr>
+            <th>Job ID</th>
+            <th>Status</th>
+            <th>Name</th>
+            <th>Submit</th>
+            <th>Start</th>
+            <th>End</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{range .Results}}
+            <tr>
+              <td><a href="/jobs/{{.JobId}}">{{.JobId}}</a></td>
+              <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
+              <td>{{.Name}}</td>
+              <td>{{formatTime .SubmitTime}}</td>
+              <td>{{formatTime .StartTime}}</td>
+              <td>{{formatTime .EndTime}}</td>
+            </tr>
+          {{end}}
+          {{if not .Results}}
+            <tr>
+              <td colspan="6" class="muted">No matching jobs.</td>
+            </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </section>
+  {{else}}
+    <section class="panel">
+      <div class="muted">Search by job ID, name, or script contents.</div>
+    </section>
+  {{end}}
+{{end}}

@@ -60,6 +60,9 @@ type queuePage struct {
 	ContentTemplate string
 	Jobs            []*jobs.JobDef
 	ShowAll         bool
+	Query           string
+	StatusOptions   []string
+	SelectedStatus  map[string]bool
 }
 
 type jobPage struct {
@@ -74,6 +77,16 @@ type jobPage struct {
 	SlurmScript     string
 	ParentTree      *jobTreeNode
 	ChildTree       *jobTreeNode
+	Query           string
+}
+
+type searchPage struct {
+	Title           string
+	ContentTemplate string
+	Query           string
+	Results         []*jobs.JobDef
+	StatusOptions   []string
+	SelectedStatus  map[string]bool
 }
 
 func StartServer(opts Options) error {
@@ -106,6 +119,7 @@ func StartServer(opts Options) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jobs/", server.handleJob)
 	mux.HandleFunc("/jobs", server.handleQueue)
+	mux.HandleFunc("/search", server.handleSearch)
 	mux.HandleFunc("/", server.handleQueue)
 
 	httpServer := &http.Server{
@@ -240,20 +254,20 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	showAll := false
-	if val := strings.ToLower(r.URL.Query().Get("all")); val == "1" || val == "true" || val == "yes" {
-		showAll = true
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), webRequestTimeout)
 	defer cancel()
 
-	jobList := s.db.GetQueueJobs(ctx, showAll, true)
+	statuses, selected := parseStatusFilter(r)
+	jobList := s.jobsForFilter(ctx, statuses)
+	showAll := len(statuses) == 0
 	data := queuePage{
 		Title:           "batchq queue",
 		ContentTemplate: "queue-content",
 		Jobs:            jobList,
 		ShowAll:         showAll,
+		Query:           "",
+		StatusOptions:   statusOptions(),
+		SelectedStatus:  selected,
 	}
 
 	s.render(w, r, data)
@@ -302,6 +316,41 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 		SlurmScript:     slurmScript,
 		ParentTree:      parentTree,
 		ChildTree:       childTree,
+		Query:           "",
+	}
+
+	s.render(w, r, data)
+}
+
+func (s *webServer) handleSearch(w http.ResponseWriter, r *http.Request) {
+	s.logf("web request %s %s", r.Method, r.URL.Path)
+	if r.URL.Path != "/search" {
+		http.NotFound(w, r)
+		return
+	}
+
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	ctx, cancel := context.WithTimeout(r.Context(), webRequestTimeout)
+	defer cancel()
+
+	statuses, selected := parseStatusFilter(r)
+	var results []*jobs.JobDef
+	if query != "" {
+		if len(statuses) > 0 {
+			results = s.db.SearchJobs(ctx, query, statuses)
+		} else {
+			results = s.db.SearchJobs(ctx, query, nil)
+		}
+	}
+
+	data := searchPage{
+		Title:           "batchq search",
+		ContentTemplate: "search-content",
+		Query:           query,
+		Results:         results,
+		StatusOptions:   statusOptions(),
+		SelectedStatus:  selected,
 	}
 
 	s.render(w, r, data)
@@ -429,4 +478,99 @@ func buildChildTree(ctx context.Context, batchdb db.BatchDB, jobId string, visit
 		return node.Children[i].Job.JobId < node.Children[j].Job.JobId
 	})
 	return node
+}
+
+func (s *webServer) jobsForFilter(ctx context.Context, statuses []jobs.StatusCode) []*jobs.JobDef {
+	if len(statuses) == 0 {
+		return s.db.GetQueueJobs(ctx, true, true)
+	}
+	if isActiveStatusSet(statuses) {
+		return s.db.GetQueueJobs(ctx, false, true)
+	}
+	return s.db.GetJobsByStatus(ctx, statuses, true)
+}
+
+func parseStatusFilter(r *http.Request) ([]jobs.StatusCode, map[string]bool) {
+	selected := make(map[string]bool)
+	statuses := parseStatusList(r.URL.Query()["status"], selected)
+	if len(statuses) == 0 {
+		statuses = activeStatuses()
+		for _, status := range statuses {
+			selected[status.String()] = true
+		}
+	}
+	return statuses, selected
+}
+
+func parseStatusList(raw []string, selected map[string]bool) []jobs.StatusCode {
+	if selected == nil {
+		selected = make(map[string]bool)
+	}
+	lookup := statusLookup()
+	var statuses []jobs.StatusCode
+	for _, val := range raw {
+		key := strings.ToUpper(strings.TrimSpace(val))
+		if key == "" {
+			continue
+		}
+		code, ok := lookup[key]
+		if !ok {
+			continue
+		}
+		selected[key] = true
+		statuses = append(statuses, code)
+	}
+	return statuses
+}
+
+func statusLookup() map[string]jobs.StatusCode {
+	return map[string]jobs.StatusCode{
+		jobs.UNKNOWN.String():     jobs.UNKNOWN,
+		jobs.USERHOLD.String():    jobs.USERHOLD,
+		jobs.WAITING.String():     jobs.WAITING,
+		jobs.QUEUED.String():      jobs.QUEUED,
+		jobs.PROXYQUEUED.String(): jobs.PROXYQUEUED,
+		jobs.RUNNING.String():     jobs.RUNNING,
+		jobs.SUCCESS.String():     jobs.SUCCESS,
+		jobs.FAILED.String():      jobs.FAILED,
+		jobs.CANCELED.String():    jobs.CANCELED,
+	}
+}
+
+func statusOptions() []string {
+	return []string{
+		jobs.USERHOLD.String(),
+		jobs.WAITING.String(),
+		jobs.QUEUED.String(),
+		jobs.PROXYQUEUED.String(),
+		jobs.RUNNING.String(),
+		jobs.SUCCESS.String(),
+		jobs.FAILED.String(),
+		jobs.CANCELED.String(),
+	}
+}
+
+func activeStatuses() []jobs.StatusCode {
+	return []jobs.StatusCode{
+		jobs.WAITING,
+		jobs.QUEUED,
+		jobs.PROXYQUEUED,
+		jobs.RUNNING,
+	}
+}
+
+func isActiveStatusSet(statuses []jobs.StatusCode) bool {
+	if len(statuses) != len(activeStatuses()) {
+		return false
+	}
+	activeLookup := map[jobs.StatusCode]bool{}
+	for _, status := range activeStatuses() {
+		activeLookup[status] = true
+	}
+	for _, status := range statuses {
+		if !activeLookup[status] {
+			return false
+		}
+	}
+	return true
 }
