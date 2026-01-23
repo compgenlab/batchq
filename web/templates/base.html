@@ -47,6 +47,32 @@
         margin-right: 12px;
         font-size: 14px;
       }
+      .search {
+        margin-left: auto;
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .search input[type="search"] {
+        width: min(360px, 60vw);
+        padding: 6px 10px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: #fffefb;
+        font-size: 13px;
+        font-family: inherit;
+      }
+      .search button {
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: #f0eee9;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
       main {
         padding: 24px;
       }
@@ -100,6 +126,86 @@
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
         gap: 12px;
       }
+      .filters {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: stretch;
+      }
+      .filters fieldset {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 8px 12px 10px;
+        min-width: 200px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .filters legend {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        padding: 0 6px;
+      }
+      .filters label {
+        font-size: 12px;
+        margin-right: 10px;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .filters .status-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px 12px;
+      }
+      .filters .quick-filters {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .filters .divider {
+        height: 1px;
+        background: var(--border);
+        margin: 6px 0;
+      }
+      .filters .actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-shrink: 0;
+      }
+      .filters .button-row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: nowrap;
+        justify-content: space-between;
+        width: 100%;
+      }
+      .filters .button-row .actions {
+        margin-left: auto;
+      }
+      .filters button {
+        padding: 6px 14px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: #f0eee9;
+        font-size: 12px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+      }
+      .filters button[data-filter] {
+        background: #fbfaf6;
+      }
+      .filters button.clear {
+        background: #fff3f3;
+        color: var(--err);
+        border-color: #f1c5c5;
+      }
       .kv {
         display: grid;
         grid-template-columns: 120px 1fr;
@@ -131,6 +237,14 @@
         header {
           padding: 16px;
         }
+        .search {
+          width: 100%;
+          margin-left: 0;
+        }
+        .search input[type="search"] {
+          flex: 1;
+          width: auto;
+        }
         main {
           padding: 16px;
         }
@@ -146,16 +260,63 @@
       <nav>
         <a href="/jobs">Queue</a>
       </nav>
+      <form class="search" action="/search" method="get">
+        <input type="search" name="q" placeholder="Search job IDs, names, scripts" value="{{.Query}}">
+        <button type="submit">Search</button>
+      </form>
     </header>
     <main>
       {{if eq .ContentTemplate "queue-content"}}
         {{template "queue-content" .}}
       {{else if eq .ContentTemplate "job-content"}}
         {{template "job-content" .}}
+      {{else if eq .ContentTemplate "search-content"}}
+        {{template "search-content" .}}
       {{else}}
         <p>Unknown content template.</p>
       {{end}}
     </main>
+    <script>
+      (() => {
+        const active = new Set(["WAITING", "QUEUED", "PROXYQUEUED", "RUNNING"]);
+        const all = new Set(["UNKNOWN", "USERHOLD", "WAITING", "QUEUED", "PROXYQUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELED"]);
+
+        function setChecked(form, target) {
+          const checkboxes = form.querySelectorAll('input[type="checkbox"][name="status"]');
+          checkboxes.forEach((box) => {
+            box.checked = target.has(box.value);
+          });
+        }
+
+        function submitForm(form) {
+          if (typeof form.requestSubmit === "function") {
+            form.requestSubmit();
+          } else {
+            form.submit();
+          }
+        }
+
+        document.querySelectorAll("form.filters").forEach((form) => {
+          const clearButton = form.querySelector("button.clear");
+          form.querySelectorAll("button[data-filter]").forEach((button) => {
+            button.addEventListener("click", () => {
+              const filter = button.getAttribute("data-filter");
+              if (filter === "active") {
+                setChecked(form, active);
+              } else if (filter === "all") {
+                setChecked(form, all);
+              }
+              submitForm(form);
+            });
+          });
+          if (clearButton) {
+            clearButton.addEventListener("click", () => {
+              setChecked(form, new Set());
+            });
+          }
+        });
+      })();
+    </script>
   </body>
 </html>
 {{end}}

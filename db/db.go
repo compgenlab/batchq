@@ -25,6 +25,8 @@ type BatchDB interface {
 	GetJobStatusCounts(ctx context.Context, showAll bool) map[jobs.StatusCode]int
 	// list jobs for queue display with minimal details
 	GetQueueJobs(ctx context.Context, showAll bool, sortByStatus bool) []*jobs.JobDef
+	// search jobs by job id, name, or script contents
+	SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode) []*jobs.JobDef
 
 	// Cancel a job
 	CancelJob(ctx context.Context, jobId string, reason string) bool

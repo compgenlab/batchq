@@ -696,6 +696,101 @@ func (db *SqliteBatchQ) GetQueueJobs(ctx context.Context, showAll bool, sortBySt
 	return retjobs
 }
 
+func (db *SqliteBatchQ) SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode) []*jobs.JobDef {
+	trimmed := strings.TrimSpace(query)
+	if trimmed == "" {
+		return nil
+	}
+
+	conn := db.connect()
+	defer db.close()
+
+	like := "%" + trimmed + "%"
+	sqlQuery := `
+	SELECT j.id, j.status, j.priority, j.name, j.notes, j.submit_time, j.start_time, j.end_time, j.return_code
+	FROM jobs j
+	WHERE (
+		j.id LIKE ?
+		OR j.name LIKE ?
+		OR EXISTS (
+			SELECT 1
+			FROM job_details d
+			WHERE d.job_id = j.id
+				AND d.key = 'script'
+				AND d.value LIKE ?
+		)
+	)
+	`
+	var args []any
+	args = append(args, like, like, like)
+	if len(statuses) > 0 {
+		placeholders := make([]string, 0, len(statuses))
+		for _, status := range statuses {
+			placeholders = append(placeholders, "?")
+			args = append(args, status)
+		}
+		sqlQuery += " AND j.status IN (" + strings.Join(placeholders, ", ") + ")"
+	}
+	sqlQuery += " ORDER BY j.id"
+
+	rows, err := conn.QueryContext(ctx, sqlQuery, args...)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+			log.Printf("SearchJobs query canceled: %v", err)
+			return nil
+		}
+		log.Fatal(err)
+	}
+	defer rows.Close()
+
+	var retjobs []*jobs.JobDef
+	for rows.Next() {
+		var job jobs.JobDef
+		var submitTime string
+		var startTime string
+		var endTime string
+
+		err := rows.Scan(&job.JobId, &job.Status, &job.Priority, &job.Name, &job.Notes, &submitTime, &startTime, &endTime, &job.ReturnCode)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+				log.Printf("SearchJobs scan canceled: %v", err)
+				return retjobs
+			}
+			log.Fatal(err)
+		}
+
+		if submitTime != "" {
+			job.SubmitTime, err = time.Parse("2006-01-02 15:04:05 MST", submitTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if startTime != "" {
+			job.StartTime, err = time.Parse("2006-01-02 15:04:05 MST", startTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+		if endTime != "" {
+			job.EndTime, err = time.Parse("2006-01-02 15:04:05 MST", endTime)
+			if err != nil {
+				log.Fatal(err)
+			}
+		}
+
+		retjobs = append(retjobs, &job)
+	}
+	if err := rows.Err(); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (ctx != nil && ctx.Err() != nil) {
+			log.Printf("SearchJobs rows canceled: %v", err)
+			return retjobs
+		}
+		log.Fatal(err)
+	}
+
+	return retjobs
+}
+
 func parseJobDetails(raw string) []jobs.JobDefDetail {
 	var details []jobs.JobDefDetail
 	for _, line := range strings.Split(raw, "\n") {
