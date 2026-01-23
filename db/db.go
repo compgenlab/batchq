@@ -14,37 +14,45 @@ type BatchDB interface {
 	// fetch the next job that fits these limits
 	FetchNext(ctx context.Context, limits []JobLimit) (*jobs.JobDef, bool)
 	// FetchNext(ctx context.Context, freeProc int, freeMemMB int, freeTimeSec int) (*jobs.JobDef, bool)
-	GetJob(ctx context.Context, jobId int) *jobs.JobDef
+	GetJob(ctx context.Context, jobId string) *jobs.JobDef
 	// list all jobs
 	GetJobs(ctx context.Context, showAll bool, sortByStatus bool) []*jobs.JobDef
+	// list jobs by status
+	GetJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) []*jobs.JobDef
+	// list job ids that depend on the given job
+	GetJobDependents(ctx context.Context, jobId string) []string
+	// counts of jobs per status
+	GetJobStatusCounts(ctx context.Context, showAll bool) map[jobs.StatusCode]int
+	// list jobs for queue display with minimal details
+	GetQueueJobs(ctx context.Context, showAll bool, sortByStatus bool) []*jobs.JobDef
 
 	// Cancel a job
-	CancelJob(ctx context.Context, jobId int, reason string) bool
+	CancelJob(ctx context.Context, jobId string, reason string) bool
 	// mark job as started
-	StartJob(ctx context.Context, jobId int, jobRunner string, details map[string]string) bool // was the starting successful?
+	StartJob(ctx context.Context, jobId string, jobRunner string, details map[string]string) bool // was the starting successful?
 	// Mark that the job has been submitted to another queue (ex: Slurm)
-	ProxyQueueJob(ctx context.Context, jobId int, jobRunner string, details map[string]string) bool
+	ProxyQueueJob(ctx context.Context, jobId string, jobRunner string, details map[string]string) bool
 	// Find all the proxied jobs
 	GetProxyJobs(ctx context.Context) []*jobs.JobDef
 	// Mark proxied job as done
-	ProxyEndJob(ctx context.Context, jobId int, status jobs.StatusCode, startTime string, endTime string, returnCode int) bool
+	ProxyEndJob(ctx context.Context, jobId string, status jobs.StatusCode, startTime string, endTime string, returnCode int) bool
 	// update the running details for a job
-	UpdateJobRunningDetails(ctx context.Context, jobId int, details map[string]string) bool
+	UpdateJobRunningDetails(ctx context.Context, jobId string, details map[string]string) bool
 	// mark job as ended
-	EndJob(ctx context.Context, jobId int, jobRunner string, returnCode int) bool
+	EndJob(ctx context.Context, jobId string, jobRunner string, returnCode int) bool
 
 	// Remove all job data from the database
-	CleanupJob(ctx context.Context, jobId int) bool
+	CleanupJob(ctx context.Context, jobId string) bool
 
 	// Increase a job's priority
-	TopJob(ctx context.Context, jobId int) bool
+	TopJob(ctx context.Context, jobId string) bool
 	// Decrease a job's priority
-	NiceJob(ctx context.Context, jobId int) bool
+	NiceJob(ctx context.Context, jobId string) bool
 
 	// Hold a job from running
-	HoldJob(ctx context.Context, jobId int) bool
+	HoldJob(ctx context.Context, jobId string) bool
 	// Release a held job
-	ReleaseJob(ctx context.Context, jobId int) bool
+	ReleaseJob(ctx context.Context, jobId string) bool
 
 	Close()
 }
@@ -81,9 +89,9 @@ func OpenDB(dbpath string) (BatchDB, error) {
 	return nil, fmt.Errorf("bad dbpath: %s", dbpath)
 }
 
-func InitDB(dbpath string, force bool, startJobId int) error {
+func InitDB(dbpath string, force bool) error {
 	if dbpath[:10] == "sqlite3://" {
-		return initSqlite3(dbpath[10:], force, startJobId)
+		return initSqlite3(dbpath[10:], force)
 	}
 	return fmt.Errorf("bad dbpath: %s", dbpath)
 }

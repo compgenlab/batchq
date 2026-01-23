@@ -1,0 +1,48 @@
+{{define "queue-content"}}
+  <section class="panel">
+    <div class="grid">
+      <div>
+        <strong>Jobs:</strong> {{len .Jobs}}
+      </div>
+      <div>
+        {{if .ShowAll}}
+          <a href="/jobs">Show active only</a>
+        {{else}}
+          <a href="/jobs?all=1">Show all</a>
+        {{end}}
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <table>
+      <thead>
+        <tr>
+          <th>Job ID</th>
+          <th>Status</th>
+          <th>Name</th>
+          <th>Submit</th>
+          <th>Start</th>
+          <th>End</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Jobs}}
+          <tr>
+            <td><a href="/jobs/{{.JobId}}">{{.JobId}}</a></td>
+            <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
+            <td>{{.Name}}</td>
+            <td>{{formatTime .SubmitTime}}</td>
+            <td>{{formatTime .StartTime}}</td>
+            <td>{{formatTime .EndTime}}</td>
+          </tr>
+        {{end}}
+        {{if not .Jobs}}
+          <tr>
+            <td colspan="6" class="muted">No jobs to display.</td>
+          </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </section>
+{{end}}

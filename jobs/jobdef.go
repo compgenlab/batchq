@@ -66,7 +66,7 @@ func (s StatusCode) String() string {
 }
 
 type JobDef struct {
-	JobId          int
+	JobId          string
 	Status         StatusCode
 	Priority       int
 	Name           string
@@ -75,7 +75,7 @@ type JobDef struct {
 	StartTime      time.Time
 	EndTime        time.Time
 	ReturnCode     int
-	AfterOk        []int
+	AfterOk        []string
 	Details        []JobDefDetail
 	RunningDetails []JobRunningDetail
 }
@@ -91,7 +91,7 @@ type JobRunningDetail struct {
 }
 
 func NewJobDef(name string, src string) *JobDef {
-	jobdef := &JobDef{JobId: -1, Status: UNKNOWN, Name: name}
+	jobdef := &JobDef{JobId: "", Status: UNKNOWN, Name: name}
 	jobdef.Details = make([]JobDefDetail, 0)
 
 	// username := support.GetCurrentUsername()
@@ -116,7 +116,7 @@ func (job *JobDef) GetDetail(key string, defval string) string {
 }
 
 func (job *JobDef) AddDetail(key string, val string) *JobDef {
-	if job.JobId == -1 {
+	if job.JobId == "" {
 		// can only alter a job that hasn't been submitted.
 		job.Details = append(job.Details, JobDefDetail{Key: key, Value: val})
 	}
@@ -131,9 +131,9 @@ func (job *JobDef) GetRunningDetail(key string, defval string) string {
 	return defval
 }
 
-func (job *JobDef) AddAfterOk(depId int) *JobDef {
+func (job *JobDef) AddAfterOk(depId string) *JobDef {
 	// can only alter a job that hasn't been submitted.
-	if job.JobId == -1 {
+	if job.JobId == "" {
 		// must be unique... (DB constraint)
 		if !support.Contains(job.AfterOk, depId) {
 			job.AfterOk = append(job.AfterOk, depId)
@@ -143,7 +143,7 @@ func (job *JobDef) AddAfterOk(depId int) *JobDef {
 }
 
 func (job *JobDef) Print() {
-	fmt.Printf("jobid    : %d\n", job.JobId)
+	fmt.Printf("jobid    : %s\n", job.JobId)
 	fmt.Printf("status   : %s\n", job.Status.String())
 	fmt.Printf("priority : %d\n", job.Priority)
 	fmt.Printf("name     : %s\n", job.Name)
@@ -153,7 +153,7 @@ func (job *JobDef) Print() {
 	fmt.Printf("end      : %v\n", job.EndTime)
 
 	if len(job.AfterOk) > 0 {
-		fmt.Printf("after-ok : %s\n", support.JoinInt(job.AfterOk, ","))
+		fmt.Printf("after-ok : %s\n", strings.Join(job.AfterOk, ","))
 	}
 
 	fmt.Printf("---[job details]---\n")

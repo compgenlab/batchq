@@ -172,7 +172,7 @@ func (r *simpleRunner) Start() bool {
 					r.lock.Lock()
 					r.logf("Currently running jobs (%d):\n", len(r.curJobs))
 					for _, curJob := range r.curJobs {
-						r.logf("  Job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
+						r.logf("  Job %s [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
 					}
 					r.lock.Unlock()
 					lastIntT = time.Now()
@@ -196,7 +196,7 @@ func (r *simpleRunner) Start() bool {
 					for len(r.curJobs) > 0 {
 						curJob := r.curJobs[0]
 						r.curJobs = r.curJobs[1:]
-						r.logf("Killing job %d [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
+						r.logf("Killing job %s [proc: %d]\n", curJob.job.JobId, curJob.cmd.Process.Pid)
 						// go func() {
 						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 						r.db.CancelJob(ctx, curJob.job.JobId, "Shutting down runner")
@@ -235,7 +235,7 @@ func (r *simpleRunner) Start() bool {
 					curJob.cmd.Cancel()
 					continue
 				} else {
-					r.logf("Trying to cancel job: %d, but Cancel() is nil.\n", curJob.job.JobId)
+					r.logf("Trying to cancel job: %s, but Cancel() is nil.\n", curJob.job.JobId)
 				}
 			}
 
@@ -247,7 +247,7 @@ func (r *simpleRunner) Start() bool {
 					} else if jobTime > 0 {
 						duration := time.Now().UTC().Sub(curJob.startTime)
 						if duration.Seconds() > float64(jobTime) {
-							r.logf("Job: %d exceeded wall-time (%s sec limit, %.2f sec elapsed)", curJob.job.JobId, val, duration.Seconds())
+							r.logf("Job: %s exceeded wall-time (%s sec limit, %.2f sec elapsed)", curJob.job.JobId, val, duration.Seconds())
 							r.db.CancelJob(ctx, job.JobId, "exceeded wall-time")
 							curJob.cmd.Cancel()
 							continue
@@ -309,7 +309,7 @@ func (r *simpleRunner) Start() bool {
 
 				// if job, hasMore := r.db.FetchNext(ctx, r.availProcs, r.availMem, r.maxWalltimeSec); job != nil {
 				if job, hasMore := r.db.FetchNext(ctx, limits); job != nil {
-					r.logf("Processing job: %d\n", job.JobId)
+					r.logf("Processing job: %s\n", job.JobId)
 					r.lock.Lock()
 					if !r.startJob(job) {
 						r.logf("Error starting job -- draining")
@@ -419,7 +419,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	// cmd := exec.CommandContext(context.Background(), prog, args...)
 	// cmd := exec.CommandContext(context.Background(), r.shellBin, "-s")
 
-	script := filepath.Join(r.spoolDir, fmt.Sprintf("batchq-%d.sh", job.JobId))
+	script := filepath.Join(r.spoolDir, fmt.Sprintf("batchq-%s.sh", job.JobId))
 	if err := os.WriteFile(script, []byte(job.GetDetail("script", "")), 0755); err != nil {
 		r.logf("Error writing script: %v\n", err)
 		return false
@@ -432,7 +432,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	cmd.Cancel = func() error {
 		if cmd.Process != nil {
 			pgid, _ := syscall.Getpgid(cmd.Process.Pid)
-			r.logf("Canceling job: %d [%d]\n", job.JobId, pgid)
+			r.logf("Canceling job: %s [%d]\n", job.JobId, pgid)
 			// the negative should kill all members of the pgid
 			syscall.Kill(-pgid, syscall.SIGKILL)
 			ps, err := cmd.Process.Wait()
@@ -445,7 +445,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 			}
 			// log.Println("Process killed")
 		} else {
-			r.logf("Canceling job: %d, but process already done\n", job.JobId)
+			r.logf("Canceling job: %s, but process already done\n", job.JobId)
 			// cmd.Process.Kill()
 		}
 		return nil
@@ -488,11 +488,11 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	}
 	if env := job.GetDetail("env", ""); env != "" {
 		cmd.Env = strings.Split(env, "\n-|-\n")
-		cmd.Env = append(cmd.Env, fmt.Sprintf("JOB_ID=%d", job.JobId))
-		cmd.Env = append(cmd.Env, fmt.Sprintf("BATCHQ_JOB_ID=%d", job.JobId))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("JOB_ID=%s", job.JobId))
+		cmd.Env = append(cmd.Env, fmt.Sprintf("BATCHQ_JOB_ID=%s", job.JobId))
 		cmd.Env = append(cmd.Env, fmt.Sprintf("BATCHQ_RUNNER_ID=%s", r.runnerId))
 	} else {
-		cmd.Env = []string{fmt.Sprintf("JOB_ID=%d", job.JobId)}
+		cmd.Env = []string{fmt.Sprintf("JOB_ID=%s", job.JobId)}
 		//cmd.Env = append(os.Environ(), fmt.Sprintf("JOB_ID=%d", job.JobId))
 	}
 	cmd.Dir = job.GetDetail("wd", "")
@@ -504,13 +504,13 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 
 		uid, err := strconv.Atoi(uidS)
 		if err != nil {
-			r.logf("Missing UID from job details: %d\n", job.JobId)
+			r.logf("Missing UID from job details: %s\n", job.JobId)
 			return false
 		}
 		gid, err := strconv.Atoi(gidS)
 
 		if err != nil {
-			r.logf("Missing GID from job details: %d\n", job.JobId)
+			r.logf("Missing GID from job details: %s\n", job.JobId)
 			return false
 		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -533,9 +533,9 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 		}
 	}
 
-	cgroupV2Path := fmt.Sprintf("/sys/fs/cgroup/batchq-%d", job.JobId)
-	cgroupV1BaseCPU := fmt.Sprintf("/sys/fs/cgroup/cpu/batchq-%d", job.JobId)
-	cgroupV1BaseMem := fmt.Sprintf("/sys/fs/cgroup/memory/batchq-%d", job.JobId)
+	cgroupV2Path := fmt.Sprintf("/sys/fs/cgroup/batchq-%s", job.JobId)
+	cgroupV1BaseCPU := fmt.Sprintf("/sys/fs/cgroup/cpu/batchq-%s", job.JobId)
+	cgroupV1BaseMem := fmt.Sprintf("/sys/fs/cgroup/memory/batchq-%s", job.JobId)
 	if r.useCgroupV2 && support.AmIRoot() {
 
 		// setup cgroups
@@ -582,7 +582,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 
 	if r.availProcs != -1 && jobProcs > 0 {
 		r.availProcs = r.availProcs - jobProcs
-		r.logf("Job %d: Reserving %d proc (%d remaining)\n", job.JobId, jobProcs, r.availProcs)
+		r.logf("Job %s: Reserving %d proc (%d remaining)\n", job.JobId, jobProcs, r.availProcs)
 	}
 	if r.availMem != -1 && jobMem > 0 {
 		r.availMem = r.availMem - jobMem
@@ -592,7 +592,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 	defer cancel()
 	r.db.StartJob(ctx, job.JobId, r.runnerId, map[string]string{"pid": strconv.Itoa(cmd.Process.Pid)})
 	ctx.Done()
-	r.logf("Started job: %d [proc: %d] (c:%d, m:%d)\n", job.JobId, cmd.Process.Pid, jobProcs, jobMem)
+	r.logf("Started job: %s [proc: %d] (c:%d, m:%d)\n", job.JobId, cmd.Process.Pid, jobProcs, jobMem)
 
 	// Track it in the background
 	go func() {
@@ -607,7 +607,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		r.lock.Lock()
-		r.logf("Job %d [proc: %d] exited: %s\n", job.JobId, cmd.Process.Pid, state.String())
+		r.logf("Job %s [proc: %d] exited: %s\n", job.JobId, cmd.Process.Pid, state.String())
 		if state != nil && state.Success() {
 			// log.Printf("Process %d exited successfully\n", cmd.Process.Pid)
 			r.db.EndJob(ctx, job.JobId, r.runnerId, 0)
@@ -640,7 +640,7 @@ func (r *simpleRunner) startJob(job *jobs.JobDef) bool {
 		r.curJobs = newJobs
 		if r.availProcs != -1 && jobProcs > 0 {
 			r.availProcs = r.availProcs + jobProcs
-			r.logf("Job %d: Returning %d proc (%d remaining)\n", job.JobId, jobProcs, r.availProcs)
+			r.logf("Job %s: Returning %d proc (%d remaining)\n", job.JobId, jobProcs, r.availProcs)
 		}
 		if r.availMem != -1 && jobMem > 0 {
 			r.availMem = r.availMem + jobMem

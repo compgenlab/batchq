@@ -26,40 +26,19 @@ var holdCmd = &cobra.Command{
 			log.Fatalln(err)
 		} else {
 			defer jobq.Close()
-			for _, arg := range args {
-				if strings.Count(arg, "-") == 1 {
-					spl := strings.Split(arg, "-")
-					if jobid1, err := strconv.Atoi(spl[0]); err != nil {
-						fmt.Printf("Bad job-id: %s\n", spl[0])
-					} else {
-						if jobid2, err := strconv.Atoi(spl[1]); err != nil {
-							fmt.Printf("Bad job-id: %s\n", spl[1])
-						} else {
-							for jobid := jobid1; jobid <= jobid2; jobid++ {
-								ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-								defer cancel()
+			jobIds, err := expandJobArgs(args)
+			if err != nil {
+				fmt.Printf("Bad job-id: %s\n", err.Error())
+				return
+			}
+			for _, jobid := range jobIds {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
 
-								if jobq.HoldJob(ctx, jobid) {
-									fmt.Printf("Job: %d held\n", jobid)
-								} else {
-									fmt.Printf("Error holding job: %d\n", jobid)
-								}
-							}
-						}
-					}
+				if jobq.HoldJob(ctx, jobid) {
+					fmt.Printf("Job: %s held\n", jobid)
 				} else {
-					if jobid, err := strconv.Atoi(arg); err != nil {
-						fmt.Printf("Bad job-id: %s\n", arg)
-					} else {
-						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-						defer cancel()
-
-						if jobq.HoldJob(ctx, jobid) {
-							fmt.Printf("Job: %d held\n", jobid)
-						} else {
-							fmt.Printf("Error holding job: %d\n", jobid)
-						}
-					}
+					fmt.Printf("Error holding job: %s\n", jobid)
 				}
 			}
 		}
@@ -79,40 +58,19 @@ var releaseCmd = &cobra.Command{
 			log.Fatalln(err)
 		} else {
 			defer jobq.Close()
-			for _, arg := range args {
-				if strings.Count(arg, "-") == 1 {
-					spl := strings.Split(arg, "-")
-					if jobid1, err := strconv.Atoi(spl[0]); err != nil {
-						fmt.Printf("Bad job-id: %s\n", spl[0])
-					} else {
-						if jobid2, err := strconv.Atoi(spl[1]); err != nil {
-							fmt.Printf("Bad job-id: %s\n", spl[1])
-						} else {
-							for jobid := jobid1; jobid <= jobid2; jobid++ {
-								ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-								defer cancel()
+			jobIds, err := expandJobArgs(args)
+			if err != nil {
+				fmt.Printf("Bad job-id: %s\n", err.Error())
+				return
+			}
+			for _, jobid := range jobIds {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
 
-								if jobq.ReleaseJob(ctx, jobid) {
-									fmt.Printf("Job: %d released\n", jobid)
-								} else {
-									fmt.Printf("Error releasing job: %d\n", jobid)
-								}
-							}
-						}
-					}
+				if jobq.ReleaseJob(ctx, jobid) {
+					fmt.Printf("Job: %s released\n", jobid)
 				} else {
-					if jobid, err := strconv.Atoi(arg); err != nil {
-						fmt.Printf("Bad job-id: %s\n", arg)
-					} else {
-						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-						defer cancel()
-
-						if jobq.ReleaseJob(ctx, jobid) {
-							fmt.Printf("Job: %d released\n", jobid)
-						} else {
-							fmt.Printf("Error releasing job: %d\n", jobid)
-						}
-					}
+					fmt.Printf("Error releasing job: %s\n", jobid)
 				}
 			}
 		}
@@ -132,61 +90,29 @@ var cancelCmd = &cobra.Command{
 			log.Fatalln(err)
 		} else {
 			defer jobq.Close()
-			for _, arg := range args {
-				if strings.Count(arg, "-") == 1 {
-					spl := strings.Split(arg, "-")
-					if jobid1, err := strconv.Atoi(spl[0]); err != nil {
-						fmt.Printf("Bad job-id: %s\n", spl[0])
-					} else {
-						if jobid2, err := strconv.Atoi(spl[1]); err != nil {
-							fmt.Printf("Bad job-id: %s\n", spl[1])
-						} else {
-							for jobid := jobid1; jobid <= jobid2; jobid++ {
-								// this can propagate, so it can take a while...
-								ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-								defer cancel()
+			jobIds, err := expandJobArgs(args)
+			if err != nil {
+				fmt.Printf("Bad job-id: %s\n", err.Error())
+				return
+			}
+			for _, jobid := range jobIds {
+				// this can propagate, so it can take a while...
+				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+				defer cancel()
 
-								if job := jobq.GetJob(ctx, jobid); job != nil {
-									if job.GetRunningDetail("slurm_job_id", "") != "" {
-										cmd := exec.Command("scancel", job.GetRunningDetail("slurm_job_id", ""))
-										if err := cmd.Run(); err != nil {
-											fmt.Printf("Error canceling slurm job: %v\n", err)
-										} else {
-											fmt.Printf("Canceled slurm job: %s\n", job.GetRunningDetail("slurm_job_id", ""))
-										}
-									}
-									if jobq.CancelJob(ctx, jobid, cancelReason) {
-										fmt.Printf("Job: %d canceled\n", jobid)
-									} else {
-										fmt.Printf("Error canceling job: %d\n", jobid)
-									}
-								}
-							}
+				if job := jobq.GetJob(ctx, jobid); job != nil {
+					if job.GetRunningDetail("slurm_job_id", "") != "" {
+						cmd := exec.Command("scancel", job.GetRunningDetail("slurm_job_id", ""))
+						if err := cmd.Run(); err != nil {
+							fmt.Printf("Error canceling slurm job: %v\n", err)
+						} else {
+							fmt.Printf("Canceled slurm job: %s\n", job.GetRunningDetail("slurm_job_id", ""))
 						}
 					}
-				} else {
-					if jobid, err := strconv.Atoi(arg); err != nil {
-						fmt.Printf("Bad job-id: %s\n", arg)
+					if jobq.CancelJob(ctx, jobid, cancelReason) {
+						fmt.Printf("Job: %s canceled\n", jobid)
 					} else {
-						// this can propagate, so it can take a while...
-						ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-						defer cancel()
-
-						if job := jobq.GetJob(ctx, jobid); job != nil {
-							if job.GetRunningDetail("slurm_job_id", "") != "" {
-								cmd := exec.Command("scancel", job.GetRunningDetail("slurm_job_id", ""))
-								if err := cmd.Run(); err != nil {
-									fmt.Printf("Error canceling slurm job: %v\n", err)
-								} else {
-									fmt.Printf("Canceled slurm job: %s\n", job.GetRunningDetail("slurm_job_id", ""))
-								}
-							}
-							if jobq.CancelJob(ctx, jobid, cancelReason) {
-								fmt.Printf("Job: %d canceled\n", jobid)
-							} else {
-								fmt.Printf("Error canceling job: %d\n", jobid)
-							}
-						}
+						fmt.Printf("Error canceling job: %s\n", jobid)
 					}
 				}
 			}
@@ -207,40 +133,19 @@ var topCmd = &cobra.Command{
 			log.Fatalln(err)
 		} else {
 			defer jobq.Close()
-			for _, arg := range args {
-				if strings.Count(arg, "-") == 1 {
-					spl := strings.Split(arg, "-")
-					if jobid1, err := strconv.Atoi(spl[0]); err != nil {
-						fmt.Printf("Bad job-id: %s\n", spl[0])
-					} else {
-						if jobid2, err := strconv.Atoi(spl[1]); err != nil {
-							fmt.Printf("Bad job-id: %s\n", spl[1])
-						} else {
-							for jobid := jobid1; jobid <= jobid2; jobid++ {
-								ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-								defer cancel()
+			jobIds, err := expandJobArgs(args)
+			if err != nil {
+				fmt.Printf("Bad job-id: %s\n", err.Error())
+				return
+			}
+			for _, jobid := range jobIds {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
 
-								if jobq.TopJob(ctx, jobid) {
-									fmt.Printf("Job: %d prioritized\n", jobid)
-								} else {
-									fmt.Printf("Error prioritizing job: %d\n", jobid)
-								}
-							}
-						}
-					}
+				if jobq.TopJob(ctx, jobid) {
+					fmt.Printf("Job: %s prioritized\n", jobid)
 				} else {
-					if jobid, err := strconv.Atoi(arg); err != nil {
-						fmt.Printf("Bad job-id: %s\n", arg)
-					} else {
-						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-						defer cancel()
-
-						if jobq.TopJob(ctx, jobid) {
-							fmt.Printf("Job: %d prioritized\n", jobid)
-						} else {
-							fmt.Printf("Error prioritizing job: %d\n", jobid)
-						}
-					}
+					fmt.Printf("Error prioritizing job: %s\n", jobid)
 				}
 			}
 		}
@@ -260,40 +165,19 @@ var niceCmd = &cobra.Command{
 			log.Fatalln(err)
 		} else {
 			defer jobq.Close()
-			for _, arg := range args {
-				if strings.Count(arg, "-") == 1 {
-					spl := strings.Split(arg, "-")
-					if jobid1, err := strconv.Atoi(spl[0]); err != nil {
-						fmt.Printf("Bad job-id: %s\n", spl[0])
-					} else {
-						if jobid2, err := strconv.Atoi(spl[1]); err != nil {
-							fmt.Printf("Bad job-id: %s\n", spl[1])
-						} else {
-							for jobid := jobid1; jobid <= jobid2; jobid++ {
-								ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-								defer cancel()
+			jobIds, err := expandJobArgs(args)
+			if err != nil {
+				fmt.Printf("Bad job-id: %s\n", err.Error())
+				return
+			}
+			for _, jobid := range jobIds {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
 
-								if jobq.NiceJob(ctx, jobid) {
-									fmt.Printf("Job: %d de-prioritized\n", jobid)
-								} else {
-									fmt.Printf("Error de-prioritizing job: %d\n", jobid)
-								}
-							}
-						}
-					}
+				if jobq.NiceJob(ctx, jobid) {
+					fmt.Printf("Job: %s de-prioritized\n", jobid)
 				} else {
-					if jobid, err := strconv.Atoi(arg); err != nil {
-						fmt.Printf("Bad job-id: %s\n", arg)
-					} else {
-						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-						defer cancel()
-
-						if jobq.NiceJob(ctx, jobid) {
-							fmt.Printf("Job: %d de-prioritized\n", jobid)
-						} else {
-							fmt.Printf("Error de-prioritizing job: %d\n", jobid)
-						}
-					}
+					fmt.Printf("Error de-prioritizing job: %s\n", jobid)
 				}
 			}
 		}
@@ -301,6 +185,46 @@ var niceCmd = &cobra.Command{
 }
 
 var cancelReason string
+
+func expandJobArgs(args []string) ([]string, error) {
+	var jobIds []string
+	for _, arg := range args {
+		if start, end, ok := parseNumericRange(arg); ok {
+			for jobid := start; jobid <= end; jobid++ {
+				jobIds = append(jobIds, strconv.Itoa(jobid))
+			}
+		} else {
+			jobIds = append(jobIds, arg)
+		}
+	}
+	return jobIds, nil
+}
+
+func parseNumericRange(arg string) (int, int, bool) {
+	if strings.Count(arg, "-") != 1 {
+		return 0, 0, false
+	}
+	spl := strings.Split(arg, "-")
+	if len(spl) != 2 || spl[0] == "" || spl[1] == "" {
+		return 0, 0, false
+	}
+	for _, part := range spl {
+		for _, r := range part {
+			if r < '0' || r > '9' {
+				return 0, 0, false
+			}
+		}
+	}
+	start, err := strconv.Atoi(spl[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	end, err := strconv.Atoi(spl[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return start, end, true
+}
 
 func init() {
 	cancelCmd.Flags().StringVar(&cancelReason, "reason", "Canceled by user", "Reason for canceling")

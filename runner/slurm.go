@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/mbreese/batchq/db"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/support"
@@ -86,9 +85,9 @@ can submit as many jobs as you'd like to your personal queue, and only submit
 new jobs to the SLURM queue as your job-count decreases.
 */
 func NewSlurmRunner(jobq db.BatchDB) *slurmRunner {
-	id := uuid.New()
+	id := support.NewUUID()
 	runner := slurmRunner{
-		runnerId:    id.String(),
+		runnerId:    id,
 		db:          jobq,
 		maxUserJobs: -1,
 		maxJobs:     -1,
@@ -154,15 +153,15 @@ func (r *slurmRunner) Start() bool {
 		// fmt.Println("Looking for a new job to submit...")
 
 		if jobdef, hasNext := r.db.FetchNext(ctx, nil); jobdef != nil {
-			fmt.Printf("Trying to submit job %d to SLURM\n", jobdef.JobId)
+			fmt.Printf("Trying to submit job %s to SLURM\n", jobdef.JobId)
 
 			if src, err := r.buildSBatchScript(ctx, jobdef); err != nil {
 				// we must have a dependency issue with this job
 				// or a dep failed.
 				r.db.CancelJob(ctx, jobdef.JobId, err.Error())
-				fmt.Printf("Error trying to build sbatch script for job: %d\n  => %s\n", jobdef.JobId, err.Error())
+				fmt.Printf("Error trying to build sbatch script for job: %s\n  => %s\n", jobdef.JobId, err.Error())
 			} else if src == "" {
-				fmt.Printf("Error trying to build sbatch script for job: %d (empty script, possibly due to SLURM sacct delay)\n", jobdef.JobId)
+				fmt.Printf("Error trying to build sbatch script for job: %s (empty script, possibly due to SLURM sacct delay)\n", jobdef.JobId)
 				// sleep 1 second to avoid busy-looping
 				time.Sleep(1 * time.Second)
 			} else if src != "" {
@@ -178,7 +177,7 @@ func (r *slurmRunner) Start() bool {
 						if r.availJobs > 0 {
 							r.availJobs--
 						}
-						fmt.Printf("Submitted job %d with SLURM job-id %s\n", jobdef.JobId, slurmJobId)
+						fmt.Printf("Submitted job %s with SLURM job-id %s\n", jobdef.JobId, slurmJobId)
 					} else {
 						fmt.Printf("Error submitting SLURM job (unknown reason)\n")
 					}
@@ -205,7 +204,7 @@ func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 		if slurmJobIdStr := job.GetRunningDetail("slurm_job_id", ""); slurmJobIdStr != "" {
 			if slurmJobId, err := strconv.Atoi(slurmJobIdStr); err == nil {
 				if slurmState, err := SlurmGetJobState(slurmJobId); err != nil {
-					fmt.Printf("Error getting SLURM job state for job %d (slurm id: %d): %v\n", job.JobId, slurmJobId, err)
+					fmt.Printf("Error getting SLURM job state for job %s (slurm id: %d): %v\n", job.JobId, slurmJobId, err)
 				} else if slurmState != nil {
 					r.db.UpdateJobRunningDetails(ctx, job.JobId, map[string]string{"slurm_status": slurmState.State, "slurm_last_update": support.GetNowUTCString()})
 					switch slurmState.State {
@@ -266,7 +265,7 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *jobs.JobDef
 		src += fmt.Sprintf("#SBATCH -p %s\n", r.partition)
 	}
 	if jobdef.Name != "" {
-		src += fmt.Sprintf("#SBATCH -J bq-%d.%s\n", jobdef.JobId, jobdef.Name)
+		src += fmt.Sprintf("#SBATCH -J bq-%s.%s\n", jobdef.JobId, jobdef.Name)
 	}
 	if val := jobdef.GetDetail("procs", ""); val != "" {
 		if procN, err := strconv.Atoi(val); err == nil && procN > 0 {
@@ -307,19 +306,19 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *jobs.JobDef
 			switch dep.Status {
 			case jobs.CANCELED, jobs.FAILED:
 				// this is a problem
-				return "", fmt.Errorf("dependency of job failed (depid: %d)", dep.JobId)
+				return "", fmt.Errorf("dependency of job failed (depid: %s)", dep.JobId)
 			case jobs.UNKNOWN, jobs.USERHOLD, jobs.WAITING:
 				// this is a problem
-				return "", fmt.Errorf("not ready to process dep job yet (depid: %d)", dep.JobId)
+				return "", fmt.Errorf("not ready to process dep job yet (depid: %s)", dep.JobId)
 			case jobs.RUNNING, jobs.PROXYQUEUED:
 				// check with slurm first
 				if slurm_id := dep.GetRunningDetail("slurm_job_id", ""); slurm_id != "" {
 					if slurm_id_int, err := strconv.Atoi(slurm_id); err != nil {
-						return "", fmt.Errorf("bad slurm id (depid: %d, slurm_id: %s) %v", dep.JobId, slurm_id, err)
+						return "", fmt.Errorf("bad slurm id (depid: %s, slurm_id: %s) %v", dep.JobId, slurm_id, err)
 					} else {
 						if slurmState, err := SlurmGetJobState(slurm_id_int); err != nil {
 							// problem getting slurm state
-							return "", fmt.Errorf("error getting slurm job status (depid: %d, slurm_id: %d) error: %s", dep.JobId, slurm_id_int, err.Error())
+							return "", fmt.Errorf("error getting slurm job status (depid: %s, slurm_id: %d) error: %s", dep.JobId, slurm_id_int, err.Error())
 						} else if slurmState != nil {
 							switch slurmState.State {
 							case "PENDING":
@@ -329,7 +328,7 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *jobs.JobDef
 							case "COMPLETED":
 								// this is also fine
 							default:
-								return "", fmt.Errorf("bad slurm job state (depid: %d, slurm_id: %d, state: %s)", dep.JobId, slurm_id_int, slurmState.State)
+								return "", fmt.Errorf("bad slurm job state (depid: %s, slurm_id: %d, state: %s)", dep.JobId, slurm_id_int, slurmState.State)
 							}
 						} else {
 							// dep-job not found yet... this won't trigger a cancel, but
@@ -338,7 +337,7 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *jobs.JobDef
 						}
 					}
 				} else {
-					return "", fmt.Errorf("missing slurm_job_id (depid: %d)", dep.JobId)
+					return "", fmt.Errorf("missing slurm_job_id (depid: %s)", dep.JobId)
 				}
 			case jobs.SUCCESS:
 				// we're all good... no need to add it.

@@ -1,0 +1,161 @@
+{{define "base"}}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>{{.Title}}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f4ef;
+        --ink: #1f1f1f;
+        --muted: #6a625a;
+        --accent: #2e5c91;
+        --panel: #ffffff;
+        --border: #ded9d1;
+        --ok: #2c7a3f;
+        --warn: #b05a00;
+        --err: #b00020;
+        --info: #255d8a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font-family: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        line-height: 1.45;
+      }
+      header {
+        padding: 20px 24px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 12px;
+      }
+      header h1 {
+        margin: 0;
+        font-size: 20px;
+        font-weight: 700;
+      }
+      header nav a {
+        color: var(--accent);
+        text-decoration: none;
+        margin-right: 12px;
+        font-size: 14px;
+      }
+      main {
+        padding: 24px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 16px;
+        margin-bottom: 20px;
+        box-shadow: 0 2px 0 rgba(0, 0, 0, 0.03);
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+      th, td {
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+      }
+      th {
+        font-weight: 700;
+        color: var(--muted);
+        text-transform: uppercase;
+        font-size: 11px;
+        letter-spacing: 0.03em;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      .status {
+        padding: 2px 6px;
+        border-radius: 10px;
+        font-size: 11px;
+        font-weight: 700;
+        border: 1px solid transparent;
+        display: inline-block;
+        text-transform: uppercase;
+      }
+      .status.success { background: #e5f6ea; color: var(--ok); border-color: #c8e5d2; }
+      .status.failed, .status.canceled { background: #ffe6e6; color: var(--err); border-color: #f2bcbc; }
+      .status.running { background: #e8f0fb; color: var(--info); border-color: #c7d9ef; }
+      .status.queued, .status.waiting, .status.userhold, .status.proxyqueued { background: #fff4e2; color: var(--warn); border-color: #f3d9b0; }
+      .status.unknown { background: #ece7e0; color: var(--muted); border-color: #d8d1c8; }
+      .muted { color: var(--muted); }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 12px;
+      }
+      .kv {
+        display: grid;
+        grid-template-columns: 120px 1fr;
+        gap: 6px 12px;
+        font-size: 13px;
+      }
+      pre {
+        background: #faf8f4;
+        padding: 12px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        overflow: auto;
+        font-size: 12px;
+      }
+      ul.tree, ul.tree ul {
+        list-style: none;
+        padding-left: 16px;
+        margin: 6px 0;
+        border-left: 1px dashed var(--border);
+      }
+      ul.tree li {
+        margin: 6px 0;
+      }
+      .job-name {
+        color: var(--muted);
+        margin-left: 6px;
+      }
+      @media (max-width: 720px) {
+        header {
+          padding: 16px;
+        }
+        main {
+          padding: 16px;
+        }
+        th, td {
+          padding: 6px 8px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>batchq web</h1>
+      <nav>
+        <a href="/jobs">Queue</a>
+      </nav>
+    </header>
+    <main>
+      {{if eq .ContentTemplate "queue-content"}}
+        {{template "queue-content" .}}
+      {{else if eq .ContentTemplate "job-content"}}
+        {{template "job-content" .}}
+      {{else}}
+        <p>Unknown content template.</p>
+      {{end}}
+    </main>
+  </body>
+</html>
+{{end}}

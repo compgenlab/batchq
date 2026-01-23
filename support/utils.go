@@ -1,11 +1,12 @@
 package support
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -26,19 +27,6 @@ func GetUserHomeFilePath(path ...string) (string, error) {
 		tmp[i+1] = path[i]
 	}
 	return filepath.Join(tmp...), nil
-}
-
-func JoinInt(nums []int, sep string) string {
-	if len(nums) == 0 {
-		return ""
-	}
-	strs := make([]string, len(nums))
-
-	for i, num := range nums {
-		strs[i] = strconv.Itoa(num) // convert int to string
-	}
-	return strings.Join(strs, sep)
-
 }
 
 func AmIRoot() bool {
@@ -103,4 +91,18 @@ func Contains[T comparable](slice []T, val T) bool {
 func FileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil || !os.IsNotExist(err)
+}
+
+func NewUUID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		panic(fmt.Sprintf("failed to generate uuid: %v", err))
+	}
+
+	// Version 4 (random) UUID.
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+
+	hexStr := hex.EncodeToString(buf)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hexStr[0:8], hexStr[8:12], hexStr[12:16], hexStr[16:20], hexStr[20:32])
 }
