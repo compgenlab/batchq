@@ -124,6 +124,7 @@ func (r *slurmRunner) Start() bool {
 
 	ctx := context.Background()
 
+	fmt.Println("Starting SLURM runner...")
 	fmt.Println("Updating PROXYQUEUED job SLURM status...")
 	r.UpdateSlurmJobStatus(ctx)
 
@@ -158,8 +159,8 @@ func (r *slurmRunner) Start() bool {
 			if src, err := r.buildSBatchScript(ctx, jobdef); err != nil {
 				// we must have a dependency issue with this job
 				// or a dep failed.
-				r.db.CancelJob(ctx, jobdef.JobId, err.Error())
 				fmt.Printf("Error trying to build sbatch script for job: %s\n  => %s\n", jobdef.JobId, err.Error())
+				r.db.CancelJob(ctx, jobdef.JobId, err.Error())
 			} else if src == "" {
 				fmt.Printf("Error trying to build sbatch script for job: %s (empty script, possibly due to SLURM sacct delay)\n", jobdef.JobId)
 				// sleep 1 second to avoid busy-looping
@@ -179,10 +180,11 @@ func (r *slurmRunner) Start() bool {
 						}
 						fmt.Printf("Submitted job %s with SLURM job-id %s\n", jobdef.JobId, slurmJobId)
 					} else {
-						fmt.Printf("Error submitting SLURM job (unknown reason)\n")
+						fmt.Printf("Error submitting SLURM job (unknown reason, proxy-queue)\n")
 					}
 				} else {
 					fmt.Printf("Error submitting SLURM job: %v\n", err)
+					r.db.CancelJob(ctx, jobdef.JobId, fmt.Sprintf("Error submitting to SLURM: %s", err.Error()))
 				}
 			}
 		} else if !hasNext {
@@ -194,6 +196,7 @@ func (r *slurmRunner) Start() bool {
 		fmt.Println("Updating PROXYQUEUED job SLURM status...")
 		r.UpdateSlurmJobStatus(ctx)
 	}
+	fmt.Println("SLURM runner done.")
 
 	return submittedOne
 }
