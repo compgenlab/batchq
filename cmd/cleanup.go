@@ -44,21 +44,129 @@ var cleanupCmd = &cobra.Command{
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 
-			for _, job := range jobq.GetJobsByStatus(ctx, statuses, false) {
-				if job.Status == jobs.SUCCESS {
-					if dependents := jobq.GetJobDependents(ctx, job.JobId); len(dependents) > 0 {
-						fmt.Printf("Skipping job %s: has dependents\n", job.JobId)
-						continue
-					}
+			plan := buildCleanupPlan(ctx, jobq, statuses)
+			for _, job := range plan.candidates {
+				if !plan.blocked[job.JobId] {
+					continue
 				}
-				if jobq.CleanupJob(ctx, job.JobId) {
-					fmt.Printf("Removed job: %s\n", job.JobId)
+				dependents, ok := plan.dependents[job.JobId]
+				if !ok {
+					dependents = jobq.GetJobDependents(ctx, job.JobId)
+				}
+				if len(dependents) > 0 {
+					fmt.Printf("Skipping job %s: dependents not eligible for removal\n", job.JobId)
+				}
+			}
+
+			for _, jobId := range plan.removalOrder {
+				if jobq.CleanupJob(ctx, jobId) {
+					fmt.Printf("Removed job: %s\n", jobId)
 				} else {
-					fmt.Printf("Error removing job: %s\n", job.JobId)
+					fmt.Printf("Error removing job: %s\n", jobId)
 				}
 			}
 		}
 	},
+}
+
+type cleanupJobReader interface {
+	GetJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) []*jobs.JobDef
+	GetJob(ctx context.Context, jobId string) *jobs.JobDef
+	GetJobDependents(ctx context.Context, jobId string) []string
+}
+
+type cleanupPlan struct {
+	candidates   []*jobs.JobDef
+	removalOrder []string
+	dependents   map[string][]string
+	blocked      map[string]bool
+}
+
+func buildCleanupPlan(ctx context.Context, jobq cleanupJobReader, statuses []jobs.StatusCode) cleanupPlan {
+	// Plan removals by recursively verifying that all dependents are eligible for removal,
+	// then emit a post-order deletion list so children are removed before parents.
+	candidates := jobq.GetJobsByStatus(ctx, statuses, false)
+	allowedStatuses := map[jobs.StatusCode]bool{}
+	for _, status := range statuses {
+		allowedStatuses[status] = true
+	}
+
+	depCache := map[string][]string{}
+	getDependents := func(jobId string) []string {
+		if deps, ok := depCache[jobId]; ok {
+			return deps
+		}
+		deps := jobq.GetJobDependents(ctx, jobId)
+		depCache[jobId] = deps
+		return deps
+	}
+
+	const (
+		unknownState = iota
+		visitingState
+		removableState
+		blockedState
+	)
+	state := map[string]int{}
+
+	var canRemove func(jobId string) bool
+	canRemove = func(jobId string) bool {
+		if st, ok := state[jobId]; ok {
+			if st == visitingState {
+				state[jobId] = blockedState
+				return false
+			}
+			return st == removableState
+		}
+		state[jobId] = visitingState
+		job := jobq.GetJob(ctx, jobId)
+		if job == nil || !allowedStatuses[job.Status] {
+			state[jobId] = blockedState
+			return false
+		}
+		for _, childId := range getDependents(jobId) {
+			if !canRemove(childId) {
+				state[jobId] = blockedState
+				return false
+			}
+		}
+		state[jobId] = removableState
+		return true
+	}
+
+	removalOrder := []string{}
+	added := map[string]bool{}
+	var addRemovals func(jobId string)
+	addRemovals = func(jobId string) {
+		if added[jobId] || !canRemove(jobId) {
+			return
+		}
+		for _, childId := range getDependents(jobId) {
+			addRemovals(childId)
+		}
+		if !added[jobId] {
+			removalOrder = append(removalOrder, jobId)
+			added[jobId] = true
+		}
+	}
+
+	for _, job := range candidates {
+		addRemovals(job.JobId)
+	}
+
+	blocked := map[string]bool{}
+	for _, job := range candidates {
+		if !canRemove(job.JobId) {
+			blocked[job.JobId] = true
+		}
+	}
+
+	return cleanupPlan{
+		candidates:   candidates,
+		removalOrder: removalOrder,
+		dependents:   depCache,
+		blocked:      blocked,
+	}
 }
 
 var cleanupCanceled bool
