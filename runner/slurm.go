@@ -219,7 +219,7 @@ func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 						// success
 						r.db.ProxyEndJob(ctx, job.JobId, jobs.SUCCESS, slurmState.StartAsTimeString(), slurmState.EndAsTimeString(), slurmState.ExitCodeInt())
 						// fmt.Printf("Job %d completed successfully in SLURM (slurm id: %d)\n", job.JobId, slurmJobId)
-					case "CANCELED":
+					case "CANCELED", "CANCELLED":
 						// canceled
 						r.db.ProxyEndJob(ctx, job.JobId, jobs.CANCELED, slurmState.StartAsTimeString(), slurmState.EndAsTimeString(), slurmState.ExitCodeInt())
 						// fmt.Printf("Job %d failed in SLURM (slurm id: %d)\n", job.JobId, slurmJobId)
