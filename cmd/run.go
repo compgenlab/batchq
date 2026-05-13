@@ -22,39 +22,27 @@ var runCmd = &cobra.Command{
 		runnerType := "simple"
 		if slurmRunner {
 			runnerType = "slurm"
-		} else {
-			if rtype, ok := Config.Get("batchq", "runner", "simple"); ok {
-				runnerType = rtype
-			}
+		} else if v := Config.Batchq.Runner; v != "" {
+			runnerType = v
 		}
 		switch runnerType {
 		case "slurm":
-			if slurmMaxJobs < 0 {
-				if val, ok := Config.GetInt("slurm_runner", "max_jobs"); ok {
-					slurmMaxJobs = val
-				}
+			if slurmMaxJobs < 0 && Config.SlurmRunner.MaxJobs > 0 {
+				slurmMaxJobs = Config.SlurmRunner.MaxJobs
 			}
 			if slurmAcct == "" {
-				if val, ok := Config.Get("slurm_runner", "account"); ok {
-					slurmAcct = val
-				}
+				slurmAcct = Config.SlurmRunner.Account
 			}
 			if slurmPartition == "" {
-				if val, ok := Config.Get("slurm_runner", "partition"); ok {
-					slurmPartition = val
-				}
+				slurmPartition = Config.SlurmRunner.Partition
 			}
 			if slurmUser == "" {
-				if val, ok := Config.Get("slurm_runner", "user"); ok {
-					slurmUser = val
-				}
+				slurmUser = Config.SlurmRunner.User
 				if slurmUser == "" {
 					if currentUser, err := user.Current(); err == nil {
 						slurmUser = currentUser.Username
 					} else {
-						// Fallback: try to get from "id -un"
 						cmd := exec.Command("id", "-un")
-						// Capture stdout
 						if out, err := cmd.Output(); err == nil {
 							slurmUser = strings.TrimSpace(string(out))
 						}
@@ -74,33 +62,26 @@ var runCmd = &cobra.Command{
 				SetSlurmPartition(slurmPartition)
 
 		case "simple":
-			if maxProcs < 0 {
-				if val, ok := Config.GetInt("simple_runner", "max_procs"); ok {
-					maxProcs = val
-				}
+			if maxProcs < 0 && Config.SimpleRunner.MaxProcs > 0 {
+				maxProcs = Config.SimpleRunner.MaxProcs
 			}
 			if maxMemStr == "" {
-				if val, ok := Config.Get("simple_runner", "max_mem"); ok {
-					maxMemStr = val
-				}
+				maxMemStr = Config.SimpleRunner.MaxMem
 			}
 			if maxTimeStr == "" {
-				if val, ok := Config.Get("simple_runner", "max_walltime"); ok {
-					maxTimeStr = val
-				}
+				maxTimeStr = Config.SimpleRunner.MaxWalltime
 			}
-			if !useCgroupV2 {
-				if val, ok := Config.GetBool("simple_runner", "use_cgroup_v2"); ok {
-					useCgroupV2 = val
-				}
+			if !useCgroupV2 && Config.SimpleRunner.UseCgroupV2 {
+				useCgroupV2 = true
 			}
-			if !useCgroupV1 {
-				if val, ok := Config.GetBool("simple_runner", "use_cgroup_v1"); ok {
-					useCgroupV1 = val
-				}
+			if !useCgroupV1 && Config.SimpleRunner.UseCgroupV1 {
+				useCgroupV1 = true
 			}
 
-			shell, _ := Config.Get("simple_runner", "shell", "/bin/bash")
+			shell := Config.SimpleRunner.Shell
+			if shell == "" {
+				shell = "/bin/bash"
+			}
 
 			if useCgroupV1 && useCgroupV2 {
 				log.Fatalln("You cannot use cgroup v2 and v1 at the same time!")

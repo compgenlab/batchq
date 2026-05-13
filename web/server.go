@@ -147,11 +147,10 @@ func resolveSocketPath(opts Options) (string, error) {
 
 	home := support.GetBatchqHome()
 	defaultSocket := filepath.Join(home, "batchq.sock")
-	if opts.Config == nil {
-		return normalizeSocketPath(defaultSocket)
+	if opts.Config != nil && opts.Config.Web.Socket != "" {
+		return normalizeSocketPath(opts.Config.Web.Socket)
 	}
-	socket, _ := opts.Config.Get("batchq", "web_socket", defaultSocket)
-	return normalizeSocketPath(socket)
+	return normalizeSocketPath(defaultSocket)
 }
 
 func resolveListenAddress(opts Options) string {
@@ -161,10 +160,7 @@ func resolveListenAddress(opts Options) string {
 	if opts.Config == nil {
 		return ""
 	}
-	if val, ok := opts.Config.Get("batchq", "web_listen"); ok {
-		return val
-	}
-	return ""
+	return opts.Config.Web.Listen
 }
 
 func normalizeSocketPath(path string) (string, error) {

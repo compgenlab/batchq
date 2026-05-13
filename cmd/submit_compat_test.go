@@ -74,15 +74,22 @@ func startCompatServer(t *testing.T) *client.Client {
 		_ = c.Close()
 	})
 
-	// Make sure dialClient() returns this server for the rest of the test.
-	prev := clientURL
-	clientURL = "unix://" + sockPath
-	t.Cleanup(func() { clientURL = prev })
-
-	// Config must be non-nil because submitCmd queries it for defaults.
+	// Config must be non-nil because submitCmd queries it for defaults,
+	// and dialClient() reads Config.Server.Listen to compute the URL.
 	if Config == nil {
-		Config = support.LoadConfig("/dev/null", "batchq")
+		Config = &support.Config{}
 	}
+	prevListen := Config.Server.Listen
+	prevBackend := clientBackend
+	prevNoSpawn := clientNoAutospawn
+	Config.Server.Listen = "unix://" + sockPath
+	// Disable autospawn so a slow probe doesn't try to fork batchq.
+	clientNoAutospawn = true
+	t.Cleanup(func() {
+		Config.Server.Listen = prevListen
+		clientBackend = prevBackend
+		clientNoAutospawn = prevNoSpawn
+	})
 
 	return c
 }

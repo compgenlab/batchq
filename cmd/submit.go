@@ -69,28 +69,28 @@ var submitCmd = &cobra.Command{
 		details["wd"] = "."
 
 		// get default/config values if not specified
-		if tmp, ok := Config.GetInt("job_defaults", "procs"); ok && tmp > 0 {
-			details["procs"] = strconv.Itoa(tmp)
+		if Config.JobDefaults.Procs > 0 {
+			details["procs"] = strconv.Itoa(Config.JobDefaults.Procs)
 		}
-		if tmp, ok := Config.Get("job_defaults", "mem"); ok {
-			details["mem"] = strconv.Itoa(jobs.ParseMemoryString(tmp))
+		if v := Config.JobDefaults.Mem; v != "" {
+			details["mem"] = strconv.Itoa(jobs.ParseMemoryString(v))
 		}
-		if tmp, ok := Config.Get("job_defaults", "walltime"); ok {
-			details["walltime"] = strconv.Itoa(jobs.ParseWalltimeString(tmp))
+		if v := Config.JobDefaults.Walltime; v != "" {
+			details["walltime"] = strconv.Itoa(jobs.ParseWalltimeString(v))
 		}
-		if tmp, ok := Config.Get("job_defaults", "wd"); ok {
-			details["wd"] = tmp
+		if v := Config.JobDefaults.Wd; v != "" {
+			details["wd"] = v
 		}
-		if tmp, ok := Config.Get("job_defaults", "stdout"); ok {
-			details["stdout"] = tmp
+		if v := Config.JobDefaults.Stdout; v != "" {
+			details["stdout"] = v
 		}
-		if tmp, ok := Config.Get("job_defaults", "stderr"); ok {
-			details["stderr"] = tmp
+		if v := Config.JobDefaults.Stderr; v != "" {
+			details["stderr"] = v
 		}
-		if tmp, ok := Config.GetBool("job_defaults", "hold"); ok && tmp {
+		if Config.JobDefaults.Hold {
 			jobHold = true
 		}
-		if tmp, ok := Config.GetBool("job_defaults", "env"); ok && tmp {
+		if Config.JobDefaults.Env {
 			jobEnv = true
 		}
 
@@ -290,9 +290,7 @@ var submitCmd = &cobra.Command{
 
 		// if the job name isn't set, look for a default option
 		if jobName == "" {
-			if tmp, ok := Config.Get("job_defaults", "name"); ok {
-				jobName = tmp
-			}
+			jobName = Config.JobDefaults.Name
 		}
 
 		// replace relative paths for wd, stderr, stdout

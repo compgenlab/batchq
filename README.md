@@ -137,45 +137,63 @@ Behavior:
 
 ## Configuration
 
-Example `~/.batchq/config`:
-```
+`~/.batchq/config` is TOML. Example:
+
+```toml
 [batchq]
-runner = simple                       # or slurm
+runner = "simple"                                      # "simple" or "slurm"
+
+# Backend selector — exactly one URL with a scheme.
+backend = "sqlite3:///home/me/.batchq/batchq.db"
+# Other forms:
+# backend = "postgres://user:pass@host:5432/dbname"           # local Postgres (future)
+# backend = "batchq-remote://batchq.example.com/api/v1"       # remote REST API (HTTPS)
+# backend = "batchq-remote://10.0.0.5:8080/api/v1?insecure=1" # plain HTTP opt-out
+
+# Bearer token for batchq-remote:// backends. Ignored for local backends.
+token = ""
+
+# Show usernames in queue listings when batchq is shared.
+multiuser = false
 
 [server]
-listen = unix:///home/me/.batchq/server.sock
-storage = /home/me/.batchq/batchq.db
-sqlite_wal = false                    # true ONLY on local disk
-idle_timeout = 1m                     # 0 disables
+# Server-runtime knobs. Ignored when backend is batchq-remote://.
+listen = "unix:///home/me/.batchq/server.sock"
+lock = "/home/me/.batchq/server.lock"
+idle_timeout = "1m"                                    # 0/empty disables
+sqlite_wal = false                                     # true ONLY on local disk
 
-[client]
-url = unix:///home/me/.batchq/server.sock
-token =                               # required for TCP
+[web]
+socket = "/home/me/.batchq/batchq.sock"
+listen = ""                                            # e.g. "127.0.0.1:8081"
 
 [job_defaults]
 procs = 4
-mem = 8GB
-walltime = 2-00:00:00
-wd = /workdir
-stdout = /logs/batchq-%JOBID.out
-stderr = /logs/batchq-%JOBID.err
+mem = "8GB"
+walltime = "2-00:00:00"
+wd = "/workdir"
+stdout = "/logs/batchq-%JOBID.out"
+stderr = "/logs/batchq-%JOBID.err"
 hold = false
 env = false
 
 [simple_runner]
 max_procs = 4
-max_mem = 16GB
-max_walltime = 1-00:00:00
+max_mem = "16GB"
+max_walltime = "1-00:00:00"
 use_cgroup_v2 = false
 use_cgroup_v1 = false
 
 [slurm_runner]
-account = acct123
+account = "acct123"
 max_jobs = 200
 ```
 
-Hidden helper: `batchq debug` prints the resolved `batchq home` and
-config path.
+Resolution order for every knob is: command-line flag > config value > built-in default.
+
+`batchq` reads `--backend`, `--token`, and `--no-autospawn` as persistent flags on every subcommand. Pass `--backend batchq-remote://other.example.com/api/v1` on any client to talk to a different batchq instance ad-hoc without editing the config.
+
+Hidden helper: `batchq debug` prints the resolved `batchq home`, config path, and backend.
 
 ## Building from source
 

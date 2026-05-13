@@ -24,7 +24,7 @@ On a workstation, a CLI client transparently fork-execs `batchq server --idle-ti
 - `main.go` — embeds `LICENSE` and hands off to `cmd.Execute()`.
 - `cmd/` — Cobra subcommands.
   - `root.go` loads `~/.batchq/config` (overridable via `BATCHQ_HOME`) into the package-level `*support.Config`. `submit`/`show`/`hold`/`cleanup`/`run`/`web` all open a REST client via `cmd/clientconn.go:dialClient()`.
-  - `server.go` is the server entrypoint; flags: `--listen`, `--storage`, `--sqlite-wal`, `--lock`, `--idle-timeout`.
+  - `server.go` is the server entrypoint; flags: `--listen`, `--sqlite-wal`, `--lock`, `--idle-timeout`. The backend (sqlite3 path) comes from the persistent `--backend` flag / `[batchq] backend` config.
   - `clientconn.go` — `dialClient()` resolves the server URL (flag > `[client] url` > default `unix://$BATCHQ_HOME/server.sock`), wires autospawn for unix URLs, and returns a `*client.Client`. `--no-autospawn` opts out.
 - `api/` — shared REST contract: route constants (`api/routes.go`) and request/response DTOs (`api/types.go`). `JobDTO` is the wire format; `api.JobToDef` / `api.JobFromDef` bridge to `jobs.JobDef`.
 - `storage/` — persistence layer. `Storage` interface + `sqliteStorage` impl using `modernc.org/sqlite`. `Open(ctx, path, Options)` creates the file and applies `schema.sql` (embedded) idempotently on every open. Journal mode defaults to `DELETE` (rollback) because WAL's `-shm` shared-memory file is unsafe on NFS/Lustre; `Options{WAL: true}` opts into WAL when the DB is on local disk.
@@ -42,7 +42,8 @@ On a workstation, a CLI client transparently fork-execs `batchq server --idle-ti
 - `web/` — `batchq web` subcommand. `server.go` is a tiny HTML renderer that consumes the REST `*client.Client` and feeds DTOs (via `dtoToJobDef`) into the unchanged `web/templates/*.html`. Listens on a unix socket or `host:port`.
 - `support/` — shared utilities.
   - `paths.go` — `GetBatchqHome()` resolves `$BATCHQ_HOME` or `~/.batchq`.
-  - `iniconfig.go` — small INI loader; `Config.Get/GetInt/GetBool` with `(value, found)` returns.
+  - `config.go` — typed TOML Config + `LoadConfig`. `Duration` wrapper decodes Go-duration strings (`"1m"`).
+  - `backend.go` — `ParseBackend`, `SqlitePath`, `RemoteHTTPURL`, `IsLocal` for `[batchq] backend` URLs.
   - `utils.go` — `ExpandPathAbs`, `Contains`, `AmIRoot`, etc.
 
 ### Job state machine
@@ -81,16 +82,28 @@ The atomic claim endpoint (`POST /api/v1/runners/{id}/claim`) transitions QUEUED
 
 ## Configuration
 
-Loaded from `~/.batchq/config` (INI). Resolution order for every knob: command-line flag > `[section]` in config > built-in default. `cmd/run.go` shows the canonical pattern: check the cobra flag value, then `Config.Get*(section, key)`, then fall back.
+Loaded from `~/.batchq/config` (TOML, via `github.com/BurntSushi/toml`). `support/config.go` defines the typed `Config` struct; every knob is a named field accessed directly (`Config.Server.Listen`, `Config.JobDefaults.Procs`). Empty string / zero int / false bool / zero `support.Duration` all mean "not set" — call sites fall back to flag values or built-in defaults.
+
+Resolution order for every knob: command-line flag > config value > built-in default. `cmd/run.go` shows the canonical pattern.
 
 Sections:
 
-- `[batchq]` — `runner` (`simple` | `slurm`).
-- `[server]` — `listen`, `storage`, `sqlite_wal`, `lock`, `idle_timeout`.
-- `[client]` — `url`, `token` (TCP only).
-- `[job_defaults]` — defaults applied at submit time only (not enforced later): `name`, `procs`, `mem`, `walltime`, `wd`, `stdout`, `stderr`, `hold`, `env`.
+- `[batchq]` — `runner` (`simple` | `slurm`), `backend` (URL), `token`, `multiuser`.
+- `[server]` — `listen`, `lock`, `idle_timeout`, `sqlite_wal`. Ignored when `backend` is `batchq-remote://`.
+- `[web]` — `socket`, `listen`.
+- `[job_defaults]` — submit-time defaults: `name`, `procs`, `mem`, `walltime`, `wd`, `stdout`, `stderr`, `hold`, `env`.
 - `[simple_runner]` — `max_procs`, `max_mem`, `max_walltime`, `shell`, `use_cgroup_v1`, `use_cgroup_v2`.
 - `[slurm_runner]` — `user`, `account`, `partition`, `max_jobs`.
+
+### Backend selector
+
+The `[batchq] backend` URL (also `--backend` flag) drives where queue data lives and whether a local server runs:
+
+- `sqlite3:///path/to/db` — local SQLite file; server runs locally and may be autospawned by clients.
+- `postgres://user:pass@host/db` — local server on Postgres (future).
+- `batchq-remote://host[:port]/path` — remote REST API. Defaults to HTTPS; append `?insecure=true` for plain HTTP. No local server.
+
+`support/backend.go` (`ParseBackend`, `SqlitePath`, `RemoteHTTPURL`, `IsLocal`) is the canonical parser. `cmd/server.go` refuses to start when the backend is `batchq-remote://`.
 
 Job IDs are UUID strings (with hyphens) — anywhere code splits on `-` or `:` it must account for this.
 

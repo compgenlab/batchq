@@ -15,8 +15,8 @@ var rootCmd = &cobra.Command{
 	Short: "batchq - simple batch job queue",
 }
 
-// Config holds parsed `~/.batchq/config` (INI) values. Always non-nil after
-// init even if no file is present.
+// Config holds parsed `~/.batchq/config` (TOML) values. Always non-nil
+// after init even if no file is present.
 var Config *support.Config
 
 var debugCmd = &cobra.Command{
@@ -26,6 +26,7 @@ var debugCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("batchq home: %s\n", batchqHome)
 		fmt.Printf("     config: %s\n", configFile)
+		fmt.Printf("    backend: %s\n", Config.Batchq.Backend)
 	},
 }
 
@@ -55,11 +56,15 @@ func init() {
 
 	batchqHome = support.GetBatchqHome()
 	var err error
-	if configFile, err = support.ExpandPathAbs(filepath.Join(batchqHome, "config")); err == nil {
-		Config = support.LoadConfig(configFile, "batchq")
-	} else {
-		Config = support.LoadConfig("", "batchq")
+	if configFile, err = support.ExpandPathAbs(filepath.Join(batchqHome, "config")); err != nil {
+		configFile = ""
 	}
+	cfg, loadErr := support.LoadConfig(configFile)
+	if loadErr != nil {
+		fmt.Fprintln(os.Stderr, loadErr)
+		cfg = &support.Config{}
+	}
+	Config = cfg
 }
 
 func Execute() {

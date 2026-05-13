@@ -58,14 +58,14 @@ var queueCmd = &cobra.Command{
 		fmt.Printf("| %-36.36s ", "jobid")
 		fmt.Printf("| %-8.8s ", "status")
 		fmt.Printf("| %-20.20s ", "job-name")
-		if val, _ := Config.GetBool("batchq", "multiuser", false); val {
+		if Config.Batchq.Multiuser {
 			fmt.Printf("| %-12.12s ", "username")
 		}
 		fmt.Printf("|%-5.5s", "procs")
 		fmt.Printf("| %-8.8s ", "mem")
 		fmt.Printf("| %-11.11s ", "walltime")
 		fmt.Println("|")
-		if val, _ := Config.GetBool("batchq", "multiuser", false); val {
+		if Config.Batchq.Multiuser {
 			fmt.Println("|--------------------------------------|----------|----------------------|--------------|-----|----------|-------------|")
 		} else {
 			fmt.Println("|--------------------------------------|----------|----------------------|-----|----------|-------------|")
@@ -86,7 +86,7 @@ var queueCmd = &cobra.Command{
 			fmt.Printf("| %-36.36s ", job.JobId)
 			fmt.Printf("| %-8.8s ", job.Status.String())
 			fmt.Printf("| %-20.20s ", job.Name)
-			if val, _ := Config.GetBool("batchq", "multiuser", false); val {
+			if Config.Batchq.Multiuser {
 				fmt.Printf("| %-12.12s ", job.GetDetail("user", ""))
 			}
 			fmt.Printf("| %-3.3s ", job.GetDetail("procs", ""))

@@ -21,7 +21,6 @@ import (
 
 var (
 	serverListen      string
-	serverStorage     string
 	serverWAL         bool
 	serverLockPath    string
 	serverIdleTimeout time.Duration
@@ -32,12 +31,17 @@ var serverCmd = &cobra.Command{
 	Short: "Run the batchq REST API server",
 	Long: `Run the batchq REST API server.
 
-The server owns the SQLite database file and serves the v1 REST API over a
+The server owns the queue database and serves the v1 REST API over a
 unix socket (default) or TCP. All other batchq components (CLI commands,
 runners, the web UI) connect to it as clients.
 
+The backend (sqlite3:/// path, postgres://..., etc.) is taken from the
+persistent --backend flag or the [batchq] backend config key. The server
+refuses to start when the backend is batchq-remote:// because in that
+mode there is no local server — the remote one is the server.
+
 Default listener:  unix://$BATCHQ_HOME/server.sock
-Default storage:   $BATCHQ_HOME/batchq.db
+Default backend:   sqlite3://$BATCHQ_HOME/batchq.db
 `,
 	RunE: runServer,
 }
@@ -45,13 +49,10 @@ Default storage:   $BATCHQ_HOME/batchq.db
 func init() {
 	home := support.GetBatchqHome()
 	defaultSock := "unix://" + filepath.Join(home, "server.sock")
-	defaultDB := filepath.Join(home, "batchq.db")
 	defaultLock := filepath.Join(home, "server.lock")
 
 	serverCmd.Flags().StringVar(&serverListen, "listen", "",
 		"Listener URL (unix:///path/to/sock or tcp://host:port). Default: "+defaultSock)
-	serverCmd.Flags().StringVar(&serverStorage, "storage", "",
-		"Storage file path. Default: "+defaultDB)
 	serverCmd.Flags().BoolVar(&serverWAL, "sqlite-wal", false,
 		"Enable SQLite WAL journal mode. NOT SAFE on networked filesystems; only use when the DB file is on local disk.")
 	serverCmd.Flags().StringVar(&serverLockPath, "lock", "",
@@ -65,47 +66,53 @@ func init() {
 func runServer(cmd *cobra.Command, _ []string) error {
 	home := support.GetBatchqHome()
 
+	// Backend: --backend flag (persistent root) > [batchq] backend > default.
+	backendRaw := clientBackend
+	if backendRaw == "" {
+		backendRaw = Config.Batchq.Backend
+	}
+	if backendRaw == "" {
+		backendRaw = "sqlite3://" + filepath.Join(home, "batchq.db")
+	}
+	backend, err := support.ParseBackend(backendRaw)
+	if err != nil {
+		return err
+	}
+	if !backend.IsLocal() {
+		return fmt.Errorf("server: cannot run a local server with remote backend %q", backendRaw)
+	}
+	if backend.Scheme != support.BackendSqlite3 {
+		return fmt.Errorf("server: backend %q not yet implemented", backend.Scheme)
+	}
+	storagePath, err := backend.SqlitePath()
+	if err != nil {
+		return err
+	}
+	if expanded, err := support.ExpandPathAbs(storagePath); err == nil {
+		storagePath = expanded
+	}
+
 	if serverListen == "" {
-		if v, ok := Config.Get("server", "listen"); ok && v != "" {
+		if v := Config.Server.Listen; v != "" {
 			serverListen = v
 		} else {
 			serverListen = "unix://" + filepath.Join(home, "server.sock")
 		}
 	}
-	if serverStorage == "" {
-		if v, ok := Config.Get("server", "storage"); ok && v != "" {
-			serverStorage = v
-		} else {
-			serverStorage = filepath.Join(home, "batchq.db")
-		}
-	}
 	if !serverWAL {
-		if v, ok := Config.GetBool("server", "sqlite_wal"); ok {
-			serverWAL = v
-		}
+		serverWAL = Config.Server.SqliteWAL
 	}
 	// Lock path: default to $BATCHQ_HOME/server.lock unless the user
 	// explicitly passed --lock="" or set [server] lock = "" in config.
 	if !cmd.Flags().Changed("lock") {
-		if v, ok := Config.Get("server", "lock"); ok {
+		if v := Config.Server.Lock; v != "" {
 			serverLockPath = v
 		} else {
 			serverLockPath = filepath.Join(home, "server.lock")
 		}
 	}
 	if serverIdleTimeout == 0 {
-		if v, ok := Config.Get("server", "idle_timeout"); ok && v != "" {
-			parsed, err := time.ParseDuration(v)
-			if err != nil {
-				return fmt.Errorf("server: parse idle_timeout %q: %w", v, err)
-			}
-			serverIdleTimeout = parsed
-		}
-	}
-
-	// Expand ~ and make absolute.
-	if expanded, err := support.ExpandPathAbs(serverStorage); err == nil {
-		serverStorage = expanded
+		serverIdleTimeout = Config.Server.IdleTimeout.AsDuration()
 	}
 	if serverLockPath != "" {
 		if expanded, err := support.ExpandPathAbs(serverLockPath); err == nil {
@@ -117,10 +124,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	switch {
 	case strings.HasPrefix(serverListen, "unix://"):
 	case strings.HasPrefix(serverListen, "tcp://"):
-		// TCP without TLS/auth is currently allowed but unauthenticated.
-		// A reverse proxy is expected to handle TLS termination, and the
-		// auth phase will add bearer-token gating later. For now we just
-		// log a warning so it doesn't go unnoticed in operator logs.
 		log.Println("warning: TCP listener has no authentication yet; only expose behind a trusted proxy")
 	default:
 		return fmt.Errorf("unsupported --listen scheme; use unix:// or tcp://")
@@ -129,7 +132,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	store, err := storage.Open(ctx, serverStorage, storage.Options{WAL: serverWAL})
+	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL})
 	if err != nil {
 		return fmt.Errorf("open storage: %w", err)
 	}
@@ -145,14 +148,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "batchq server listening on %s (storage: %s)\n", serverListen, serverStorage)
+	fmt.Fprintf(os.Stderr, "batchq server listening on %s (backend: %s)\n", serverListen, backend.Raw)
 	if serverIdleTimeout > 0 {
 		fmt.Fprintf(os.Stderr, "batchq server: idle timeout %s\n", serverIdleTimeout)
 	}
 	if err := srv.Serve(ctx); err != nil {
 		if errors.Is(err, server.ErrLockHeld) {
-			// Another instance is already running. Exit silently with a
-			// non-fatal status so autospawn races don't print noise.
 			fmt.Fprintln(os.Stderr, "batchq server: another instance is already running")
 			return nil
 		}
