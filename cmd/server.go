@@ -12,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbreese/batchq/iniconfig"
 	"github.com/mbreese/batchq/server"
 	"github.com/mbreese/batchq/service"
 	"github.com/mbreese/batchq/storage"
@@ -44,7 +43,7 @@ Default storage:   $BATCHQ_HOME/batchq.db
 }
 
 func init() {
-	home := iniconfig.GetBatchqHome()
+	home := support.GetBatchqHome()
 	defaultSock := "unix://" + filepath.Join(home, "server.sock")
 	defaultDB := filepath.Join(home, "batchq.db")
 	defaultLock := filepath.Join(home, "server.lock")
@@ -64,7 +63,7 @@ func init() {
 }
 
 func runServer(cmd *cobra.Command, _ []string) error {
-	home := iniconfig.GetBatchqHome()
+	home := support.GetBatchqHome()
 
 	if serverListen == "" {
 		if v, ok := Config.Get("server", "listen"); ok && v != "" {

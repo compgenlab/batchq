@@ -18,7 +18,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/mbreese/batchq/api"
 	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/iniconfig"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/support"
 )
@@ -69,7 +68,7 @@ criterion.
 */
 func NewSimpleRunner(c *client.Client) *simpleRunner {
 	id := uuid.New()
-	runner := simpleRunner{client: c, maxProcs: -1, maxMemoryMb: -1, maxWalltimeSec: -1, maxJobs: -1, foreverMode: false, runnerId: id.String(), spoolDir: filepath.Join(iniconfig.GetBatchqHome(), "spool")}
+	runner := simpleRunner{client: c, maxProcs: -1, maxMemoryMb: -1, maxWalltimeSec: -1, maxJobs: -1, foreverMode: false, runnerId: id.String(), spoolDir: filepath.Join(support.GetBatchqHome(), "spool")}
 	return &runner
 }
 
@@ -130,7 +129,7 @@ func (r *simpleRunner) logf(msg string, v ...any) {
 }
 
 func (r *simpleRunner) Start() bool {
-	if path, err := support.ExpandPathAbs(filepath.Join(iniconfig.GetBatchqHome(), "drain")); err == nil {
+	if path, err := support.ExpandPathAbs(filepath.Join(support.GetBatchqHome(), "drain")); err == nil {
 		os.Remove(path)
 	}
 
@@ -354,7 +353,7 @@ func (r *simpleRunner) Start() bool {
 }
 
 func (r *simpleRunner) IsDrain() bool {
-	if path, err := support.ExpandPathAbs(filepath.Join(iniconfig.GetBatchqHome(), "drain")); err == nil {
+	if path, err := support.ExpandPathAbs(filepath.Join(support.GetBatchqHome(), "drain")); err == nil {
 		return support.FileExists(path)
 	}
 	return false
