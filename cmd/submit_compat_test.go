@@ -16,10 +16,10 @@ import (
 	"unsafe"
 
 	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/iniconfig"
 	"github.com/mbreese/batchq/server"
 	"github.com/mbreese/batchq/service"
 	"github.com/mbreese/batchq/storage"
+	"github.com/mbreese/batchq/support"
 )
 
 // startCompatServer spins up a real server over a unix socket and returns a
@@ -81,7 +81,7 @@ func startCompatServer(t *testing.T) *client.Client {
 
 	// Config must be non-nil because submitCmd queries it for defaults.
 	if Config == nil {
-		Config = iniconfig.LoadConfig("/dev/null", "batchq")
+		Config = support.LoadConfig("/dev/null", "batchq")
 	}
 
 	return c

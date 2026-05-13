@@ -20,7 +20,6 @@ import (
 
 	"github.com/mbreese/batchq/api"
 	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/iniconfig"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/support"
 )
@@ -31,7 +30,7 @@ var webTemplatesFS embed.FS
 const webRequestTimeout = 2 * time.Minute
 
 type Options struct {
-	Config     *iniconfig.Config
+	Config     *support.Config
 	Client     *client.Client
 	SocketPath string
 	ListenAddr string
@@ -146,7 +145,7 @@ func resolveSocketPath(opts Options) (string, error) {
 		return normalizeSocketPath(opts.SocketPath)
 	}
 
-	home := iniconfig.GetBatchqHome()
+	home := support.GetBatchqHome()
 	defaultSocket := filepath.Join(home, "batchq.sock")
 	if opts.Config == nil {
 		return normalizeSocketPath(defaultSocket)

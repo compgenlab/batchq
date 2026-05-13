@@ -5,11 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mbreese/batchq/db"
-	"github.com/mbreese/batchq/iniconfig"
 	"github.com/mbreese/batchq/support"
 
-	// "github.com/mbreese/iniconfig"
 	"github.com/spf13/cobra"
 )
 
@@ -18,17 +15,9 @@ var rootCmd = &cobra.Command{
 	Short: "batchq - simple batch job queue",
 }
 
-var Config *iniconfig.Config
-
-var initdbCmd = &cobra.Command{
-	Use:   "initdb",
-	Short: "Initialize the job database",
-	Run: func(cmd *cobra.Command, args []string) {
-		if err := db.InitDB(dbpath, force); err != nil {
-			fmt.Printf("Error initializing DB: %v\n", err)
-		}
-	},
-}
+// Config holds parsed `~/.batchq/config` (INI) values. Always non-nil after
+// init even if no file is present.
+var Config *support.Config
 
 var debugCmd = &cobra.Command{
 	Use:    "debug",
@@ -37,8 +26,6 @@ var debugCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Printf("batchq home: %s\n", batchqHome)
 		fmt.Printf("     config: %s\n", configFile)
-		fmt.Printf("     dbpath: %s\n", dbpath)
-
 	},
 }
 
@@ -59,24 +46,19 @@ func SetLicenseText(txt string) {
 
 var batchqHome string
 var configFile string
-var dbpath string
-var force bool
 
 func init() {
 	rootCmd.CompletionOptions.DisableDefaultCmd = true
 
-	initdbCmd.Flags().BoolVar(&force, "force", false, "Force overwriting existing DB")
-
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(licenseCmd)
-	rootCmd.AddCommand(initdbCmd)
 
-	batchqHome := iniconfig.GetBatchqHome()
+	batchqHome = support.GetBatchqHome()
 	var err error
 	if configFile, err = support.ExpandPathAbs(filepath.Join(batchqHome, "config")); err == nil {
-		Config = iniconfig.LoadConfig(configFile, "batchq")
-		defDB, _ := support.ExpandPathAbs(filepath.Join(batchqHome, "batchq.db"))
-		dbpath, _ = Config.Get("", "dbpath", "sqlite3://"+defDB) // ok is always true with a defval
+		Config = support.LoadConfig(configFile, "batchq")
+	} else {
+		Config = support.LoadConfig("", "batchq")
 	}
 }
 

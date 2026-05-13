@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/iniconfig"
+	"github.com/mbreese/batchq/support"
 )
 
 // clientURL is set from --server / [client] url. Empty means "use the
@@ -41,7 +41,7 @@ func dialClient() (*client.Client, error) {
 		}
 	}
 	if url == "" {
-		url = "unix://" + filepath.Join(iniconfig.GetBatchqHome(), "server.sock")
+		url = "unix://" + filepath.Join(support.GetBatchqHome(), "server.sock")
 	}
 	token := clientToken
 	if token == "" {
