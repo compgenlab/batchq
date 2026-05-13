@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/mbreese/batchq/iniconfig"
 	"github.com/mbreese/batchq/server"
@@ -19,9 +21,11 @@ import (
 )
 
 var (
-	serverListen  string
-	serverStorage string
-	serverWAL     bool
+	serverListen      string
+	serverStorage     string
+	serverWAL         bool
+	serverLockPath    string
+	serverIdleTimeout time.Duration
 )
 
 var serverCmd = &cobra.Command{
@@ -43,6 +47,7 @@ func init() {
 	home := iniconfig.GetBatchqHome()
 	defaultSock := "unix://" + filepath.Join(home, "server.sock")
 	defaultDB := filepath.Join(home, "batchq.db")
+	defaultLock := filepath.Join(home, "server.lock")
 
 	serverCmd.Flags().StringVar(&serverListen, "listen", "",
 		"Listener URL (unix:///path/to/sock or tcp://host:port). Default: "+defaultSock)
@@ -50,6 +55,10 @@ func init() {
 		"Storage file path. Default: "+defaultDB)
 	serverCmd.Flags().BoolVar(&serverWAL, "sqlite-wal", false,
 		"Enable SQLite WAL journal mode. NOT SAFE on networked filesystems; only use when the DB file is on local disk.")
+	serverCmd.Flags().StringVar(&serverLockPath, "lock", "",
+		"Lock file path used to elect a single server instance. Default: "+defaultLock+". Pass an empty string to disable.")
+	serverCmd.Flags().DurationVar(&serverIdleTimeout, "idle-timeout", 0,
+		"Auto-shut-down after this duration of no activity. Zero (default) disables.")
 
 	rootCmd.AddCommand(serverCmd)
 }
@@ -76,10 +85,33 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			serverWAL = v
 		}
 	}
+	// Lock path: default to $BATCHQ_HOME/server.lock unless the user
+	// explicitly passed --lock="" or set [server] lock = "" in config.
+	if !cmd.Flags().Changed("lock") {
+		if v, ok := Config.Get("server", "lock"); ok {
+			serverLockPath = v
+		} else {
+			serverLockPath = filepath.Join(home, "server.lock")
+		}
+	}
+	if serverIdleTimeout == 0 {
+		if v, ok := Config.Get("server", "idle_timeout"); ok && v != "" {
+			parsed, err := time.ParseDuration(v)
+			if err != nil {
+				return fmt.Errorf("server: parse idle_timeout %q: %w", v, err)
+			}
+			serverIdleTimeout = parsed
+		}
+	}
 
 	// Expand ~ and make absolute.
 	if expanded, err := support.ExpandPathAbs(serverStorage); err == nil {
 		serverStorage = expanded
+	}
+	if serverLockPath != "" {
+		if expanded, err := support.ExpandPathAbs(serverLockPath); err == nil {
+			serverLockPath = expanded
+		}
 	}
 
 	// Sanity check the listen URL.
@@ -105,11 +137,27 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	defer store.Close()
 
 	svc := service.New(store)
-	srv, err := server.New(svc, server.Options{Listen: serverListen})
+	srv, err := server.New(svc, server.Options{
+		Listen:      serverListen,
+		LockPath:    serverLockPath,
+		IdleTimeout: serverIdleTimeout,
+	})
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintf(os.Stderr, "batchq server listening on %s (storage: %s)\n", serverListen, serverStorage)
-	return srv.Serve(ctx)
+	if serverIdleTimeout > 0 {
+		fmt.Fprintf(os.Stderr, "batchq server: idle timeout %s\n", serverIdleTimeout)
+	}
+	if err := srv.Serve(ctx); err != nil {
+		if errors.Is(err, server.ErrLockHeld) {
+			// Another instance is already running. Exit silently with a
+			// non-fatal status so autospawn races don't print noise.
+			fmt.Fprintln(os.Stderr, "batchq server: another instance is already running")
+			return nil
+		}
+		return err
+	}
+	return nil
 }

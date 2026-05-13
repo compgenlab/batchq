@@ -1,26 +1,31 @@
 // Package server runs the batchq REST API. It owns the storage handle and
 // listens on a unix socket or TCP address. Clients (CLI, runner, web UI)
 // drive it via the API contract in package api.
-//
-// Phase 3 of the v2 rewrite: unix-socket listener only, no auth, no
-// auto-spawn idle timeout (those come in Phase 8).
 package server
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/mbreese/batchq/api"
 	"github.com/mbreese/batchq/service"
 )
+
+// ErrLockHeld is returned by Serve when another batchq server already
+// holds the lock file. Callers can check this to distinguish "another
+// instance is running" from real listener failures.
+var ErrLockHeld = errors.New("server: lock held by another instance")
 
 // Options configures a Server.
 type Options struct {
@@ -35,6 +40,25 @@ type Options struct {
 	// to 2 minutes each, matching the v1 web server.
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
+
+	// LockPath, if non-empty, is the path to a file used as an exclusive
+	// flock election. Serve returns ErrLockHeld if another process holds
+	// the lock. The file persists across runs; only the flock itself is
+	// the lifetime signal.
+	LockPath string
+
+	// IdleTimeout, if > 0, makes the server shut itself down once no
+	// request has been received in this long AND no requests are in
+	// flight. Zero (default) disables idle shutdown.
+	IdleTimeout time.Duration
+
+	// IdleCheckInterval is how often the idle monitor wakes up. Defaults
+	// to min(IdleTimeout/4, 30s). Only matters when IdleTimeout > 0.
+	IdleCheckInterval time.Duration
+
+	// OnIdleShutdown is called (in a goroutine) just before the idle
+	// monitor triggers shutdown. Useful for tests and operator logging.
+	OnIdleShutdown func()
 }
 
 // Server is a long-lived HTTP server over the batchq REST API.
@@ -44,9 +68,17 @@ type Server struct {
 
 	httpSrv *http.Server
 
-	mu        sync.Mutex
-	listener  net.Listener
+	mu         sync.Mutex
+	listener   net.Listener
 	socketPath string // set if listening on a unix socket; cleaned up on Shutdown
+	lockFile   *os.File
+
+	// lastActivityNanos is touched on every request (in or out) so the
+	// idle monitor can decide when to shut down. Initialized to "now" at
+	// Serve start so a freshly-spawned server gets a full grace period
+	// before any client connects.
+	lastActivityNanos atomic.Int64
+	inFlight          atomic.Int64
 }
 
 // New wires a Service into an HTTP handler tree but does not start
@@ -75,15 +107,23 @@ func New(svc *service.Service, opts Options) (*Server, error) {
 		ReadTimeout:  opts.ReadTimeout,
 		WriteTimeout: opts.WriteTimeout,
 	}
+	s.lastActivityNanos.Store(time.Now().UnixNano())
 	return s, nil
 }
 
-// Serve binds the listener and blocks until Shutdown is called or the
-// listener fails. The returned error is nil for a clean Shutdown,
-// non-nil otherwise.
+// Serve binds the listener and blocks until Shutdown is called, the
+// idle monitor fires, or the listener fails. The returned error is nil
+// for a clean Shutdown, non-nil otherwise. If another process already
+// holds Options.LockPath, returns ErrLockHeld without touching the
+// socket.
 func (s *Server) Serve(ctx context.Context) error {
+	if err := s.acquireLock(); err != nil {
+		return err
+	}
+
 	ln, err := s.listen()
 	if err != nil {
+		s.releaseLock()
 		return err
 	}
 	s.mu.Lock()
@@ -98,11 +138,19 @@ func (s *Server) Serve(ctx context.Context) error {
 		_ = s.httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	if err := s.httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		s.cleanupSocket()
-		return err
+	// Idle monitor: only spun up if a timeout is configured.
+	idleCtx, idleCancel := context.WithCancel(context.Background())
+	defer idleCancel()
+	if s.opts.IdleTimeout > 0 {
+		go s.runIdleMonitor(idleCtx)
 	}
+
+	serveErr := s.httpSrv.Serve(ln)
 	s.cleanupSocket()
+	s.releaseLock()
+	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
+	}
 	return nil
 }
 
@@ -228,7 +276,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+p+api.RouteRunnerJobEnd, s.handleEndJob)
 	mux.HandleFunc("POST "+p+api.RouteRunnerJobProxyEnd, s.handleEndProxied)
 
-	return s.withVersionHeader(mux)
+	return s.withVersionHeader(s.withActivity(mux))
 }
 
 // withVersionHeader stamps every response with the API version header so
@@ -238,4 +286,103 @@ func (s *Server) withVersionHeader(next http.Handler) http.Handler {
 		w.Header().Set(api.HeaderVersion, api.Version)
 		next.ServeHTTP(w, r)
 	})
+}
+
+// withActivity tracks last-activity and in-flight counts so the idle
+// monitor can decide when to shut down. Health checks count too — they
+// reset the idle timer of a freshly-spawned server while clients dial.
+func (s *Server) withActivity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.inFlight.Add(1)
+		s.lastActivityNanos.Store(time.Now().UnixNano())
+		defer func() {
+			s.lastActivityNanos.Store(time.Now().UnixNano())
+			s.inFlight.Add(-1)
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// acquireLock takes an exclusive flock on Options.LockPath. The lock is
+// held by keeping the *os.File open; the kernel releases it when the
+// fd is closed (either explicitly via releaseLock, or implicitly when
+// the process exits).
+func (s *Server) acquireLock() error {
+	if s.opts.LockPath == "" {
+		return nil
+	}
+	if dir := filepath.Dir(s.opts.LockPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return fmt.Errorf("server: mkdir lock dir: %w", err)
+		}
+	}
+	f, err := os.OpenFile(s.opts.LockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("server: open lock file: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return ErrLockHeld
+		}
+		return fmt.Errorf("server: flock: %w", err)
+	}
+	s.mu.Lock()
+	s.lockFile = f
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Server) releaseLock() {
+	s.mu.Lock()
+	f := s.lockFile
+	s.lockFile = nil
+	s.mu.Unlock()
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	_ = f.Close()
+}
+
+// runIdleMonitor ticks at IdleCheckInterval. When no requests are
+// in-flight and the elapsed time since the last activity exceeds
+// IdleTimeout, it triggers httpSrv.Shutdown — which unblocks Serve and
+// drives the normal cleanup path.
+func (s *Server) runIdleMonitor(ctx context.Context) {
+	interval := s.opts.IdleCheckInterval
+	if interval <= 0 {
+		interval = s.opts.IdleTimeout / 4
+		if interval > 30*time.Second {
+			interval = 30 * time.Second
+		}
+		if interval < 100*time.Millisecond {
+			interval = 100 * time.Millisecond
+		}
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if s.inFlight.Load() > 0 {
+				continue
+			}
+			last := time.Unix(0, s.lastActivityNanos.Load())
+			if time.Since(last) < s.opts.IdleTimeout {
+				continue
+			}
+			if s.opts.OnIdleShutdown != nil {
+				go s.opts.OnIdleShutdown()
+			}
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := s.httpSrv.Shutdown(shutdownCtx); err != nil {
+				log.Printf("server: idle shutdown: %v", err)
+			}
+			cancel()
+			return
+		}
+	}
 }
