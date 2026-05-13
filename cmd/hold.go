@@ -1,15 +1,13 @@
 package cmd
 
 import (
-	"context"
+	"errors"
 	"fmt"
-	"log"
 	"os/exec"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/mbreese/batchq/db"
+	"github.com/mbreese/batchq/client"
 	"github.com/spf13/cobra"
 )
 
@@ -22,24 +20,21 @@ var holdCmd = &cobra.Command{
 			return
 		}
 
-		if jobq, err := db.OpenDB(dbpath); err != nil {
-			log.Fatalln(err)
-		} else {
-			defer jobq.Close()
-			jobIds, err := expandJobArgs(args)
-			if err != nil {
-				fmt.Printf("Bad job-id: %s\n", err.Error())
-				return
-			}
-			for _, jobid := range jobIds {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-
-				if jobq.HoldJob(ctx, jobid) {
-					fmt.Printf("Job: %s held\n", jobid)
-				} else {
-					fmt.Printf("Error holding job: %s\n", jobid)
-				}
+		c := mustDialClient()
+		defer c.Close()
+		jobIds, err := expandJobArgs(args)
+		if err != nil {
+			fmt.Printf("Bad job-id: %s\n", err.Error())
+			return
+		}
+		for _, jobid := range jobIds {
+			ctx, cancel := cmdContext()
+			err := c.HoldJob(ctx, jobid)
+			cancel()
+			if err == nil {
+				fmt.Printf("Job: %s held\n", jobid)
+			} else {
+				fmt.Printf("Error holding job: %s\n", jobid)
 			}
 		}
 	},
@@ -54,24 +49,21 @@ var releaseCmd = &cobra.Command{
 			return
 		}
 
-		if jobq, err := db.OpenDB(dbpath); err != nil {
-			log.Fatalln(err)
-		} else {
-			defer jobq.Close()
-			jobIds, err := expandJobArgs(args)
-			if err != nil {
-				fmt.Printf("Bad job-id: %s\n", err.Error())
-				return
-			}
-			for _, jobid := range jobIds {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-
-				if jobq.ReleaseJob(ctx, jobid) {
-					fmt.Printf("Job: %s released\n", jobid)
-				} else {
-					fmt.Printf("Error releasing job: %s\n", jobid)
-				}
+		c := mustDialClient()
+		defer c.Close()
+		jobIds, err := expandJobArgs(args)
+		if err != nil {
+			fmt.Printf("Bad job-id: %s\n", err.Error())
+			return
+		}
+		for _, jobid := range jobIds {
+			ctx, cancel := cmdContext()
+			err := c.ReleaseJob(ctx, jobid)
+			cancel()
+			if err == nil {
+				fmt.Printf("Job: %s released\n", jobid)
+			} else {
+				fmt.Printf("Error releasing job: %s\n", jobid)
 			}
 		}
 	},
@@ -86,35 +78,41 @@ var cancelCmd = &cobra.Command{
 			return
 		}
 
-		if jobq, err := db.OpenDB(dbpath); err != nil {
-			log.Fatalln(err)
-		} else {
-			defer jobq.Close()
-			jobIds, err := expandJobArgs(args)
+		c := mustDialClient()
+		defer c.Close()
+		jobIds, err := expandJobArgs(args)
+		if err != nil {
+			fmt.Printf("Bad job-id: %s\n", err.Error())
+			return
+		}
+		for _, jobid := range jobIds {
+			ctx, cancel := cmdContext()
+			dto, err := c.GetJob(ctx, jobid)
+			cancel()
 			if err != nil {
-				fmt.Printf("Bad job-id: %s\n", err.Error())
-				return
+				if errors.Is(err, client.ErrNotFound) {
+					continue
+				}
+				fmt.Printf("Error fetching job: %s\n", jobid)
+				continue
 			}
-			for _, jobid := range jobIds {
-				// this can propagate, so it can take a while...
-				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
-				defer cancel()
-
-				if job := jobq.GetJob(ctx, jobid); job != nil {
-					if job.GetRunningDetail("slurm_job_id", "") != "" {
-						cmd := exec.Command("scancel", job.GetRunningDetail("slurm_job_id", ""))
-						if err := cmd.Run(); err != nil {
-							fmt.Printf("Error canceling slurm job: %v\n", err)
-						} else {
-							fmt.Printf("Canceled slurm job: %s\n", job.GetRunningDetail("slurm_job_id", ""))
-						}
-					}
-					if jobq.CancelJob(ctx, jobid, cancelReason) {
-						fmt.Printf("Job: %s canceled\n", jobid)
+			if dto != nil {
+				if slurmID, ok := dto.RunningDetails["slurm_job_id"]; ok && slurmID != "" {
+					scancel := exec.Command("scancel", slurmID)
+					if err := scancel.Run(); err != nil {
+						fmt.Printf("Error canceling slurm job: %v\n", err)
 					} else {
-						fmt.Printf("Error canceling job: %s\n", jobid)
+						fmt.Printf("Canceled slurm job: %s\n", slurmID)
 					}
 				}
+			}
+			cctx, ccancel := cmdContext()
+			err = c.CancelJob(cctx, jobid, cancelReason)
+			ccancel()
+			if err == nil {
+				fmt.Printf("Job: %s canceled\n", jobid)
+			} else {
+				fmt.Printf("Error canceling job: %s\n", jobid)
 			}
 		}
 	},
@@ -129,24 +127,21 @@ var topCmd = &cobra.Command{
 			return
 		}
 
-		if jobq, err := db.OpenDB(dbpath); err != nil {
-			log.Fatalln(err)
-		} else {
-			defer jobq.Close()
-			jobIds, err := expandJobArgs(args)
-			if err != nil {
-				fmt.Printf("Bad job-id: %s\n", err.Error())
-				return
-			}
-			for _, jobid := range jobIds {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-
-				if jobq.TopJob(ctx, jobid) {
-					fmt.Printf("Job: %s prioritized\n", jobid)
-				} else {
-					fmt.Printf("Error prioritizing job: %s\n", jobid)
-				}
+		c := mustDialClient()
+		defer c.Close()
+		jobIds, err := expandJobArgs(args)
+		if err != nil {
+			fmt.Printf("Bad job-id: %s\n", err.Error())
+			return
+		}
+		for _, jobid := range jobIds {
+			ctx, cancel := cmdContext()
+			err := c.AdjustJobPriority(ctx, jobid, 1)
+			cancel()
+			if err == nil {
+				fmt.Printf("Job: %s prioritized\n", jobid)
+			} else {
+				fmt.Printf("Error prioritizing job: %s\n", jobid)
 			}
 		}
 	},
@@ -161,24 +156,21 @@ var niceCmd = &cobra.Command{
 			return
 		}
 
-		if jobq, err := db.OpenDB(dbpath); err != nil {
-			log.Fatalln(err)
-		} else {
-			defer jobq.Close()
-			jobIds, err := expandJobArgs(args)
-			if err != nil {
-				fmt.Printf("Bad job-id: %s\n", err.Error())
-				return
-			}
-			for _, jobid := range jobIds {
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-
-				if jobq.NiceJob(ctx, jobid) {
-					fmt.Printf("Job: %s de-prioritized\n", jobid)
-				} else {
-					fmt.Printf("Error de-prioritizing job: %s\n", jobid)
-				}
+		c := mustDialClient()
+		defer c.Close()
+		jobIds, err := expandJobArgs(args)
+		if err != nil {
+			fmt.Printf("Bad job-id: %s\n", err.Error())
+			return
+		}
+		for _, jobid := range jobIds {
+			ctx, cancel := cmdContext()
+			err := c.AdjustJobPriority(ctx, jobid, -1)
+			cancel()
+			if err == nil {
+				fmt.Printf("Job: %s de-prioritized\n", jobid)
+			} else {
+				fmt.Printf("Error de-prioritizing job: %s\n", jobid)
 			}
 		}
 	},

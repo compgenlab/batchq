@@ -216,6 +216,19 @@ func (s *Server) handlePriority(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleCleanupJob(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.svc.CleanupJob(r.Context(), id); err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	showAll := r.URL.Query().Get("all") == "true"
 	sortByStatus := r.URL.Query().Get("sort_by_status") == "true"

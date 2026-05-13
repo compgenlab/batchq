@@ -2,11 +2,13 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
-	"github.com/mbreese/batchq/db"
+	"github.com/mbreese/batchq/api"
+	"github.com/mbreese/batchq/client"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/spf13/cobra"
 )
@@ -37,46 +39,84 @@ var cleanupCmd = &cobra.Command{
 			statuses = append(statuses, jobs.SUCCESS)
 		}
 
-		if jobq, err := db.OpenDB(dbpath); err != nil {
-			log.Fatalln(err)
-		} else {
-			defer jobq.Close()
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
+		c := mustDialClient()
+		defer c.Close()
 
-			plan := buildCleanupPlan(ctx, jobq, statuses)
-			for _, job := range plan.candidates {
-				if !plan.blocked[job.JobId] {
-					continue
-				}
-				dependents, ok := plan.dependents[job.JobId]
-				if !ok {
-					dependents = jobq.GetJobDependents(ctx, job.JobId)
-				}
-				if len(dependents) > 0 {
-					fmt.Printf("Skipping job %s: dependents not eligible for removal\n", job.JobId)
-				}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+
+		reader := &clientCleanupReader{c: c}
+		plan := buildCleanupPlan(ctx, reader, statuses)
+		for _, job := range plan.candidates {
+			if !plan.blocked[job.JobID] {
+				continue
 			}
+			dependents, ok := plan.dependents[job.JobID]
+			if !ok {
+				dependents, _ = reader.GetJobDependents(ctx, job.JobID)
+			}
+			if len(dependents) > 0 {
+				fmt.Printf("Skipping job %s: dependents not eligible for removal\n", job.JobID)
+			}
+		}
 
-			for _, jobId := range plan.removalOrder {
-				if jobq.CleanupJob(ctx, jobId) {
-					fmt.Printf("Removed job: %s\n", jobId)
-				} else {
-					fmt.Printf("Error removing job: %s\n", jobId)
-				}
+		for _, jobId := range plan.removalOrder {
+			if err := c.CleanupJob(ctx, jobId); err == nil {
+				fmt.Printf("Removed job: %s\n", jobId)
+			} else {
+				fmt.Printf("Error removing job: %s\n", jobId)
 			}
 		}
 	},
 }
 
+// cleanupJobReader abstracts the data access the cleanup planner needs.
+// The CLI wires it to a REST client; tests wire it to an in-memory fake.
 type cleanupJobReader interface {
-	GetJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) []*jobs.JobDef
-	GetJob(ctx context.Context, jobId string) *jobs.JobDef
-	GetJobDependents(ctx context.Context, jobId string) []string
+	GetJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) []*api.JobDTO
+	GetJob(ctx context.Context, jobId string) *api.JobDTO
+	GetJobDependents(ctx context.Context, jobId string) ([]string, error)
+}
+
+// clientCleanupReader adapts a *client.Client to cleanupJobReader. It
+// converts client errors into the "missing"/empty values the planner
+// expects so the planner stays REST-agnostic.
+type clientCleanupReader struct {
+	c *client.Client
+}
+
+func (r *clientCleanupReader) GetJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) []*api.JobDTO {
+	names := make([]string, 0, len(statuses))
+	for _, s := range statuses {
+		names = append(names, s.String())
+	}
+	dtos, err := r.c.ListJobs(ctx, client.ListJobsOptions{
+		Statuses:     names,
+		SortByStatus: sortByStatus,
+	})
+	if err != nil {
+		log.Fatalln(err)
+	}
+	return dtos
+}
+
+func (r *clientCleanupReader) GetJob(ctx context.Context, jobId string) *api.JobDTO {
+	dto, err := r.c.GetJob(ctx, jobId)
+	if err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			return nil
+		}
+		log.Fatalln(err)
+	}
+	return dto
+}
+
+func (r *clientCleanupReader) GetJobDependents(ctx context.Context, jobId string) ([]string, error) {
+	return r.c.GetJobDependents(ctx, jobId)
 }
 
 type cleanupPlan struct {
-	candidates   []*jobs.JobDef
+	candidates   []*api.JobDTO
 	removalOrder []string
 	dependents   map[string][]string
 	blocked      map[string]bool
@@ -86,9 +126,9 @@ func buildCleanupPlan(ctx context.Context, jobq cleanupJobReader, statuses []job
 	// Plan removals by recursively verifying that all dependents are eligible for removal,
 	// then emit a post-order deletion list so children are removed before parents.
 	candidates := jobq.GetJobsByStatus(ctx, statuses, false)
-	allowedStatuses := map[jobs.StatusCode]bool{}
+	allowedStatuses := map[string]bool{}
 	for _, status := range statuses {
-		allowedStatuses[status] = true
+		allowedStatuses[status.String()] = true
 	}
 
 	depCache := map[string][]string{}
@@ -96,7 +136,7 @@ func buildCleanupPlan(ctx context.Context, jobq cleanupJobReader, statuses []job
 		if deps, ok := depCache[jobId]; ok {
 			return deps
 		}
-		deps := jobq.GetJobDependents(ctx, jobId)
+		deps, _ := jobq.GetJobDependents(ctx, jobId)
 		depCache[jobId] = deps
 		return deps
 	}
@@ -151,13 +191,13 @@ func buildCleanupPlan(ctx context.Context, jobq cleanupJobReader, statuses []job
 	}
 
 	for _, job := range candidates {
-		addRemovals(job.JobId)
+		addRemovals(job.JobID)
 	}
 
 	blocked := map[string]bool{}
 	for _, job := range candidates {
-		if !canRemove(job.JobId) {
-			blocked[job.JobId] = true
+		if !canRemove(job.JobID) {
+			blocked[job.JobID] = true
 		}
 	}
 

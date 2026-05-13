@@ -217,6 +217,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+p+api.RouteJobHold, s.handleHoldJob)
 	mux.HandleFunc("POST "+p+api.RouteJobRelease, s.handleReleaseJob)
 	mux.HandleFunc("POST "+p+api.RouteJobPriority, s.handlePriority)
+	mux.HandleFunc("POST "+p+api.RouteJobCleanup, s.handleCleanupJob)
 
 	mux.HandleFunc("GET "+p+api.RouteQueue, s.handleQueue)
 	mux.HandleFunc("GET "+p+api.RouteQueueCounts, s.handleQueueCounts)

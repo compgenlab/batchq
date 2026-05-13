@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -9,9 +9,9 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/mbreese/batchq/db"
+	"github.com/mbreese/batchq/api"
+	"github.com/mbreese/batchq/client"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/support"
 	"github.com/spf13/cobra"
@@ -336,50 +336,57 @@ var submitCmd = &cobra.Command{
 			fmt.Fprint(os.Stderr, scriptSrc)
 		}
 
-		job := jobs.NewJobDef(jobName, scriptSrc)
-		if jobHold {
-			job.Status = jobs.USERHOLD
-		}
+		// The script source is carried in details["script"] over the wire.
+		details["script"] = scriptSrc
 
-		for k, v := range details {
-			job.AddDetail(k, v)
-		}
-
-		var jobq db.BatchDB
-		var err error
-		if jobq, err = db.OpenDB(dbpath); err != nil {
-			log.Fatalln(err)
-		}
-		defer jobq.Close()
-
-		baddep := false
+		var afterOk []string
 		for _, val := range strings.Split(jobDeps, ",") {
 			depid := strings.TrimSpace(val)
 			if depid == "" {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			afterOk = append(afterOk, depid)
+		}
 
-			// fmt.Println("Checking dep: ", depid)
-			dep := jobq.GetJob(ctx, depid)
-			if dep == nil || dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
-				// bad dependency
+		c := mustDialClient()
+		defer c.Close()
+
+		baddep := false
+		for _, depid := range afterOk {
+			ctx, cancel := cmdContext()
+			dep, err := c.GetJob(ctx, depid)
+			cancel()
+			if err != nil {
+				if errors.Is(err, client.ErrNotFound) {
+					fmt.Fprintf(os.Stderr, "ERROR: Bad job dependency: %s\n", depid)
+					baddep = true
+					continue
+				}
+				log.Fatalln(err)
+			}
+			if dep == nil || dep.Status == jobs.CANCELED.String() || dep.Status == jobs.FAILED.String() {
 				fmt.Fprintf(os.Stderr, "ERROR: Bad job dependency: %s\n", depid)
 				baddep = true
 			}
-			job.AddAfterOk(depid)
 		}
 
 		if baddep {
 			os.Exit(1)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := cmdContext()
 		defer cancel()
-		// fmt.Println("Submitting job")
-		job = jobq.SubmitJob(ctx, job)
-		fmt.Printf("%s\n", job.JobId)
+		req := &api.SubmitJobRequest{
+			Name:    jobName,
+			Hold:    jobHold,
+			AfterOk: afterOk,
+			Details: details,
+		}
+		dto, err := c.SubmitJob(ctx, req)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		fmt.Printf("%s\n", dto.JobID)
 
 	},
 }

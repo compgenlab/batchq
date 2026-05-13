@@ -29,6 +29,7 @@ const (
 	RouteJobHold        = "/jobs/{id}/hold"
 	RouteJobRelease     = "/jobs/{id}/release"
 	RouteJobPriority    = "/jobs/{id}/priority"
+	RouteJobCleanup     = "/jobs/{id}/cleanup"
 
 	RouteQueue       = "/queue"
 	RouteQueueCounts = "/queue/counts"

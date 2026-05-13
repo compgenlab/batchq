@@ -5,22 +5,23 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/mbreese/batchq/api"
 	"github.com/mbreese/batchq/jobs"
 )
 
 type fakeCleanupDB struct {
-	jobs       map[string]*jobs.JobDef
+	jobs       map[string]*api.JobDTO
 	dependents map[string][]string
 	order      []string
 }
 
-func (f *fakeCleanupDB) GetJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) []*jobs.JobDef {
-	allowed := map[jobs.StatusCode]bool{}
+func (f *fakeCleanupDB) GetJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) []*api.JobDTO {
+	allowed := map[string]bool{}
 	for _, status := range statuses {
-		allowed[status] = true
+		allowed[status.String()] = true
 	}
 
-	var out []*jobs.JobDef
+	var out []*api.JobDTO
 	for _, id := range f.order {
 		job := f.jobs[id]
 		if job != nil && allowed[job.Status] {
@@ -30,20 +31,20 @@ func (f *fakeCleanupDB) GetJobsByStatus(ctx context.Context, statuses []jobs.Sta
 	return out
 }
 
-func (f *fakeCleanupDB) GetJob(ctx context.Context, jobId string) *jobs.JobDef {
+func (f *fakeCleanupDB) GetJob(ctx context.Context, jobId string) *api.JobDTO {
 	return f.jobs[jobId]
 }
 
-func (f *fakeCleanupDB) GetJobDependents(ctx context.Context, jobId string) []string {
-	return f.dependents[jobId]
+func (f *fakeCleanupDB) GetJobDependents(ctx context.Context, jobId string) ([]string, error) {
+	return f.dependents[jobId], nil
 }
 
 func TestBuildCleanupPlanRemovesDependentsFirst(t *testing.T) {
 	ctx := context.Background()
 	db := &fakeCleanupDB{
-		jobs: map[string]*jobs.JobDef{
-			"P": {JobId: "P", Status: jobs.SUCCESS},
-			"C": {JobId: "C", Status: jobs.SUCCESS},
+		jobs: map[string]*api.JobDTO{
+			"P": {JobID: "P", Status: jobs.SUCCESS.String()},
+			"C": {JobID: "C", Status: jobs.SUCCESS.String()},
 		},
 		dependents: map[string][]string{
 			"P": {"C"},
@@ -64,9 +65,9 @@ func TestBuildCleanupPlanRemovesDependentsFirst(t *testing.T) {
 func TestBuildCleanupPlanBlocksWhenDependentNotEligible(t *testing.T) {
 	ctx := context.Background()
 	db := &fakeCleanupDB{
-		jobs: map[string]*jobs.JobDef{
-			"P": {JobId: "P", Status: jobs.SUCCESS},
-			"C": {JobId: "C", Status: jobs.RUNNING},
+		jobs: map[string]*api.JobDTO{
+			"P": {JobID: "P", Status: jobs.SUCCESS.String()},
+			"C": {JobID: "C", Status: jobs.RUNNING.String()},
 		},
 		dependents: map[string][]string{
 			"P": {"C"},
@@ -86,10 +87,10 @@ func TestBuildCleanupPlanBlocksWhenDependentNotEligible(t *testing.T) {
 func TestBuildCleanupPlanMultiLevelOrder(t *testing.T) {
 	ctx := context.Background()
 	db := &fakeCleanupDB{
-		jobs: map[string]*jobs.JobDef{
-			"G": {JobId: "G", Status: jobs.SUCCESS},
-			"P": {JobId: "P", Status: jobs.SUCCESS},
-			"C": {JobId: "C", Status: jobs.SUCCESS},
+		jobs: map[string]*api.JobDTO{
+			"G": {JobID: "G", Status: jobs.SUCCESS.String()},
+			"P": {JobID: "P", Status: jobs.SUCCESS.String()},
+			"C": {JobID: "C", Status: jobs.SUCCESS.String()},
 		},
 		dependents: map[string][]string{
 			"G": {"P"},

@@ -298,6 +298,12 @@ func (c *Client) AdjustJobPriority(ctx context.Context, jobID string, delta int)
 		api.PriorityRequest{Delta: delta}, nil)
 }
 
+// CleanupJob removes a terminal job from storage. The server returns
+// ErrInvalidState if the job is not in a terminal state.
+func (c *Client) CleanupJob(ctx context.Context, jobID string) error {
+	return c.do(ctx, http.MethodPost, api.Prefix+"/jobs/"+jobID+"/cleanup", nil, nil)
+}
+
 // --- Queue -------------------------------------------------------------
 
 func (c *Client) GetQueueJobs(ctx context.Context, showAll, sortByStatus bool) ([]*api.JobDTO, error) {
