@@ -79,9 +79,6 @@ var runCmd = &cobra.Command{
 			}
 
 			shell := Config.SimpleRunner.Shell
-			if shell == "" {
-				shell = "/bin/bash"
-			}
 
 			if useCgroupV1 && useCgroupV2 {
 				log.Fatalln("You cannot use cgroup v2 and v1 at the same time!")

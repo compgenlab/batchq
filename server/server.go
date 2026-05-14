@@ -23,10 +23,15 @@ import (
 	"github.com/mbreese/batchq/service"
 )
 
-// ErrLockHeld is returned by Serve when another batchq server already
-// holds the lock file. Callers can check this to distinguish "another
-// instance is running" from real listener failures.
-var ErrLockHeld = errors.New("server: lock held by another instance")
+// ErrAlreadyRunning is returned by Serve when another batchq server is
+// already listening on Options.Listen. Callers can check this to
+// distinguish "another instance is running" from real listener failures.
+//
+// Detection is done at bind time: if the socket file exists and a
+// connect probe succeeds, we treat the existing server as authoritative
+// and refuse to start. Only when the probe fails (ECONNREFUSED, stale
+// socket from a crashed process) do we unlink and retry the bind.
+var ErrAlreadyRunning = errors.New("server: another instance is already listening")
 
 // Options configures a Server.
 type Options struct {
@@ -42,12 +47,6 @@ type Options struct {
 	// to 2 minutes each, matching the v1 web server.
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
-
-	// LockPath, if non-empty, is the path to a file used as an exclusive
-	// flock election. Serve returns ErrLockHeld if another process holds
-	// the lock. The file persists across runs; only the flock itself is
-	// the lifetime signal.
-	LockPath string
 
 	// IdleTimeout, if > 0, makes the server shut itself down once no
 	// request has been received in this long AND no requests are in
@@ -73,7 +72,6 @@ type Server struct {
 	mu         sync.Mutex
 	listener   net.Listener
 	socketPath string // set if listening on a unix socket; cleaned up on Shutdown
-	lockFile   *os.File
 
 	// lastActivityNanos is touched on every request (in or out) so the
 	// idle monitor can decide when to shut down. Initialized to "now" at
@@ -115,17 +113,11 @@ func New(svc *service.Service, opts Options) (*Server, error) {
 
 // Serve binds the listener and blocks until Shutdown is called, the
 // idle monitor fires, or the listener fails. The returned error is nil
-// for a clean Shutdown, non-nil otherwise. If another process already
-// holds Options.LockPath, returns ErrLockHeld without touching the
-// socket.
+// for a clean Shutdown, non-nil otherwise. Returns ErrAlreadyRunning if
+// another batchq server is already listening on Options.Listen.
 func (s *Server) Serve(ctx context.Context) error {
-	if err := s.acquireLock(); err != nil {
-		return err
-	}
-
 	ln, err := s.listen()
 	if err != nil {
-		s.releaseLock()
 		return err
 	}
 	s.mu.Lock()
@@ -149,7 +141,6 @@ func (s *Server) Serve(ctx context.Context) error {
 
 	serveErr := s.httpSrv.Serve(ln)
 	s.cleanupSocket()
-	s.releaseLock()
 	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
 		return serveErr
 	}
@@ -194,6 +185,21 @@ func (s *Server) listen() (net.Listener, error) {
 	}
 }
 
+// listenUnix binds the unix socket at path, using the socket itself as
+// the single-instance election mechanism. The flow:
+//
+//   1. Try bind().
+//   2. On EADDRINUSE, probe the path with a short Dial. If the probe
+//      succeeds, another batchq is alive → return ErrAlreadyRunning.
+//   3. If the probe fails (ECONNREFUSED, ENOENT race), the file is a
+//      stale leftover from a crashed process — unlink it and retry bind
+//      exactly once.
+//
+// We never unconditionally unlink before binding: that's the move that
+// would let a racing start clobber a live socket. The narrow window
+// where two simultaneous recoveries could both decide a socket is
+// stale is acceptable — the loser's second bind still fails with
+// EADDRINUSE and the process exits cleanly.
 func (s *Server) listenUnix(path string) (net.Listener, error) {
 	if path == "" {
 		return nil, errors.New("server: unix:// URL has empty path")
@@ -203,14 +209,27 @@ func (s *Server) listenUnix(path string) (net.Listener, error) {
 			return nil, fmt.Errorf("server: mkdir socket dir: %w", err)
 		}
 	}
-	// Best-effort unlink any stale socket file from a previous crash. A
-	// running server holding the path will be re-detected via flock in
-	// Phase 8; for now this is sufficient.
-	_ = os.Remove(path)
 
 	ln, err := net.Listen("unix", path)
 	if err != nil {
-		return nil, fmt.Errorf("server: listen unix: %w", err)
+		if !isAddrInUse(err) {
+			return nil, fmt.Errorf("server: listen unix: %w", err)
+		}
+		if socketIsLive(path) {
+			return nil, ErrAlreadyRunning
+		}
+		// Stale socket from a crashed instance — best-effort unlink,
+		// then retry exactly once. A second EADDRINUSE means we lost a
+		// recovery race; surface that as ErrAlreadyRunning since the
+		// winner is now serving on the same path.
+		_ = os.Remove(path)
+		ln, err = net.Listen("unix", path)
+		if err != nil {
+			if isAddrInUse(err) {
+				return nil, ErrAlreadyRunning
+			}
+			return nil, fmt.Errorf("server: listen unix: %w", err)
+		}
 	}
 	if err := os.Chmod(path, s.opts.SocketMode); err != nil {
 		ln.Close()
@@ -221,6 +240,25 @@ func (s *Server) listenUnix(path string) (net.Listener, error) {
 	s.socketPath = path
 	s.mu.Unlock()
 	return ln, nil
+}
+
+// isAddrInUse reports whether err is EADDRINUSE (wrapped however the
+// net package presents it).
+func isAddrInUse(err error) bool {
+	return errors.Is(err, syscall.EADDRINUSE)
+}
+
+// socketIsLive probes path with a short connect. Success means a
+// process is accepting connections — definitionally alive. Any error
+// (ECONNREFUSED on a stale socket file, ENOENT on a vanished path) is
+// treated as "not live".
+func socketIsLive(path string) bool {
+	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 
@@ -297,48 +335,6 @@ func (s *Server) withActivity(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
-}
-
-// acquireLock takes an exclusive flock on Options.LockPath. The lock is
-// held by keeping the *os.File open; the kernel releases it when the
-// fd is closed (either explicitly via releaseLock, or implicitly when
-// the process exits).
-func (s *Server) acquireLock() error {
-	if s.opts.LockPath == "" {
-		return nil
-	}
-	if dir := filepath.Dir(s.opts.LockPath); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("server: mkdir lock dir: %w", err)
-		}
-	}
-	f, err := os.OpenFile(s.opts.LockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return fmt.Errorf("server: open lock file: %w", err)
-	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		_ = f.Close()
-		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return ErrLockHeld
-		}
-		return fmt.Errorf("server: flock: %w", err)
-	}
-	s.mu.Lock()
-	s.lockFile = f
-	s.mu.Unlock()
-	return nil
-}
-
-func (s *Server) releaseLock() {
-	s.mu.Lock()
-	f := s.lockFile
-	s.lockFile = nil
-	s.mu.Unlock()
-	if f == nil {
-		return
-	}
-	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	_ = f.Close()
 }
 
 // runIdleMonitor ticks at IdleCheckInterval. When no requests are

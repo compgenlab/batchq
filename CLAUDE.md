@@ -10,7 +10,7 @@ This is a Go module (Go 1.23). batchq is **pure Go** — `modernc.org/sqlite` re
 - Cross-compile is just `GOOS=… GOARCH=… go build` — no toolchain prep. The `Makefile` has targets for `linux_amd64`, `linux_arm64`, `macos_amd64`, `macos_arm64`.
 - Run without building: `make run` or `go run main.go <subcommand>`.
 - Tests: `go test ./...`. Single test: `go test ./cmd -run TestName`.
-- The hidden `batchq debug` subcommand prints the resolved `batchq home` and config file path — useful when diagnosing config loading.
+- The hidden `batchq debug` subcommand prints the resolved configuration: `$BATCHQ_HOME`, config file path, every env var that's consumed, and every knob in every config section with its source labelled (`flag` / `env` / `config` / `default` / `unset`). First stop when diagnosing config loading.
 - A Docker-based Go toolchain wrapper at `/tmp/dgo` is available in the dev environment when no host `go` is installed; it shells out to the `mcr.microsoft.com/devcontainers/go:1-1.23` image with the repo bind-mounted.
 
 ## Architecture (v2 client/server)
@@ -19,19 +19,28 @@ This is a Go module (Go 1.23). batchq is **pure Go** — `modernc.org/sqlite` re
 
 On a workstation, a CLI client transparently fork-execs `batchq server --idle-timeout 1m` when the socket is unreachable, then polls for it to come up. The server idles out when no requests arrive — so `batchq submit ./script.sh` still Just Works without explicit server management.
 
+The conventional layout under `$BATCHQ_HOME` (default `~/.batchq`):
+
+- `config` — TOML config file.
+- `batchq.db` — SQLite queue database (default `sqlite3://` backend target).
+- `batchq.sock` — server's unix socket (default `[server] listen`). Also the single-instance election token — see `server/server.go:listenUnix`.
+- `batchq-web.sock` — `batchq web` UI socket (default `[web] socket`).
+- `spool/` — simple-runner per-job temp dir.
+
 ### Top-level layout
 
 - `main.go` — embeds `LICENSE` and hands off to `cmd.Execute()`.
 - `cmd/` — Cobra subcommands.
-  - `root.go` loads `~/.batchq/config` (overridable via `BATCHQ_HOME`) into the package-level `*support.Config`. `submit`/`show`/`hold`/`cleanup`/`run`/`web` all open a REST client via `cmd/clientconn.go:dialClient()`.
-  - `server.go` is the server entrypoint; flags: `--listen`, `--sqlite-wal`, `--lock`, `--idle-timeout`. The backend (sqlite3 path) comes from the persistent `--backend` flag / `[batchq] backend` config.
-  - `clientconn.go` — `dialClient()` resolves the server URL (flag > `[client] url` > default `unix://$BATCHQ_HOME/server.sock`), wires autospawn for unix URLs, and returns a `*client.Client`. `--no-autospawn` opts out.
+  - `root.go` loads `~/.batchq/config` (overridable via `BATCHQ_HOME`), then layers env-var overrides and built-in defaults on top. The resolved `Config` is exposed via the package-level `*support.Config`; the raw TOML-loaded copy is retained in `rawConfig` purely for the debug command's source labelling. `submit`/`show`/`hold`/`cleanup`/`run`/`web` all open a REST client via `cmd/clientconn.go:dialClient()`.
+  - `debug.go` — renders `batchq debug`. Compares `rawConfig`, `envOverrides`, `defaultsResolved`, and persistent flag vars to label each value's source. Token values are redacted.
+  - `server.go` is the server entrypoint; flags: `--listen`, `--sqlite-wal`, `--idle-timeout`. The backend (sqlite3 path) comes from the persistent `--backend` flag / `[batchq] backend` config.
+  - `clientconn.go` — `dialClient()` resolves the server URL (flag > `Config.Server.Listen`, which already has defaults applied), wires autospawn for unix URLs using `defaultsResolved.AutospawnIdleTimeout`, and returns a `*client.Client`. `--no-autospawn` opts out.
 - `api/` — shared REST contract: route constants (`api/routes.go`) and request/response DTOs (`api/types.go`). `JobDTO` is the wire format; `api.JobToDef` / `api.JobFromDef` bridge to `jobs.JobDef`.
 - `storage/` — persistence layer. `Storage` interface + `sqliteStorage` impl using `modernc.org/sqlite`. `Open(ctx, path, Options)` creates the file and applies `schema.sql` (embedded) idempotently on every open. Journal mode defaults to `DELETE` (rollback) because WAL's `-shm` shared-memory file is unsafe on NFS/Lustre; `Options{WAL: true}` opts into WAL when the DB is on local disk.
 - `service/` — server-side business logic that wraps `Storage`: dep resolution, queue ordering, atomic claim, hold/release, cleanup recursion. No HTTP knowledge here.
 - `server/` — HTTP layer.
-  - `server.go` wires service handlers into an `http.ServeMux`, listens on unix (mode `0600`) or TCP, runs the activity-tracking middleware, manages the flock-based lock file, runs the idle monitor, and shuts down cleanly on context cancel.
-  - Single-instance election: `LockPath` is held via `syscall.Flock(LOCK_EX|LOCK_NB)` for the server's lifetime; a second instance fails fast with `ErrLockHeld` (and `cmd/server.go` treats that as a clean non-zero-exit). The kernel releases the flock on crash, so no manual stale-lock cleanup needed (the unix socket file *does* need cleanup, handled by autospawn).
+  - `server.go` wires service handlers into an `http.ServeMux`, listens on a unix socket (mode `0600`), runs the activity-tracking middleware, runs the idle monitor, and shuts down cleanly on context cancel.
+  - Single-instance election: the unix socket *is* the election token — no separate lock file. `listenUnix` tries `bind()`; on `EADDRINUSE` it probes the socket with a short `net.Dial`. If the probe succeeds, a live server already owns the path and we return `ErrAlreadyRunning`. If the probe fails (`ECONNREFUSED` / stale leftover from a crashed process) we `unlink` and retry the bind exactly once. We never unconditionally unlink before binding — that would let a racing start clobber a live socket. The narrow race where two simultaneous recoveries both decide a socket is stale resolves itself: the loser's retry hits `EADDRINUSE` against the new winner and exits with `ErrAlreadyRunning`. The clean shutdown path unlinks the socket so the next start has no recovery to do.
   - Idle shutdown: `withActivity` middleware bumps `lastActivityNanos` on both request entry and exit and tracks `inFlight`; `runIdleMonitor` ticks at `IdleCheckInterval` and calls `httpSrv.Shutdown` when both the age threshold is reached AND `inFlight == 0`.
 - `client/` — REST client used by every in-repo client.
   - `client.go` — one method per API endpoint over an `http.Client` whose `DialContext` dispatches on URL scheme (`unix://` for the local server, `https://` for a remote one). Plain `http://` and `tcp://` are intentionally not supported.
@@ -42,7 +51,8 @@ On a workstation, a CLI client transparently fork-execs `batchq server --idle-ti
 - `web/` — `batchq web` subcommand. `server.go` is a tiny HTML renderer that consumes the REST `*client.Client` and feeds DTOs (via `dtoToJobDef`) into the unchanged `web/templates/*.html`. Listens on a unix socket or `host:port`.
 - `support/` — shared utilities.
   - `paths.go` — `GetBatchqHome()` resolves `$BATCHQ_HOME` or `~/.batchq`.
-  - `config.go` — typed TOML Config + `LoadConfig`. `Duration` wrapper decodes Go-duration strings (`"1m"`).
+  - `defaults.go` — `NewDefaults()` is the single source of truth for every home-relative built-in default (`Backend`, `ServerListen`, `ServerLock`, `WebSocket`, `ConfigFile`, plus `Shell`, `AutospawnIdleTimeout`, `JobStdout`/`Stderr`/`Wd`). Anything that needs a default should pull from here rather than inlining a path or string.
+  - `config.go` — typed TOML Config + `LoadConfig` (pure TOML parse) + `Config.Clone` / `Config.ApplyEnv(EnvOverrides)` / `Config.ApplyDefaults(Defaults)`. `Duration` wrapper decodes Go-duration strings (`"1m"`). The expected init pattern is *load → clone (for debug) → ApplyEnv → ApplyDefaults*; after that, call sites just read `Config.X` directly and the fallback chain is gone.
   - `backend.go` — `ParseBackend`, `SqlitePath`, `RemoteHTTPURL`, `IsLocal` for `[batchq] backend` URLs.
   - `utils.go` — `ExpandPathAbs`, `Contains`, `AmIRoot`, etc.
 
@@ -83,14 +93,20 @@ The atomic claim endpoint (`POST /api/v1/runners/{id}/claim`) transitions QUEUED
 
 ## Configuration
 
-Loaded from `~/.batchq/config` (TOML, via `github.com/BurntSushi/toml`). `support/config.go` defines the typed `Config` struct; every knob is a named field accessed directly (`Config.Server.Listen`, `Config.JobDefaults.Procs`). Empty string / zero int / false bool / zero `support.Duration` all mean "not set" — call sites fall back to flag values or built-in defaults.
+Loaded from `~/.batchq/config` (TOML, via `github.com/BurntSushi/toml`). `support/config.go` defines the typed `Config` struct; every knob is a named field accessed directly (`Config.Server.Listen`, `Config.JobDefaults.Procs`).
 
-Resolution order for every knob: command-line flag > config value > built-in default. `cmd/run.go` shows the canonical pattern.
+**Resolution order** for every knob: command-line flag > env var > config value > built-in default.
+
+The lower three layers (env, config, default) are folded into a single resolved `Config` during `cmd/root.go:init` via `LoadConfig → ApplyEnv → ApplyDefaults`. After that, call sites just read `Config.X` and get the answer — *no per-site fallback chain*. Flags are layered on top at the call site where they live (typically as `if flag != "" { use flag } else { use Config.X }`).
+
+For knobs that have a built-in default (`Backend`, `Server.Listen`, `Server.Lock`, `Web.Socket`, `Batchq.Runner`, `JobDefaults.Stdout`/`Stderr`/`Wd`, `SimpleRunner.Shell`), `Config.X` is never empty after init. For optional knobs (numeric/bool fields, `JobDefaults.Procs/Mem/Walltime/Name`, `SlurmRunner.User/Account/...`), zero values still mean "not set" and call sites should treat them that way.
+
+**Env-var overrides**: only `BATCHQ_TOKEN` is consumed today, overriding `[batchq] token` for bearer-auth secrets so they stay out of argv and out of a checked-in config. `BATCHQ_HOME` is consumed earlier, at `support.GetBatchqHome()`, and shifts every home-relative default. Adding another env var means extending `support.EnvOverrides` and `Config.ApplyEnv`; the debug command picks it up automatically once you add a row.
 
 Sections:
 
 - `[batchq]` — `runner` (`simple` | `slurm`), `backend` (URL), `token`, `multiuser`.
-- `[server]` — `listen`, `lock`, `idle_timeout`, `sqlite_wal`. Ignored when `backend` is `batchq-remote://`.
+- `[server]` — `listen`, `idle_timeout`, `sqlite_wal`. Ignored when `backend` is `batchq-remote://`.
 - `[web]` — `socket`, `listen`.
 - `[job_defaults]` — submit-time defaults: `name`, `procs`, `mem`, `walltime`, `wd`, `stdout`, `stderr`, `hold`, `env`.
 - `[simple_runner]` — `max_procs`, `max_mem`, `max_walltime`, `shell`, `use_cgroup_v1`, `use_cgroup_v2`.
@@ -112,6 +128,7 @@ Job IDs are UUID strings (with hyphens) — anywhere code splits on `-` or `:` i
 
 - **Unix socket** (the only thing batchq binds today): created with mode `0600`. No in-band auth — FS permissions are the contract. This is how `gpg-agent` / `ssh-agent` work.
 - **Network access**: served via a reverse proxy (nginx, Caddy, Traefik, ...) in front of the unix socket. The proxy terminates TLS and forwards to batchq; remote clients use `--backend batchq-remote://your-host` (or `batchq-remote://your-host/proxy/path` for a subpath deployment). The URL path is treated as a mount-point prefix — the client adds `/api/v1/...` to every request. Bearer-token auth (`Authorization: Bearer <token>` with tokens HMAC-signed against a `$BATCHQ_HOME/master.key`) is designed but not yet implemented — until it lands, remote deployments need to gate access at the proxy layer.
+- **Bearer-token plumbing** (the client side already exists): `--token` flag > `BATCHQ_TOKEN` env > `[batchq] token` config. The env var is the recommended slot for the secret — it stays out of `ps` listings and out of any checked-in TOML.
 
 ## Testing
 

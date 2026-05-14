@@ -1,12 +1,14 @@
 package server
 
-// lifecycle_test.go covers the Phase 8 additions to the server:
-//   - flock-based single-instance election (LockPath, ErrLockHeld)
+// lifecycle_test.go covers:
+//   - single-instance election via the unix socket (ErrAlreadyRunning)
+//   - stale-socket recovery on bind
 //   - idle-timeout self-shutdown (IdleTimeout, IdleCheckInterval)
 
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -39,72 +41,103 @@ func waitForSocket(t *testing.T, path string, timeout time.Duration) {
 	t.Fatalf("socket %s never became reachable", path)
 }
 
-func TestLockFileBlocksSecondInstance(t *testing.T) {
+// A second server pointed at the same socket as a live first server
+// must refuse to start. The socket itself is the election token: the
+// second bind() returns EADDRINUSE, the probe finds the live server,
+// and we surface ErrAlreadyRunning.
+func TestSecondInstanceRejected(t *testing.T) {
 	dir := t.TempDir()
-	lock := filepath.Join(dir, "server.lock")
-	sock1 := filepath.Join(dir, "s1.sock")
-	sock2 := filepath.Join(dir, "s2.sock")
+	sock := filepath.Join(dir, "first.sock")
 
 	svc := newSvcForLifecycle(t)
 
-	first, err := New(svc, Options{Listen: "unix://" + sock1, LockPath: lock})
+	first, err := New(svc, Options{Listen: "unix://" + sock})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	done1 := make(chan error, 1)
 	go func() { done1 <- first.Serve(ctx1) }()
-	waitForSocket(t, sock1, 2*time.Second)
+	waitForSocket(t, sock, 2*time.Second)
 	defer func() {
 		cancel1()
 		<-done1
 	}()
 
-	// Second instance with the same lock file must refuse to start.
-	second, err := New(svc, Options{Listen: "unix://" + sock2, LockPath: lock})
+	second, err := New(svc, Options{Listen: "unix://" + sock})
 	if err != nil {
 		t.Fatalf("New second: %v", err)
 	}
-	err = second.Serve(context.Background())
-	if err != ErrLockHeld {
-		t.Fatalf("Serve second: got %v, want ErrLockHeld", err)
+	if err := second.Serve(context.Background()); err != ErrAlreadyRunning {
+		t.Fatalf("Serve second: got %v, want ErrAlreadyRunning", err)
 	}
 }
 
-func TestLockReleasedAfterShutdown(t *testing.T) {
+// After a clean shutdown the socket file is unlinked, so a fresh
+// server on the same path must come up without complaint.
+func TestSocketReclaimedAfterShutdown(t *testing.T) {
 	dir := t.TempDir()
-	lock := filepath.Join(dir, "server.lock")
-	sock1 := filepath.Join(dir, "s1.sock")
-	sock2 := filepath.Join(dir, "s2.sock")
+	sock := filepath.Join(dir, "reclaim.sock")
 
 	svc := newSvcForLifecycle(t)
 
-	// Start, then stop, the first instance.
-	first, err := New(svc, Options{Listen: "unix://" + sock1, LockPath: lock})
+	first, err := New(svc, Options{Listen: "unix://" + sock})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	done1 := make(chan error, 1)
 	go func() { done1 <- first.Serve(ctx1) }()
-	waitForSocket(t, sock1, 2*time.Second)
+	waitForSocket(t, sock, 2*time.Second)
 	cancel1()
 	if err := <-done1; err != nil {
 		t.Fatalf("first Serve: %v", err)
 	}
 
-	// Now the second instance must be able to take the lock cleanly.
-	second, err := New(svc, Options{Listen: "unix://" + sock2, LockPath: lock})
+	second, err := New(svc, Options{Listen: "unix://" + sock})
 	if err != nil {
 		t.Fatalf("New second: %v", err)
 	}
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	done2 := make(chan error, 1)
 	go func() { done2 <- second.Serve(ctx2) }()
-	waitForSocket(t, sock2, 2*time.Second)
+	waitForSocket(t, sock, 2*time.Second)
 	cancel2()
 	if err := <-done2; err != nil {
 		t.Fatalf("second Serve: %v", err)
+	}
+}
+
+// A socket file left behind by a crashed process (nothing listening on
+// it) must be transparently recovered: bind() fails with EADDRINUSE,
+// the probe fails too, we unlink and retry.
+func TestStaleSocketRecovered(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "stale.sock")
+
+	// Fabricate a stale socket: bind one, close the listener, leave the
+	// inode on disk. Closing the net.Listener with a unix socket
+	// normally unlinks the path, so we re-create the file as an empty
+	// regular file to simulate the messier crash case where the path
+	// outlives the process.
+	if f, err := os.Create(sock); err != nil {
+		t.Fatalf("create stale: %v", err)
+	} else {
+		_ = f.Close()
+	}
+
+	svc := newSvcForLifecycle(t)
+	srv, err := New(svc, Options{Listen: "unix://" + sock})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ctx) }()
+	waitForSocket(t, sock, 2*time.Second)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Serve: %v", err)
 	}
 }
 

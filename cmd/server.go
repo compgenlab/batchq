@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -21,7 +20,6 @@ import (
 var (
 	serverListen      string
 	serverWAL         bool
-	serverLockPath    string
 	serverIdleTimeout time.Duration
 )
 
@@ -40,39 +38,31 @@ persistent --backend flag or the [batchq] backend config key. The server
 refuses to start when the backend is batchq-remote:// because in that
 mode there is no local server — the remote one is the server.
 
-Default listener:  unix://$BATCHQ_HOME/server.sock
+Default listener:  unix://$BATCHQ_HOME/batchq.sock
 Default backend:   sqlite3://$BATCHQ_HOME/batchq.db
 `,
 	RunE: runServer,
 }
 
 func init() {
-	home := support.GetBatchqHome()
-	defaultSock := "unix://" + filepath.Join(home, "server.sock")
-	defaultLock := filepath.Join(home, "server.lock")
+	d := support.NewDefaults()
 
 	serverCmd.Flags().StringVar(&serverListen, "listen", "",
-		"Listener URL (unix:///path/to/sock). Default: "+defaultSock)
+		"Listener URL (unix:///path/to/sock). Default: "+d.ServerListen)
 	serverCmd.Flags().BoolVar(&serverWAL, "sqlite-wal", false,
 		"Enable SQLite WAL journal mode. NOT SAFE on networked filesystems; only use when the DB file is on local disk.")
-	serverCmd.Flags().StringVar(&serverLockPath, "lock", "",
-		"Lock file path used to elect a single server instance. Default: "+defaultLock+". Pass an empty string to disable.")
 	serverCmd.Flags().DurationVar(&serverIdleTimeout, "idle-timeout", 0,
 		"Auto-shut-down after this duration of no activity. Zero (default) disables.")
 
 	rootCmd.AddCommand(serverCmd)
 }
 
-func runServer(cmd *cobra.Command, _ []string) error {
-	home := support.GetBatchqHome()
-
-	// Backend: --backend flag (persistent root) > [batchq] backend > default.
+func runServer(_ *cobra.Command, _ []string) error {
+	// Backend: --backend flag (persistent root) > Config (already
+	// merged with defaults during init).
 	backendRaw := clientBackend
 	if backendRaw == "" {
 		backendRaw = Config.Batchq.Backend
-	}
-	if backendRaw == "" {
-		backendRaw = "sqlite3://" + filepath.Join(home, "batchq.db")
 	}
 	backend, err := support.ParseBackend(backendRaw)
 	if err != nil {
@@ -93,31 +83,13 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 
 	if serverListen == "" {
-		if v := Config.Server.Listen; v != "" {
-			serverListen = v
-		} else {
-			serverListen = "unix://" + filepath.Join(home, "server.sock")
-		}
+		serverListen = Config.Server.Listen
 	}
 	if !serverWAL {
 		serverWAL = Config.Server.SqliteWAL
 	}
-	// Lock path: default to $BATCHQ_HOME/server.lock unless the user
-	// explicitly passed --lock="" or set [server] lock = "" in config.
-	if !cmd.Flags().Changed("lock") {
-		if v := Config.Server.Lock; v != "" {
-			serverLockPath = v
-		} else {
-			serverLockPath = filepath.Join(home, "server.lock")
-		}
-	}
 	if serverIdleTimeout == 0 {
 		serverIdleTimeout = Config.Server.IdleTimeout.AsDuration()
-	}
-	if serverLockPath != "" {
-		if expanded, err := support.ExpandPathAbs(serverLockPath); err == nil {
-			serverLockPath = expanded
-		}
 	}
 
 	// Sanity check the listen URL. Only unix:// is supported; network
@@ -138,7 +110,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	svc := service.New(store)
 	srv, err := server.New(svc, server.Options{
 		Listen:      serverListen,
-		LockPath:    serverLockPath,
 		IdleTimeout: serverIdleTimeout,
 	})
 	if err != nil {
@@ -150,7 +121,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(os.Stderr, "batchq server: idle timeout %s\n", serverIdleTimeout)
 	}
 	if err := srv.Serve(ctx); err != nil {
-		if errors.Is(err, server.ErrLockHeld) {
+		if errors.Is(err, server.ErrAlreadyRunning) {
 			fmt.Fprintln(os.Stderr, "batchq server: another instance is already running")
 			return nil
 		}

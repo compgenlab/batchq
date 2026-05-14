@@ -63,12 +63,12 @@ var submitCmd = &cobra.Command{
 
 		details := make(map[string]string)
 
-		// these are the default values...
-		details["stdout"] = "./batchq-%JOBID.stdout"
-		details["stderr"] = "./batchq-%JOBID.stderr"
-		details["wd"] = "."
-
-		// get default/config values if not specified
+		// Submit-time defaults — Config.JobDefaults has built-in
+		// fallbacks already applied (stdout/stderr/wd); the optional
+		// numeric/walltime/mem knobs remain zero-valued when not set.
+		details["stdout"] = Config.JobDefaults.Stdout
+		details["stderr"] = Config.JobDefaults.Stderr
+		details["wd"] = Config.JobDefaults.Wd
 		if Config.JobDefaults.Procs > 0 {
 			details["procs"] = strconv.Itoa(Config.JobDefaults.Procs)
 		}
@@ -77,15 +77,6 @@ var submitCmd = &cobra.Command{
 		}
 		if v := Config.JobDefaults.Walltime; v != "" {
 			details["walltime"] = strconv.Itoa(jobs.ParseWalltimeString(v))
-		}
-		if v := Config.JobDefaults.Wd; v != "" {
-			details["wd"] = v
-		}
-		if v := Config.JobDefaults.Stdout; v != "" {
-			details["stdout"] = v
-		}
-		if v := Config.JobDefaults.Stderr; v != "" {
-			details["stderr"] = v
 		}
 		if Config.JobDefaults.Hold {
 			jobHold = true

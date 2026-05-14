@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,9 +37,6 @@ func dialClient() (*client.Client, error) {
 	if backendRaw == "" {
 		backendRaw = Config.Batchq.Backend
 	}
-	if backendRaw == "" {
-		backendRaw = "sqlite3://" + filepath.Join(support.GetBatchqHome(), "batchq.db")
-	}
 	backend, err := support.ParseBackend(backendRaw)
 	if err != nil {
 		return nil, err
@@ -48,7 +44,7 @@ func dialClient() (*client.Client, error) {
 
 	var dialURL string
 	if backend.IsLocal() {
-		dialURL = resolveServerListen()
+		dialURL = Config.Server.Listen
 	} else {
 		dialURL, err = backend.RemoteHTTPURL()
 		if err != nil {
@@ -70,21 +66,15 @@ func dialClient() (*client.Client, error) {
 	if backend.IsLocal() && strings.HasPrefix(dialURL, "unix://") && !clientNoAutospawn {
 		auto.Enabled = true
 		auto.PollTimeout = 5 * time.Second
-		auto.ExtraArgs = []string{"--idle-timeout", "1m", "--backend", backend.Raw}
+		auto.ExtraArgs = []string{
+			"--idle-timeout", defaultsResolved.AutospawnIdleTimeout.String(),
+			"--backend", backend.Raw,
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return client.DialAndConnect(ctx, opts, auto)
-}
-
-// resolveServerListen returns the URL the local server listens on. Falls
-// back to the conventional unix socket under $BATCHQ_HOME.
-func resolveServerListen() string {
-	if v := Config.Server.Listen; v != "" {
-		return v
-	}
-	return "unix://" + filepath.Join(support.GetBatchqHome(), "server.sock")
 }
 
 // mustDialClient is a thin wrapper for CLI sites that just want to exit

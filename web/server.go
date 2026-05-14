@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -144,13 +143,10 @@ func resolveSocketPath(opts Options) (string, error) {
 	if opts.SocketPath != "" {
 		return normalizeSocketPath(opts.SocketPath)
 	}
-
-	home := support.GetBatchqHome()
-	defaultSocket := filepath.Join(home, "batchq.sock")
 	if opts.Config != nil && opts.Config.Web.Socket != "" {
 		return normalizeSocketPath(opts.Config.Web.Socket)
 	}
-	return normalizeSocketPath(defaultSocket)
+	return normalizeSocketPath(support.NewDefaults().WebSocket)
 }
 
 func resolveListenAddress(opts Options) string {
