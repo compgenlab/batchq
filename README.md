@@ -1,10 +1,11 @@
 # batchq
 
 batchq is a small job scheduler for queuing and running tasks. As of v2 it
-runs as a client/server pair over a REST API: a `batchq server` process
-owns the SQLite-backed queue, and `submit` / `run` / `show` / `hold` /
-`cleanup` / `web` are all clients that talk to it over a unix socket
-(default) or TCP.
+runs as a client/server pair over an HTTP REST API: a `batchq server`
+process owns the SQLite-backed queue, and `submit` / `run` / `show` /
+`hold` / `cleanup` / `web` are all clients that talk to it over a unix
+domain socket. Network exposure (for runners or clients on other hosts)
+is the reverse proxy's job — batchq itself never binds a TCP port.
 
 This split exists so the database file can safely live on a networked
 filesystem (NFS / Lustre) on an HPC cluster: only the server process
@@ -40,7 +41,8 @@ Job IDs are UUID strings and may include hyphens.
 │ └────┬────┘  └────┬────┘  └────┬────┘  └────────┬─────────┘ │
 └──────┼────────────┼────────────┼────────────────┼───────────┘
        │            │            │                │
-       └──── REST over unix socket or TCP ────────┘
+       └──── HTTP REST over unix socket ──────────┘
+                  (https:// via reverse proxy for remote clients)
                           │
                 ┌─────────▼─────────┐
                 │   batchq server    │
@@ -61,10 +63,13 @@ Default storage: `$BATCHQ_HOME/batchq.db` (created on first open).
 
 ```sh
 batchq server                          # foreground server on the unix socket
-batchq server --listen tcp://0:8080    # TCP listener (put behind a TLS proxy)
 batchq server --idle-timeout 5m        # exit if no requests for 5m
 batchq server --sqlite-wal             # WAL mode (LOCAL-DISK ONLY; unsafe on NFS/Lustre)
 ```
+
+For network access, run a reverse proxy (nginx, Caddy, …) in front of
+the unix socket; the proxy terminates TLS and forwards to batchq.
+Remote clients then point at `--backend batchq-remote://your-host/api/v1`.
 
 Only one server instance may run per `$BATCHQ_HOME`. Election uses a
 `flock` on `$BATCHQ_HOME/server.lock`; a second instance exits cleanly.
@@ -146,9 +151,8 @@ runner = "simple"                                      # "simple" or "slurm"
 # Backend selector — exactly one URL with a scheme.
 backend = "sqlite3:///home/me/.batchq/batchq.db"
 # Other forms:
-# backend = "postgres://user:pass@host:5432/dbname"           # local Postgres (future)
-# backend = "batchq-remote://batchq.example.com/api/v1"       # remote REST API (HTTPS)
-# backend = "batchq-remote://10.0.0.5:8080/api/v1?insecure=1" # plain HTTP opt-out
+# backend = "postgres://user:pass@host:5432/dbname"     # local Postgres (future)
+# backend = "batchq-remote://batchq.example.com/api/v1" # remote HTTPS REST API
 
 # Bearer token for batchq-remote:// backends. Ignored for local backends.
 token = ""

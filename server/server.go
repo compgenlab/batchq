@@ -1,6 +1,7 @@
-// Package server runs the batchq REST API. It owns the storage handle and
-// listens on a unix socket or TCP address. Clients (CLI, runner, web UI)
-// drive it via the API contract in package api.
+// Package server runs the batchq HTTP REST API. It owns the storage
+// handle and listens on a unix socket. Clients (CLI, runner, web UI)
+// drive it via the API contract in package api. Network exposure is the
+// reverse proxy's job — batchq itself never binds a TCP port directly.
 package server
 
 import (
@@ -29,8 +30,9 @@ var ErrLockHeld = errors.New("server: lock held by another instance")
 
 // Options configures a Server.
 type Options struct {
-	// Listen is the listener URL: "unix:///path/to/sock" or
-	// "tcp://host:port". Required.
+	// Listen is the listener URL. Only "unix:///path/to/sock" is supported
+	// today; native HTTPS (https://) is reserved for a future phase.
+	// Required.
 	Listen string
 
 	// SocketMode is the unix-socket file mode. Defaults to 0600 (owner-only).
@@ -173,6 +175,12 @@ func (s *Server) SocketPath() string {
 }
 
 // listen parses Options.Listen and binds the right kind of listener.
+//
+// Only unix:// is supported today. Direct TCP exposure of the REST API
+// (with or without TLS) is intentionally not implemented: operators who
+// need network access put a reverse proxy (nginx, Caddy, ...) in front
+// of a unix socket. When native TCP+TLS support lands later it will use
+// the https:// scheme here.
 func (s *Server) listen() (net.Listener, error) {
 	u, err := url.Parse(s.opts.Listen)
 	if err != nil {
@@ -181,10 +189,8 @@ func (s *Server) listen() (net.Listener, error) {
 	switch u.Scheme {
 	case "unix":
 		return s.listenUnix(u.Path)
-	case "tcp":
-		return s.listenTCP(u.Host)
 	default:
-		return nil, fmt.Errorf("server: unsupported scheme %q", u.Scheme)
+		return nil, fmt.Errorf("server: unsupported listen scheme %q (only unix:// is supported)", u.Scheme)
 	}
 }
 
@@ -217,16 +223,6 @@ func (s *Server) listenUnix(path string) (net.Listener, error) {
 	return ln, nil
 }
 
-func (s *Server) listenTCP(addr string) (net.Listener, error) {
-	if addr == "" {
-		return nil, errors.New("server: tcp:// URL missing host:port")
-	}
-	// TCP listening currently has no auth; this is gated by config policy
-	// at the cmd layer (which will refuse to start a TCP listener without a
-	// master key once token auth lands). The Server itself accepts it so
-	// tests can exercise the wire path.
-	return net.Listen("tcp", addr)
-}
 
 func (s *Server) cleanupSocket() {
 	s.mu.Lock()

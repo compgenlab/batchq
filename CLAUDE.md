@@ -15,7 +15,7 @@ This is a Go module (Go 1.23). batchq is **pure Go** — `modernc.org/sqlite` re
 
 ## Architecture (v2 client/server)
 
-`batchq` is a single binary that runs in two roles: a long-lived `batchq server` process that owns the SQLite database, and short-lived clients (`submit`, `run`, `show`, `hold`, `cleanup`, `web`) that talk to it over a REST API on a unix socket (default) or TCP. This split exists so the DB file can safely live on a networked filesystem (NFS / Lustre): only one process touches it, so SQLite's cross-process locking failure modes don't apply.
+`batchq` is a single binary that runs in two roles: a long-lived `batchq server` process that owns the SQLite database, and short-lived clients (`submit`, `run`, `show`, `hold`, `cleanup`, `web`) that talk to it over an HTTP REST API on a unix domain socket. Network exposure (remote clients, runners on other hosts) is the reverse proxy's job — batchq itself never binds a TCP port. This split exists so the DB file can safely live on a networked filesystem (NFS / Lustre): only one process touches it, so SQLite's cross-process locking failure modes don't apply.
 
 On a workstation, a CLI client transparently fork-execs `batchq server --idle-timeout 1m` when the socket is unreachable, then polls for it to come up. The server idles out when no requests arrive — so `batchq submit ./script.sh` still Just Works without explicit server management.
 
@@ -34,7 +34,7 @@ On a workstation, a CLI client transparently fork-execs `batchq server --idle-ti
   - Single-instance election: `LockPath` is held via `syscall.Flock(LOCK_EX|LOCK_NB)` for the server's lifetime; a second instance fails fast with `ErrLockHeld` (and `cmd/server.go` treats that as a clean non-zero-exit). The kernel releases the flock on crash, so no manual stale-lock cleanup needed (the unix socket file *does* need cleanup, handled by autospawn).
   - Idle shutdown: `withActivity` middleware bumps `lastActivityNanos` on both request entry and exit and tracks `inFlight`; `runIdleMonitor` ticks at `IdleCheckInterval` and calls `httpSrv.Shutdown` when both the age threshold is reached AND `inFlight == 0`.
 - `client/` — REST client used by every in-repo client.
-  - `client.go` — one method per API endpoint over an `http.Client` whose `DialContext` dispatches on URL scheme (`unix://` vs `tcp://`).
+  - `client.go` — one method per API endpoint over an `http.Client` whose `DialContext` dispatches on URL scheme (`unix://` for the local server, `https://` for a remote one). Plain `http://` and `tcp://` are intentionally not supported.
   - `autospawn.go` — `DialAndConnect(ctx, opts, AutospawnConfig)`: probes Health first, then on unix-connect-failure removes stale-socket-iff-nothing-answers, fork-execs `batchq server` (via `SysProcAttr{Setsid: true}` so it survives the parent), polls Health up to `PollTimeout`. Tests inject `SpawnFunc` to stand up an in-process server without exec'ing a binary.
 - `runner/` — `Runner` is a one-method interface (`Start() bool`). Two implementations, both REST clients.
   - `simple.go` — long-lived loop that calls `client.Claim` (atomic QUEUED→RUNNING transition) and runs jobs locally via `os/exec`. Enforces `max_procs` / `max_mem` / `max_walltime` and optionally cgroup v1/v2 (root-only). Spool dir under `$BATCHQ_HOME/spool/`.
@@ -101,7 +101,7 @@ The `[batchq] backend` URL (also `--backend` flag) drives where queue data lives
 
 - `sqlite3:///path/to/db` — local SQLite file; server runs locally and may be autospawned by clients.
 - `postgres://user:pass@host/db` — local server on Postgres (future).
-- `batchq-remote://host[:port]/path` — remote REST API. Defaults to HTTPS; append `?insecure=true` for plain HTTP. No local server.
+- `batchq-remote://host[:port]/path` — remote HTTPS REST API. No local server. Plain HTTP is intentionally not supported; operators terminate TLS at a reverse proxy.
 
 `support/backend.go` (`ParseBackend`, `SqlitePath`, `RemoteHTTPURL`, `IsLocal`) is the canonical parser. `cmd/server.go` refuses to start when the backend is `batchq-remote://`.
 
@@ -109,8 +109,8 @@ Job IDs are UUID strings (with hyphens) — anywhere code splits on `-` or `:` i
 
 ## Authentication / transport
 
-- **Unix socket** (default): created with mode `0600`. No in-band auth — FS permissions are the contract. This is how `gpg-agent` / `ssh-agent` work.
-- **TCP**: currently unauthenticated (with a startup warning). The plan is bearer-token auth (`Authorization: Bearer <token>`) with tokens HMAC-signed against a `$BATCHQ_HOME/master.key`; not yet implemented. TLS is **not** in batchq — deploy a reverse proxy (nginx/Caddy/Traefik) for TLS termination.
+- **Unix socket** (the only thing batchq binds today): created with mode `0600`. No in-band auth — FS permissions are the contract. This is how `gpg-agent` / `ssh-agent` work.
+- **Network access**: served via a reverse proxy (nginx, Caddy, Traefik, ...) in front of the unix socket. The proxy terminates TLS and forwards to batchq; remote clients then use `--backend batchq-remote://your-host/api/v1`. Bearer-token auth (`Authorization: Bearer <token>` with tokens HMAC-signed against a `$BATCHQ_HOME/master.key`) is designed but not yet implemented — until it lands, remote deployments need to gate access at the proxy layer.
 
 ## Testing
 

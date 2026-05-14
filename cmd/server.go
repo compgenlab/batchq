@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -28,12 +27,13 @@ var (
 
 var serverCmd = &cobra.Command{
 	Use:   "server",
-	Short: "Run the batchq REST API server",
-	Long: `Run the batchq REST API server.
+	Short: "Run the batchq HTTP REST API server",
+	Long: `Run the batchq HTTP REST API server.
 
 The server owns the queue database and serves the v1 REST API over a
-unix socket (default) or TCP. All other batchq components (CLI commands,
-runners, the web UI) connect to it as clients.
+unix domain socket. Network exposure is the reverse proxy's job —
+batchq itself never binds a TCP port. All other batchq components (CLI
+commands, runners, the web UI) connect to it as REST clients.
 
 The backend (sqlite3:/// path, postgres://..., etc.) is taken from the
 persistent --backend flag or the [batchq] backend config key. The server
@@ -52,7 +52,7 @@ func init() {
 	defaultLock := filepath.Join(home, "server.lock")
 
 	serverCmd.Flags().StringVar(&serverListen, "listen", "",
-		"Listener URL (unix:///path/to/sock or tcp://host:port). Default: "+defaultSock)
+		"Listener URL (unix:///path/to/sock). Default: "+defaultSock)
 	serverCmd.Flags().BoolVar(&serverWAL, "sqlite-wal", false,
 		"Enable SQLite WAL journal mode. NOT SAFE on networked filesystems; only use when the DB file is on local disk.")
 	serverCmd.Flags().StringVar(&serverLockPath, "lock", "",
@@ -120,13 +120,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Sanity check the listen URL.
-	switch {
-	case strings.HasPrefix(serverListen, "unix://"):
-	case strings.HasPrefix(serverListen, "tcp://"):
-		log.Println("warning: TCP listener has no authentication yet; only expose behind a trusted proxy")
-	default:
-		return fmt.Errorf("unsupported --listen scheme; use unix:// or tcp://")
+	// Sanity check the listen URL. Only unix:// is supported; network
+	// exposure goes through a reverse proxy.
+	if !strings.HasPrefix(serverListen, "unix://") {
+		return fmt.Errorf("--listen must be a unix:// URL (got %q); use a reverse proxy for network exposure", serverListen)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

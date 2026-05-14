@@ -5,10 +5,10 @@ package client
 // come up" helper. This is what makes `batchq submit` on a workstation
 // Just Work without the user having to start a server explicitly.
 //
-// Autospawn only fires for unix:// URLs — for TCP we have no idea what
-// host to spawn on. A failed unix connect is also the only signal we
-// have that the server isn't running; for TCP we just surface the dial
-// error.
+// Autospawn only fires for unix:// URLs — for remote https:// URLs we
+// have no idea what host to spawn on. A failed unix connect is also the
+// only signal we have that the server isn't running; for https:// we
+// just surface the dial error.
 
 import (
 	"context"

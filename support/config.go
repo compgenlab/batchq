@@ -31,9 +31,9 @@ type BatchqConfig struct {
 	Runner string `toml:"runner"`
 
 	// Backend is the queue location URL with a scheme. Exactly one form:
-	//   sqlite3:///path/to/db                          — local SQLite
-	//   postgres://user:pass@host:5432/dbname          — local server, Postgres (future)
-	//   batchq-remote://host[:port]/path[?insecure=1]  — remote REST API
+	//   sqlite3:///path/to/db                  — local SQLite
+	//   postgres://user:pass@host:5432/dbname  — local server, Postgres (future)
+	//   batchq-remote://host[:port]/path       — remote HTTPS REST API
 	Backend string `toml:"backend"`
 
 	// Token is the bearer token used when Backend is a batchq-remote://

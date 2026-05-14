@@ -52,8 +52,8 @@ func TestParseBackendBatchqRemoteHTTPS(t *testing.T) {
 	}
 }
 
-func TestParseBackendBatchqRemoteInsecure(t *testing.T) {
-	b, err := ParseBackend("batchq-remote://10.0.0.5:8080/api/v1?insecure=true")
+func TestParseBackendBatchqRemoteWithPort(t *testing.T) {
+	b, err := ParseBackend("batchq-remote://10.0.0.5:8443/api/v1")
 	if err != nil {
 		t.Fatalf("ParseBackend: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestParseBackendBatchqRemoteInsecure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RemoteHTTPURL: %v", err)
 	}
-	if got != "http://10.0.0.5:8080/api/v1" {
+	if got != "https://10.0.0.5:8443/api/v1" {
 		t.Fatalf("URL: got %q", got)
 	}
 }
@@ -79,15 +79,5 @@ func TestParseBackendUnsupportedScheme(t *testing.T) {
 func TestParseBackendEmpty(t *testing.T) {
 	if _, err := ParseBackend(""); err == nil {
 		t.Fatal("expected error on empty URL")
-	}
-}
-
-func TestParseBackendInvalidInsecure(t *testing.T) {
-	b, err := ParseBackend("batchq-remote://example.com/?insecure=maybe")
-	if err != nil {
-		t.Fatalf("ParseBackend: %v", err)
-	}
-	if _, err := b.RemoteHTTPURL(); err == nil {
-		t.Fatal("expected error on insecure=maybe")
 	}
 }

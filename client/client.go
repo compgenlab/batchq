@@ -62,14 +62,17 @@ func (e *HTTPError) Is(target error) bool {
 
 // Options configures a Client at construction time.
 type Options struct {
-	// URL of the server: unix:///path/to/sock or http(s)://host:port.
-	// tcp:// is accepted as an alias for http:// to match the server's
-	// listen URL syntax.
+	// URL of the server. One of:
+	//   unix:///path/to/sock  — local server over a unix domain socket
+	//   https://host:port     — remote HTTPS REST API (typically a
+	//                            reverse proxy terminating TLS in front
+	//                            of a batchq server)
+	// Plain http:// is intentionally not supported.
 	URL string
 
 	// Token is the bearer token used for the Authorization header on
-	// non-unix transports. Empty token means no header is sent (the unix
-	// socket case).
+	// https:// transports. Empty token means no header is sent (the
+	// unix-socket case).
 	Token string
 
 	// Timeout for individual requests. Default 30s. Pass 0 to mean "no
@@ -86,7 +89,7 @@ type Client struct {
 	opts    Options
 	httpC   *http.Client
 	base    string // URL prefix to prepend to every request (e.g. "http://batchq")
-	socket  string // unix socket path, if applicable; empty for TCP
+	socket  string // unix socket path, if applicable; empty for https
 }
 
 // Dial parses the URL and returns a Client. No connection is made until
@@ -128,14 +131,11 @@ func DialWithOptions(opts Options) (*Client, error) {
 				},
 			},
 		}
-	case "tcp", "http":
-		c.base = "http://" + parsed.Host
-		c.httpC = &http.Client{Timeout: opts.Timeout}
 	case "https":
 		c.base = "https://" + parsed.Host
 		c.httpC = &http.Client{Timeout: opts.Timeout}
 	default:
-		return nil, fmt.Errorf("client: unsupported scheme %q", parsed.Scheme)
+		return nil, fmt.Errorf("client: unsupported scheme %q (want unix:// or https://)", parsed.Scheme)
 	}
 	return c, nil
 }

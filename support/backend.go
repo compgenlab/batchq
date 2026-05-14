@@ -3,11 +3,13 @@ package support
 // backend.go parses the unified backend URL used by [batchq] backend and
 // the --backend CLI flag. The scheme picks the implementation:
 //
-//   sqlite3:///path/to/db                          — local SQLite
-//   postgres://user:pass@host:5432/dbname          — local Postgres (future)
-//   batchq-remote://host[:port]/path[?insecure=1]  — remote REST API
+//   sqlite3:///path/to/db                  — local SQLite
+//   postgres://user:pass@host:5432/dbname  — local Postgres (future)
+//   batchq-remote://host[:port]/path       — remote HTTPS REST API
 //
-// Anything else is an error.
+// batchq-remote always uses HTTPS — plain HTTP exposure of the REST API
+// is not supported. Operators terminate TLS at a reverse proxy. Anything
+// else is an error.
 
 import (
 	"errors"
@@ -79,9 +81,9 @@ func (b *Backend) SqlitePath() (string, error) {
 	return b.URL.Path, nil
 }
 
-// RemoteHTTPURL converts a batchq-remote:// URL into an http:// or https://
-// URL the client can dial. HTTPS is the default; pass ?insecure=true (or
-// insecure=1) to opt into plain HTTP.
+// RemoteHTTPURL converts a batchq-remote:// URL into an https:// URL the
+// client can dial. batchq does not support plain-HTTP exposure of the
+// REST API; operators terminate TLS at a reverse proxy.
 func (b *Backend) RemoteHTTPURL() (string, error) {
 	if b.Scheme != BackendBatchqRemote {
 		return "", fmt.Errorf("backend: RemoteHTTPURL on scheme %q", b.Scheme)
@@ -89,28 +91,12 @@ func (b *Backend) RemoteHTTPURL() (string, error) {
 	if b.URL.Host == "" {
 		return "", errors.New("backend: batchq-remote URL missing host")
 	}
-	insecure := false
-	q := b.URL.Query()
-	switch strings.ToLower(q.Get("insecure")) {
-	case "", "false", "0", "no":
-		insecure = false
-	case "true", "1", "yes":
-		insecure = true
-	default:
-		return "", fmt.Errorf("backend: insecure must be true/false (got %q)", q.Get("insecure"))
-	}
-	scheme := "https"
-	if insecure {
-		scheme = "http"
-	}
-	// Strip the insecure flag from the query before re-encoding.
-	q.Del("insecure")
 	out := url.URL{
-		Scheme:   scheme,
+		Scheme:   "https",
 		User:     b.URL.User,
 		Host:     b.URL.Host,
 		Path:     b.URL.Path,
-		RawQuery: q.Encode(),
+		RawQuery: b.URL.RawQuery,
 		Fragment: b.URL.Fragment,
 	}
 	return out.String(), nil

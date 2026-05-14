@@ -30,10 +30,9 @@ var clientNoAutospawn bool
 // returns a connected *client.Client.
 //
 // For local backends (sqlite3, postgres) the client dials the unix socket
-// or TCP listener configured in [server] listen and may autospawn the
-// server if nothing is answering. For batchq-remote:// backends the
-// client dials the remote HTTPS (or HTTP-with-insecure-flag) URL directly
-// and never autospawns.
+// configured in [server] listen and may autospawn the server if nothing
+// is answering. For batchq-remote:// backends the client dials the remote
+// HTTPS URL directly and never autospawns.
 func dialClient() (*client.Client, error) {
 	backendRaw := clientBackend
 	if backendRaw == "" {
