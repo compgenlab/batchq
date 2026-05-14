@@ -132,7 +132,14 @@ func DialWithOptions(opts Options) (*Client, error) {
 			},
 		}
 	case "https":
-		c.base = "https://" + parsed.Host
+		// Include the URL path as a mount-point prefix so deployments
+		// behind a reverse proxy at /some/subpath work. Trailing slashes
+		// are stripped — request paths always begin with `/`.
+		base := "https://" + parsed.Host
+		if p := strings.TrimRight(parsed.Path, "/"); p != "" {
+			base += p
+		}
+		c.base = base
 		c.httpC = &http.Client{Timeout: opts.Timeout}
 	default:
 		return nil, fmt.Errorf("client: unsupported scheme %q (want unix:// or https://)", parsed.Scheme)

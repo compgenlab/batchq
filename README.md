@@ -69,7 +69,7 @@ batchq server --sqlite-wal             # WAL mode (LOCAL-DISK ONLY; unsafe on NF
 
 For network access, run a reverse proxy (nginx, Caddy, …) in front of
 the unix socket; the proxy terminates TLS and forwards to batchq.
-Remote clients then point at `--backend batchq-remote://your-host/api/v1`.
+Remote clients then point at `--backend batchq-remote://your-host` (or `batchq-remote://your-host/proxy/path` if the proxy mounts batchq under a subpath). The client adds `/api/v1/...` to every request, so the URL you write here is the mount point, not the API itself.
 
 Only one server instance may run per `$BATCHQ_HOME`. Election uses a
 `flock` on `$BATCHQ_HOME/server.lock`; a second instance exits cleanly.
@@ -151,8 +151,9 @@ runner = "simple"                                      # "simple" or "slurm"
 # Backend selector — exactly one URL with a scheme.
 backend = "sqlite3:///home/me/.batchq/batchq.db"
 # Other forms:
-# backend = "postgres://user:pass@host:5432/dbname"     # local Postgres (future)
-# backend = "batchq-remote://batchq.example.com/api/v1" # remote HTTPS REST API
+# backend = "postgres://user:pass@host:5432/dbname"  # local Postgres (future)
+# backend = "batchq-remote://batchq.example.com"     # remote HTTPS REST API
+# backend = "batchq-remote://example.com/proxy/path" # behind a reverse-proxy subpath
 
 # Bearer token for batchq-remote:// backends. Ignored for local backends.
 token = ""
@@ -195,7 +196,7 @@ max_jobs = 200
 
 Resolution order for every knob is: command-line flag > config value > built-in default.
 
-`batchq` reads `--backend`, `--token`, and `--no-autospawn` as persistent flags on every subcommand. Pass `--backend batchq-remote://other.example.com/api/v1` on any client to talk to a different batchq instance ad-hoc without editing the config.
+`batchq` reads `--backend`, `--token`, and `--no-autospawn` as persistent flags on every subcommand. Pass `--backend batchq-remote://other.example.com` on any client to talk to a different batchq instance ad-hoc without editing the config.
 
 Hidden helper: `batchq debug` prints the resolved `batchq home`, config path, and backend.
 

@@ -330,3 +330,41 @@ func intToStr(i int) string {
 	}
 	return string(out)
 }
+
+// TestHTTPSBaseHonorsPathPrefix verifies that a https:// URL with a path
+// component is preserved as a mount-point prefix on every request — i.e.
+// `batchq-remote://example.com/proxy/path` (resolved to
+// `https://example.com/proxy/path`) sends `/proxy/path/api/v1/jobs`
+// rather than `/api/v1/jobs`. This is the reverse-proxy-subpath case.
+func TestHTTPSBaseHonorsPathPrefix(t *testing.T) {
+	cases := []struct {
+		url  string
+		want string
+	}{
+		{"https://example.com", "https://example.com"},
+		{"https://example.com/", "https://example.com"},
+		{"https://example.com/path", "https://example.com/path"},
+		{"https://example.com/path/", "https://example.com/path"},
+		{"https://example.com/a/b/c", "https://example.com/a/b/c"},
+		{"https://example.com:8443/svc", "https://example.com:8443/svc"},
+	}
+	for _, tc := range cases {
+		c, err := DialWithOptions(Options{URL: tc.url})
+		if err != nil {
+			t.Errorf("DialWithOptions(%q): %v", tc.url, err)
+			continue
+		}
+		if c.base != tc.want {
+			t.Errorf("URL %q: base = %q, want %q", tc.url, c.base, tc.want)
+		}
+		c.Close()
+	}
+}
+
+func TestClientRejectsUnsupportedSchemes(t *testing.T) {
+	for _, u := range []string{"http://example.com", "tcp://example.com:8080", "ftp://x"} {
+		if _, err := DialWithOptions(Options{URL: u}); err == nil {
+			t.Errorf("DialWithOptions(%q): expected error", u)
+		}
+	}
+}
