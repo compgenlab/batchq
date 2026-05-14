@@ -139,6 +139,9 @@ func resetSubmitFlags() {
 	jobStderr = ""
 	jobEnv = false
 	jobHold = false
+	jobRunID = ""
+	jobInputs = nil
+	jobOutputs = nil
 	verbose = false
 	slurmMode = false
 
@@ -316,6 +319,72 @@ func TestSubmitHoldFlag(t *testing.T) {
 	}
 	if dto.Status != "USERHOLD" {
 		t.Fatalf("status: %s, want USERHOLD", dto.Status)
+	}
+}
+
+func TestSubmitRunIDAndFiles(t *testing.T) {
+	c := startCompatServer(t)
+
+	out := runSubmit(t,
+		"--run-id", "run-2025-Q1",
+		"--input", "/data/in1.fq",
+		"--input", "/data/in2.fq",
+		"--output", "/data/out.bam",
+		"--", "echo", "hi",
+	)
+	jobID := strings.TrimSpace(out)
+	if jobID == "" {
+		t.Fatal("empty job id")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	dto, err := c.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if dto.Details["run_id"] != "run-2025-Q1" {
+		t.Fatalf("run_id detail: %q", dto.Details["run_id"])
+	}
+	if len(dto.InputFiles) != 2 || dto.InputFiles[0] != "/data/in1.fq" || dto.InputFiles[1] != "/data/in2.fq" {
+		t.Fatalf("inputs: %v", dto.InputFiles)
+	}
+	if len(dto.OutputFiles) != 1 || dto.OutputFiles[0] != "/data/out.bam" {
+		t.Fatalf("outputs: %v", dto.OutputFiles)
+	}
+}
+
+func TestSubmitBatchqRunIDDirective(t *testing.T) {
+	c := startCompatServer(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "j.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\n"+
+			"#BATCHQ -run-id run-2025-Q1\n"+
+			"#BATCHQ -input /data/in.fq\n"+
+			"#BATCHQ -output /data/out.bam\n"+
+			"echo hi\n"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	out := runSubmit(t, script)
+	jobID := strings.TrimSpace(out)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	dto, err := c.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if dto.Details["run_id"] != "run-2025-Q1" {
+		t.Fatalf("run_id from directive: %q", dto.Details["run_id"])
+	}
+	if len(dto.InputFiles) != 1 || dto.InputFiles[0] != "/data/in.fq" {
+		t.Fatalf("inputs from directive: %v", dto.InputFiles)
+	}
+	if len(dto.OutputFiles) != 1 || dto.OutputFiles[0] != "/data/out.bam" {
+		t.Fatalf("outputs from directive: %v", dto.OutputFiles)
 	}
 }
 

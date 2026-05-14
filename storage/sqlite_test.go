@@ -570,3 +570,121 @@ func intToStr(i int) string {
 	}
 	return string(out)
 }
+
+// --- Phase 12: run_id, input/output files ------------------------------
+
+func TestInsertJobPersistsInputsOutputsAndRunID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	j := mkJob("j-files", map[string]string{
+		"script": "echo hi",
+		"run_id": "run-2025-Q1",
+	})
+	j.InputFiles = []string{"/data/in1.fq", "/data/in2.fq", "/data/in1.fq"} // dedupe
+	j.OutputFiles = []string{"/data/out.bam"}
+	if err := s.InsertJob(ctx, j); err != nil {
+		t.Fatalf("InsertJob: %v", err)
+	}
+
+	got, err := s.GetJob(ctx, "j-files")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if len(got.InputFiles) != 2 || got.InputFiles[0] != "/data/in1.fq" || got.InputFiles[1] != "/data/in2.fq" {
+		t.Fatalf("InputFiles: %v", got.InputFiles)
+	}
+	if len(got.OutputFiles) != 1 || got.OutputFiles[0] != "/data/out.bam" {
+		t.Fatalf("OutputFiles: %v", got.OutputFiles)
+	}
+	if got.RunID() != "run-2025-Q1" {
+		t.Fatalf("RunID: %q", got.RunID())
+	}
+}
+
+func TestFindJobsByOutputPath(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	producer := mkJob("producer", map[string]string{"script": "x"})
+	producer.OutputFiles = []string{"/data/shared.bam"}
+	consumer := mkJob("consumer", map[string]string{"script": "x"})
+	consumer.InputFiles = []string{"/data/shared.bam"}
+	mustInsert(t, s, producer)
+	mustInsert(t, s, consumer)
+
+	ids, err := s.FindJobsByOutputPath(ctx, "/data/shared.bam")
+	if err != nil {
+		t.Fatalf("FindJobsByOutputPath: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "producer" {
+		t.Fatalf("produces: %v", ids)
+	}
+	ids, err = s.FindJobsByInputPath(ctx, "/data/shared.bam")
+	if err != nil {
+		t.Fatalf("FindJobsByInputPath: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "consumer" {
+		t.Fatalf("consumes: %v", ids)
+	}
+}
+
+func TestFindJobsByDetailRunID(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	mustInsert(t, s, mkJob("a", map[string]string{"script": "x", "run_id": "run-A"}))
+	mustInsert(t, s, mkJob("b", map[string]string{"script": "x", "run_id": "run-A"}))
+	mustInsert(t, s, mkJob("c", map[string]string{"script": "x", "run_id": "run-B"}))
+
+	ids, err := s.FindJobsByDetail(ctx, "run_id", "run-A")
+	if err != nil {
+		t.Fatalf("FindJobsByDetail: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("run-A: %v (want 2 jobs)", ids)
+	}
+}
+
+func TestCleanupRemovesInputsOutputs(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	j := mkJob("j-clean", map[string]string{"script": "x"})
+	j.InputFiles = []string{"/data/in.fq"}
+	j.OutputFiles = []string{"/data/out.bam"}
+	mustInsert(t, s, j)
+
+	// Force terminal status so CleanupJob accepts it.
+	if err := s.CancelJob(ctx, "j-clean", "test"); err != nil {
+		t.Fatalf("CancelJob: %v", err)
+	}
+	if err := s.CleanupJob(ctx, "j-clean"); err != nil {
+		t.Fatalf("CleanupJob: %v", err)
+	}
+
+	// All reverse lookups should be empty now.
+	for _, name := range []string{"FindJobsByInputPath", "FindJobsByOutputPath"} {
+		var fn func(context.Context, string) ([]string, error)
+		switch name {
+		case "FindJobsByInputPath":
+			fn = s.FindJobsByInputPath
+		case "FindJobsByOutputPath":
+			fn = s.FindJobsByOutputPath
+		}
+		ids, err := fn(ctx, "/data/in.fq")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("%s after cleanup: %v", name, ids)
+		}
+		ids, err = fn(ctx, "/data/out.bam")
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(ids) != 0 {
+			t.Fatalf("%s after cleanup: %v", name, ids)
+		}
+	}
+}

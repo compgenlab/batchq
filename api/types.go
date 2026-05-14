@@ -32,6 +32,10 @@ type JobDTO struct {
 	AfterOk        []string          `json:"after_ok,omitempty"`
 	Details        map[string]string `json:"details,omitempty"`
 	RunningDetails map[string]string `json:"running_details,omitempty"`
+
+	// Optional submit-time metadata. Empty values are omitted from JSON.
+	InputFiles  []string `json:"input_files,omitempty"`
+	OutputFiles []string `json:"output_files,omitempty"`
 }
 
 // JobFromDef converts a storage/jobs JobDef into a wire DTO.
@@ -72,6 +76,12 @@ func JobFromDef(j *jobs.JobDef) *JobDTO {
 			dto.RunningDetails[d.Key] = d.Value
 		}
 	}
+	if len(j.InputFiles) > 0 {
+		dto.InputFiles = append([]string(nil), j.InputFiles...)
+	}
+	if len(j.OutputFiles) > 0 {
+		dto.OutputFiles = append([]string(nil), j.OutputFiles...)
+	}
 	return dto
 }
 
@@ -105,6 +115,12 @@ func JobToDef(dto *JobDTO) *jobs.JobDef {
 	for k, v := range dto.RunningDetails {
 		j.RunningDetails = append(j.RunningDetails, jobs.JobRunningDetail{Key: k, Value: v})
 	}
+	if len(dto.InputFiles) > 0 {
+		j.InputFiles = append([]string(nil), dto.InputFiles...)
+	}
+	if len(dto.OutputFiles) > 0 {
+		j.OutputFiles = append([]string(nil), dto.OutputFiles...)
+	}
 	return j
 }
 
@@ -114,12 +130,14 @@ func JobToDef(dto *JobDTO) *jobs.JobDef {
 // wire; if Hold=true the server starts the job in USERHOLD instead of
 // computing the status from deps.
 type SubmitJobRequest struct {
-	Name           string            `json:"name,omitempty"`
-	Notes          string            `json:"notes,omitempty"`
-	Priority       int               `json:"priority,omitempty"`
-	Hold           bool              `json:"hold,omitempty"`
-	AfterOk        []string          `json:"after_ok,omitempty"`
-	Details        map[string]string `json:"details,omitempty"`
+	Name        string            `json:"name,omitempty"`
+	Notes       string            `json:"notes,omitempty"`
+	Priority    int               `json:"priority,omitempty"`
+	Hold        bool              `json:"hold,omitempty"`
+	AfterOk     []string          `json:"after_ok,omitempty"`
+	Details     map[string]string `json:"details,omitempty"`
+	InputFiles  []string          `json:"input_files,omitempty"`
+	OutputFiles []string          `json:"output_files,omitempty"`
 }
 
 // SubmitJobResponse returns the canonical job ID and the persisted job.

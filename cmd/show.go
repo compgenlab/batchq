@@ -73,7 +73,19 @@ var queueCmd = &cobra.Command{
 
 		ctx, cancel := cmdContext()
 		defer cancel()
-		dtos, err := c.GetQueueJobs(ctx, jobShowAll, true)
+		var dtos []*api.JobDTO
+		var err error
+		if queueRunID != "" || queueProduces != "" || queueConsumes != "" {
+			dtos, err = c.ListJobs(ctx, client.ListJobsOptions{
+				ShowAll:      jobShowAll,
+				SortByStatus: true,
+				RunID:        queueRunID,
+				Produces:     queueProduces,
+				Consumes:     queueConsumes,
+			})
+		} else {
+			dtos, err = c.GetQueueJobs(ctx, jobShowAll, true)
+		}
 		if err != nil {
 			log.Fatalln(err)
 		}
@@ -205,9 +217,15 @@ var summaryCmd = &cobra.Command{
 }
 
 var jobShowAll bool
+var queueRunID string
+var queueProduces string
+var queueConsumes string
 
 func init() {
 	queueCmd.Flags().BoolVar(&jobShowAll, "all", false, "Show all jobs (including completed)")
+	queueCmd.Flags().StringVar(&queueRunID, "run-id", "", "Only show jobs in this workflow run")
+	queueCmd.Flags().StringVar(&queueProduces, "produces", "", "Only show jobs that list this file as an output")
+	queueCmd.Flags().StringVar(&queueConsumes, "consumes", "", "Only show jobs that list this file as an input")
 	summaryCmd.Flags().BoolVar(&jobShowAll, "all", false, "Show all jobs (including completed)")
 
 	rootCmd.AddCommand(detailsCmd)

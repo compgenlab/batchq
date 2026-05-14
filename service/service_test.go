@@ -263,6 +263,77 @@ func TestParseStatus(t *testing.T) {
 	}
 }
 
+func TestListJobsFiltersByRunIDAndFiles(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	mustSubmit := func(name, runID string, inputs, outputs []string) string {
+		t.Helper()
+		details := map[string]string{"script": "echo " + name}
+		if runID != "" {
+			details["run_id"] = runID
+		}
+		dto, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{
+			Name:        name,
+			Details:     details,
+			InputFiles:  inputs,
+			OutputFiles: outputs,
+		})
+		if err != nil {
+			t.Fatalf("submit %s: %v", name, err)
+		}
+		return dto.JobID
+	}
+
+	mustSubmit("a", "run-A", []string{"in1"}, []string{"shared"})
+	mustSubmit("b", "run-A", []string{"shared"}, []string{"out-b"})
+	mustSubmit("c", "run-B", []string{"in1"}, []string{"shared"})
+
+	// RunID filter narrows to two jobs.
+	got, err := svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, RunID: "run-A"})
+	if err != nil {
+		t.Fatalf("ListJobs run-A: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("run-A: got %d jobs, want 2", len(got))
+	}
+
+	// Produces filter — two jobs produce "shared".
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Produces: "shared"})
+	if err != nil {
+		t.Fatalf("ListJobs produces: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("produces shared: got %d, want 2", len(got))
+	}
+
+	// Combine RunID AND Produces — intersection of {a, b} ∩ {a, c} = {a}.
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, RunID: "run-A", Produces: "shared"})
+	if err != nil {
+		t.Fatalf("ListJobs combined: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "a" {
+		t.Fatalf("combined: got %v", names(got))
+	}
+
+	// Consumes filter — one job consumes "shared".
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Consumes: "shared"})
+	if err != nil {
+		t.Fatalf("ListJobs consumes: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "b" {
+		t.Fatalf("consumes shared: got %v", names(got))
+	}
+}
+
+func names(dtos []*api.JobDTO) []string {
+	out := make([]string, len(dtos))
+	for i, d := range dtos {
+		out[i] = d.Name
+	}
+	return out
+}
+
 func TestValidateJobID(t *testing.T) {
 	if err := ValidateJobID("good-id-123"); err != nil {
 		t.Fatalf("unexpected err: %v", err)

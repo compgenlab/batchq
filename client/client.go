@@ -246,6 +246,11 @@ type ListJobsOptions struct {
 	Query        string
 	Limit        int
 	Offset       int
+
+	// Optional filters.
+	RunID    string // jobs whose "run_id" detail equals this
+	Produces string // jobs that list this path in output_files
+	Consumes string // jobs that list this path in input_files
 }
 
 func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
@@ -267,6 +272,15 @@ func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Job
 	}
 	if opts.Offset > 0 {
 		q.Set("offset", strconv.Itoa(opts.Offset))
+	}
+	if opts.RunID != "" {
+		q.Set("run_id", opts.RunID)
+	}
+	if opts.Produces != "" {
+		q.Set("produces", opts.Produces)
+	}
+	if opts.Consumes != "" {
+		q.Set("consumes", opts.Consumes)
 	}
 	path := api.Prefix + api.RouteJobs
 	if encoded := q.Encode(); encoded != "" {

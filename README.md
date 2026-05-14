@@ -94,6 +94,17 @@ Useful flags:
 - `--deps <job-id>,<job-id>` run after other jobs succeed
 - `--hold` submit held
 - `--env` capture current environment and replay at run time
+- `--run-id ID` workflow run identifier (groups related jobs)
+- `--input PATH` input file path (repeatable)
+- `--output PATH` output file path (repeatable)
+
+Find jobs by these tags:
+
+```sh
+batchq show queue --run-id run-2025-Q1     # all jobs in this workflow run
+batchq show queue --produces /data/out.bam # which job(s) produced this file
+batchq show queue --consumes /data/in.fq   # which job(s) need this file
+```
 
 ### Submitting SLURM scripts
 

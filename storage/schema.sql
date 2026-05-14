@@ -46,6 +46,22 @@ CREATE TABLE IF NOT EXISTS job_running_details (
     PRIMARY KEY (job_id, key)
 );
 
+-- Per-job input and output files. Optional submit-time metadata used for
+-- pipeline introspection ("which job produced X?" / "which jobs need X?").
+-- Multi-valued, so they get dedicated tables rather than CSV-encoded
+-- job_details rows.
+CREATE TABLE IF NOT EXISTS job_inputs (
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    path   TEXT NOT NULL,
+    PRIMARY KEY (job_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS job_outputs (
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    path   TEXT NOT NULL,
+    PRIMARY KEY (job_id, path)
+);
+
 CREATE INDEX IF NOT EXISTS jobs_status_priority_submit
     ON jobs(status, priority DESC, submit_time, id);
 
@@ -54,3 +70,14 @@ CREATE INDEX IF NOT EXISTS job_deps_afterok
 
 CREATE INDEX IF NOT EXISTS job_details_key
     ON job_details(key, job_id);
+
+-- Value-covering index so `WHERE key='run_id' AND value=?` (the workflow
+-- run filter) is an index lookup instead of a scan.
+CREATE INDEX IF NOT EXISTS job_details_kv
+    ON job_details(key, value, job_id);
+
+CREATE INDEX IF NOT EXISTS job_inputs_path
+    ON job_inputs(path);
+
+CREATE INDEX IF NOT EXISTS job_outputs_path
+    ON job_outputs(path);

@@ -57,11 +57,13 @@ func (s *Service) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*ap
 	}
 
 	job := &jobs.JobDef{
-		JobId:    support.NewUUID(),
-		Name:     req.Name,
-		Notes:    req.Notes,
-		Priority: req.Priority,
-		AfterOk:  req.AfterOk,
+		JobId:       support.NewUUID(),
+		Name:        req.Name,
+		Notes:       req.Notes,
+		Priority:    req.Priority,
+		AfterOk:     req.AfterOk,
+		InputFiles:  req.InputFiles,
+		OutputFiles: req.OutputFiles,
 	}
 	if req.Hold {
 		job.Status = jobs.USERHOLD
@@ -92,6 +94,12 @@ type ListJobsOptions struct {
 	SortByStatus bool
 	Statuses     []jobs.StatusCode
 	Query        string
+
+	// RunID, Produces, and Consumes are optional intersect-filters
+	// applied after the base listing. Empty values are ignored.
+	RunID    string
+	Produces string
+	Consumes string
 }
 
 func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
@@ -110,7 +118,64 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 	if err != nil {
 		return nil, err
 	}
+
+	if opts.RunID != "" || opts.Produces != "" || opts.Consumes != "" {
+		var allow map[string]struct{}
+		if opts.RunID != "" {
+			ids, err := s.store.FindJobsByDetail(ctx, "run_id", opts.RunID)
+			if err != nil {
+				return nil, err
+			}
+			allow = intersect(allow, ids)
+		}
+		if opts.Produces != "" {
+			ids, err := s.store.FindJobsByOutputPath(ctx, opts.Produces)
+			if err != nil {
+				return nil, err
+			}
+			allow = intersect(allow, ids)
+		}
+		if opts.Consumes != "" {
+			ids, err := s.store.FindJobsByInputPath(ctx, opts.Consumes)
+			if err != nil {
+				return nil, err
+			}
+			allow = intersect(allow, ids)
+		}
+		filtered := make([]*jobs.JobDef, 0, len(out))
+		for _, j := range out {
+			if _, ok := allow[j.JobId]; ok {
+				filtered = append(filtered, j)
+			}
+		}
+		out = filtered
+	}
+
 	return toDTOs(out), nil
+}
+
+// intersect merges a new set of IDs into the running allow-set. The
+// first call (allow == nil) seeds it with ids; subsequent calls keep
+// only IDs present in both.
+func intersect(allow map[string]struct{}, ids []string) map[string]struct{} {
+	if allow == nil {
+		out := make(map[string]struct{}, len(ids))
+		for _, id := range ids {
+			out[id] = struct{}{}
+		}
+		return out
+	}
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		seen[id] = struct{}{}
+	}
+	out := make(map[string]struct{})
+	for id := range allow {
+		if _, ok := seen[id]; ok {
+			out[id] = struct{}{}
+		}
+	}
+	return out
 }
 
 func (s *Service) GetQueueJobs(ctx context.Context, showAll, sortByStatus bool) ([]*api.JobDTO, error) {

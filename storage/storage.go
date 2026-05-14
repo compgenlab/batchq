@@ -134,4 +134,14 @@ type Storage interface {
 	// details, deps, running claim). Caller must verify the job is in a
 	// terminal state.
 	CleanupJob(ctx context.Context, jobID string) error
+
+	// FindJobsByDetail returns the job IDs that carry a particular
+	// (key, value) row in job_details. Used for the run_id filter on
+	// GET /jobs.
+	FindJobsByDetail(ctx context.Context, key, value string) ([]string, error)
+
+	// FindJobsByInputPath / FindJobsByOutputPath return job IDs that
+	// list path as an input / output file, respectively.
+	FindJobsByInputPath(ctx context.Context, path string) ([]string, error)
+	FindJobsByOutputPath(ctx context.Context, path string) ([]string, error)
 }

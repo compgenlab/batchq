@@ -72,6 +72,7 @@ The atomic claim endpoint (`POST /api/v1/runners/{id}/claim`) transitions QUEUED
 
 - Subcommand shape: `batchq submit [flags] [script-path | -- inline command…]`, with stdin fallback when no positional arg / `-` is given.
 - All current flags: `--name`, `-p/--procs`, `-m/--mem`, `-t/--walltime`, `--wd`, `--stdout`, `--stderr`, `--deps`, `--hold`, `--env`, `--slurm`.
+- Optional metadata flags (additive in Phase 12): `--run-id <id>`, `--input <path>` (repeatable), `--output <path>` (repeatable). `#BATCHQ -run-id / -input / -output` directives mirror these.
 - SBATCH header parsing under `--slurm`: `-c/--cpus-per-task`, `--mem`, `-t/--time`, `-J`, `-D`, `-o/-e` with `%j`→`%JOBID`, `--export=ALL`, `-d afterok:…`.
 - Job ID format: UUID strings with hyphens.
 - stdout, stderr, and exit codes match v1.

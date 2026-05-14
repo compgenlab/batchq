@@ -107,6 +107,9 @@ var submitCmd = &cobra.Command{
 		// #BATCHQ -env
 		// #BATCHQ -hold
 		// #BATCHQ -afterok val1,val2
+		// #BATCHQ -run-id workflow-run-id
+		// #BATCHQ -input  path   (repeatable; accumulates)
+		// #BATCHQ -output path   (repeatable; accumulates)
 
 		incomment := true
 		for _, line := range strings.Split(scriptSrc, "\n") {
@@ -177,6 +180,23 @@ var submitCmd = &cobra.Command{
 							if jobDeps == "" {
 								jobDeps = v
 							}
+						case "run-id":
+							if v == "" {
+								log.Fatal("Missing value for -run-id")
+							}
+							if jobRunID == "" {
+								jobRunID = v
+							}
+						case "input":
+							if v == "" {
+								log.Fatal("Missing value for -input")
+							}
+							jobInputs = append(jobInputs, v)
+						case "output":
+							if v == "" {
+								log.Fatal("Missing value for -output")
+							}
+							jobOutputs = append(jobOutputs, v)
 						default:
 						}
 					}
@@ -374,11 +394,16 @@ var submitCmd = &cobra.Command{
 
 		ctx, cancel := cmdContext()
 		defer cancel()
+		if jobRunID != "" {
+			details["run_id"] = jobRunID
+		}
 		req := &api.SubmitJobRequest{
-			Name:    jobName,
-			Hold:    jobHold,
-			AfterOk: afterOk,
-			Details: details,
+			Name:        jobName,
+			Hold:        jobHold,
+			AfterOk:     afterOk,
+			Details:     details,
+			InputFiles:  jobInputs,
+			OutputFiles: jobOutputs,
 		}
 		dto, err := c.SubmitJob(ctx, req)
 		if err != nil {
@@ -411,6 +436,9 @@ var jobStdout string
 var jobStderr string
 var jobEnv bool
 var jobHold bool
+var jobRunID string
+var jobInputs []string
+var jobOutputs []string
 
 var verbose bool
 var slurmMode bool
@@ -430,6 +458,9 @@ func init() {
 	submitCmd.Flags().IntVarP(&jobProcs, "procs", "p", -1, "Processors required")
 	submitCmd.Flags().StringVarP(&jobMemStr, "mem", "m", "", "Max-memory (MB,GB)")
 	submitCmd.Flags().StringVarP(&jobTimeStr, "walltime", "t", "", "Max-time (D-HH:MM:SS)")
+	submitCmd.Flags().StringVar(&jobRunID, "run-id", "", "Workflow run ID (groups related jobs)")
+	submitCmd.Flags().StringArrayVar(&jobInputs, "input", nil, "Input file path (repeatable)")
+	submitCmd.Flags().StringArrayVar(&jobOutputs, "output", nil, "Output file path (repeatable)")
 
 	rootCmd.AddCommand(submitCmd)
 }

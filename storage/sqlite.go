@@ -229,6 +229,23 @@ func (s *sqliteStorage) InsertJob(ctx context.Context, job *jobs.JobDef) error {
 		}
 	}
 
+	for _, p := range dedupNonEmpty(job.InputFiles) {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO job_inputs (job_id, path) VALUES (?, ?)`,
+			job.JobId, p,
+		); err != nil {
+			return fmt.Errorf("storage: insert input %s: %w", p, err)
+		}
+	}
+	for _, p := range dedupNonEmpty(job.OutputFiles) {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO job_outputs (job_id, path) VALUES (?, ?)`,
+			job.JobId, p,
+		); err != nil {
+			return fmt.Errorf("storage: insert output %s: %w", p, err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -292,7 +309,8 @@ func scanJob(sc scanner) (*jobs.JobDef, error) {
 	return &job, nil
 }
 
-// loadJobRelations populates AfterOk, Details, and RunningDetails for a job.
+// loadJobRelations populates AfterOk, Details, RunningDetails, and the
+// input/output file lists for a job.
 func (s *sqliteStorage) loadJobRelations(ctx context.Context, job *jobs.JobDef) error {
 	deps, err := s.fetchDeps(ctx, job.JobId)
 	if err != nil {
@@ -311,7 +329,65 @@ func (s *sqliteStorage) loadJobRelations(ctx context.Context, job *jobs.JobDef) 
 		return err
 	}
 	job.RunningDetails = rd
+
+	in, err := s.fetchPaths(ctx, "job_inputs", job.JobId)
+	if err != nil {
+		return err
+	}
+	job.InputFiles = in
+
+	out, err := s.fetchPaths(ctx, "job_outputs", job.JobId)
+	if err != nil {
+		return err
+	}
+	job.OutputFiles = out
 	return nil
+}
+
+// fetchPaths returns the paths from job_inputs or job_outputs for a job.
+// table must be one of those two literal names (never user input) — it's
+// interpolated directly because parameter binding doesn't work for table
+// names.
+func (s *sqliteStorage) fetchPaths(ctx context.Context, table, jobID string) ([]string, error) {
+	if table != "job_inputs" && table != "job_outputs" {
+		return nil, fmt.Errorf("storage: fetchPaths invalid table %q", table)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		"SELECT path FROM "+table+" WHERE job_id = ? ORDER BY path", jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		paths = append(paths, p)
+	}
+	return paths, rows.Err()
+}
+
+// dedupNonEmpty returns a copy of paths with empty strings and duplicates
+// removed, preserving the original order of the first occurrence.
+func dedupNonEmpty(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
 }
 
 func (s *sqliteStorage) fetchDeps(ctx context.Context, jobID string) ([]string, error) {
@@ -1196,6 +1272,8 @@ func (s *sqliteStorage) CleanupJob(ctx context.Context, jobID string) error {
 		`DELETE FROM job_running         WHERE job_id = ?`,
 		`DELETE FROM job_deps            WHERE job_id = ?`,
 		`DELETE FROM job_details         WHERE job_id = ?`,
+		`DELETE FROM job_inputs          WHERE job_id = ?`,
+		`DELETE FROM job_outputs         WHERE job_id = ?`,
 		`DELETE FROM jobs                WHERE id     = ?`,
 	}
 	for _, q := range stmts {
@@ -1204,4 +1282,49 @@ func (s *sqliteStorage) CleanupJob(ctx context.Context, jobID string) error {
 		}
 	}
 	return tx.Commit()
+}
+
+// --- Reverse lookups for run_id / inputs / outputs --------------------
+
+func (s *sqliteStorage) FindJobsByDetail(ctx context.Context, key, value string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT job_id FROM job_details WHERE key = ? AND value = ?`,
+		key, value)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectIDs(rows)
+}
+
+func (s *sqliteStorage) FindJobsByInputPath(ctx context.Context, path string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT job_id FROM job_inputs WHERE path = ?`, path)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectIDs(rows)
+}
+
+func (s *sqliteStorage) FindJobsByOutputPath(ctx context.Context, path string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT job_id FROM job_outputs WHERE path = ?`, path)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return collectIDs(rows)
+}
+
+func collectIDs(rows *sql.Rows) ([]string, error) {
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
