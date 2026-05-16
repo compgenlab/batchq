@@ -77,7 +77,10 @@ func pathID(r *http.Request, name string) (string, error) {
 // --- handlers ----------------------------------------------------------
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, api.HealthResponse{
+		Status:     "ok",
+		InstanceID: s.instanceID,
+	})
 }
 
 func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {

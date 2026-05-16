@@ -16,6 +16,13 @@ const Prefix = "/api/" + Version
 const (
 	HeaderVersion       = "X-Batchq-API-Version"
 	HeaderAuthorization = "Authorization"
+
+	// HeaderInternalOwner marks a request as coming from the server's
+	// own ownership-monitor goroutine (server self-dials its socket to
+	// confirm path → process binding). Activity tracking skips
+	// requests with this header so the monitor's pings don't keep an
+	// otherwise-idle server alive.
+	HeaderInternalOwner = "X-Batchq-Internal-Owner"
 )
 
 // Route paths (relative to Prefix). Path parameters use {} markers in the

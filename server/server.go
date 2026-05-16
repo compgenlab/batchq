@@ -6,6 +6,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/mbreese/batchq/api"
 	"github.com/mbreese/batchq/service"
+	"github.com/mbreese/batchq/support"
 )
 
 // ErrAlreadyRunning is returned by Serve when another batchq server is
@@ -60,12 +62,24 @@ type Options struct {
 	// OnIdleShutdown is called (in a goroutine) just before the idle
 	// monitor triggers shutdown. Useful for tests and operator logging.
 	OnIdleShutdown func()
+
+	// OwnershipCheckInterval is how often the server dials its own
+	// unix socket to confirm that the bound path still leads to this
+	// process. Mismatch (different instance_id) or any dial failure
+	// triggers Shutdown — catches the case where another server has
+	// taken over the path. Defaults to 30s. Zero disables.
+	OwnershipCheckInterval time.Duration
 }
 
 // Server is a long-lived HTTP server over the batchq REST API.
 type Server struct {
 	svc  *service.Service
 	opts Options
+
+	// instanceID is a per-process UUID exposed via GET /healthz. The
+	// ownership monitor self-dials and compares this value; mismatch
+	// means our socket path now leads to a different process.
+	instanceID string
 
 	httpSrv *http.Server
 
@@ -100,7 +114,15 @@ func New(svc *service.Service, opts Options) (*Server, error) {
 		opts.WriteTimeout = 2 * time.Minute
 	}
 
-	s := &Server{svc: svc, opts: opts}
+	if opts.OwnershipCheckInterval == 0 {
+		opts.OwnershipCheckInterval = 30 * time.Second
+	}
+
+	s := &Server{
+		svc:        svc,
+		opts:       opts,
+		instanceID: support.NewUUID(),
+	}
 	mux := s.routes()
 	s.httpSrv = &http.Server{
 		Handler:      mux,
@@ -137,6 +159,14 @@ func (s *Server) Serve(ctx context.Context) error {
 	defer idleCancel()
 	if s.opts.IdleTimeout > 0 {
 		go s.runIdleMonitor(idleCtx)
+	}
+
+	// Ownership monitor: self-dials the bound unix socket periodically
+	// and shuts down if the path leads somewhere else.
+	ownerCtx, ownerCancel := context.WithCancel(context.Background())
+	defer ownerCancel()
+	if s.opts.OwnershipCheckInterval > 0 && s.SocketPath() != "" {
+		go s.runOwnershipMonitor(ownerCtx)
 	}
 
 	serveErr := s.httpSrv.Serve(ln)
@@ -325,10 +355,17 @@ func (s *Server) withVersionHeader(next http.Handler) http.Handler {
 }
 
 // withActivity tracks last-activity and in-flight counts so the idle
-// monitor can decide when to shut down. Health checks count too — they
-// reset the idle timer of a freshly-spawned server while clients dial.
+// monitor can decide when to shut down. Health checks from real clients
+// count — they reset the idle timer of a freshly-spawned server while
+// clients dial. Requests carrying HeaderInternalOwner are the server's
+// own ownership-monitor self-dials; they skip activity tracking so the
+// monitor doesn't keep an otherwise-idle server alive forever.
 func (s *Server) withActivity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(api.HeaderInternalOwner) != "" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		s.inFlight.Add(1)
 		s.lastActivityNanos.Store(time.Now().UnixNano())
 		defer func() {
@@ -379,4 +416,82 @@ func (s *Server) runIdleMonitor(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// runOwnershipMonitor periodically dials the server's own unix socket
+// and compares the InstanceID in the response to its own. A mismatch
+// (someone else now answers at our path) or any failure (the path is
+// gone) triggers Shutdown. The self-dial carries HeaderInternalOwner
+// so withActivity skips it — these pings must not keep an idle server
+// alive.
+//
+// Only runs when Options.OwnershipCheckInterval > 0 and we're bound to
+// a unix socket. https:// listeners (future) don't have a meaningful
+// "path → process" binding to monitor.
+func (s *Server) runOwnershipMonitor(ctx context.Context) {
+	sockPath := s.SocketPath()
+	if sockPath == "" {
+		return
+	}
+	httpClient := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(dialCtx, "unix", sockPath)
+			},
+		},
+	}
+	defer httpClient.CloseIdleConnections()
+
+	ticker := time.NewTicker(s.opts.OwnershipCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !s.confirmOwnership(ctx, httpClient) {
+				// If a shutdown is already in flight (idle monitor or
+				// caller-context cancel), the cleanupSocket path may
+				// have unlinked the socket already — this "failure"
+				// is just the tail end of a normal shutdown, not an
+				// orphan. Shutdown is idempotent so logging the line
+				// is harmless but noisy in that case.
+				log.Printf("server: ownership check failed (path %s no longer leads to instance %s); shutting down", sockPath, s.instanceID)
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				if err := s.httpSrv.Shutdown(shutdownCtx); err != nil {
+					log.Printf("server: ownership shutdown: %v", err)
+				}
+				cancel()
+				return
+			}
+		}
+	}
+}
+
+// confirmOwnership returns true iff dialing our own socket path
+// reaches a server that reports our InstanceID. Any non-200, any
+// network/JSON error, or a mismatched ID returns false.
+func (s *Server) confirmOwnership(ctx context.Context, httpClient *http.Client) bool {
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://batchq/healthz", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set(api.HeaderInternalOwner, s.instanceID)
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var hr api.HealthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&hr); err != nil {
+		return false
+	}
+	return hr.InstanceID == s.instanceID
 }
