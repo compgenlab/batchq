@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -385,4 +386,21 @@ func derefTime(t *time.Time) time.Time {
 		return time.Time{}
 	}
 	return *t
+}
+
+// handleShutdown answers OK and then asks the http.Server to drain in a
+// goroutine. Returning to the caller flushes the response; once the
+// handler unwinds, Shutdown's "wait for in-flight" closes the connection
+// and unbinds the listener. The whole process exits when Serve unblocks.
+//
+// This endpoint is intended for the local unix socket — file permissions
+// are the auth boundary. Remote deployments should gate /admin/* at the
+// reverse proxy.
+func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "shutting down"})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = s.httpSrv.Shutdown(ctx)
+	}()
 }

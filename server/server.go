@@ -310,6 +310,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+p+api.RouteRunnerJobEnd, s.handleEndJob)
 	mux.HandleFunc("POST "+p+api.RouteRunnerJobProxyEnd, s.handleEndProxied)
 
+	mux.HandleFunc("POST "+p+api.RouteShutdown, s.handleShutdown)
+
 	return s.withVersionHeader(s.withActivity(mux))
 }
 

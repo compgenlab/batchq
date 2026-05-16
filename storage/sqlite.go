@@ -483,7 +483,10 @@ func (s *sqliteStorage) ListJobsByStatus(ctx context.Context, statuses []jobs.St
 	} else {
 		query += ` ORDER BY id`
 	}
-	return s.queryJobs(ctx, query, args, false)
+	// loadRelations must be true: the slurm runner calls this with
+	// Statuses=[PROXYQUEUED] and relies on RunningDetails["slurm_job_id"]
+	// to reconcile against sacct.
+	return s.queryJobs(ctx, query, args, true)
 }
 
 func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode) ([]*jobs.JobDef, error) {
@@ -513,7 +516,9 @@ func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses [
 		sqlQuery += ` AND j.status IN (` + strings.Join(placeholders, ",") + `)`
 	}
 	sqlQuery += ` ORDER BY j.id`
-	return s.queryJobs(ctx, sqlQuery, args, false)
+	// loadRelations=true: callers that filter by status (notably the
+	// slurm runner) depend on RunningDetails for slurm_job_id.
+	return s.queryJobs(ctx, sqlQuery, args, true)
 }
 
 // queryJobs runs a SELECT that produces full job rows and (optionally) loads

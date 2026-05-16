@@ -25,6 +25,12 @@ var clientToken string
 // surface as an error rather than a fork-exec.
 var clientNoAutospawn bool
 
+// clientRestartServer asks dialClient to shut down any running local
+// server before proceeding. The normal autospawn flow then forks a
+// fresh server. Has no effect for remote backends — operators don't
+// shut down remote servers from a client flag.
+var clientRestartServer bool
+
 // dialClient picks the API endpoint and returns a connected *client.Client.
 //
 // If [batchq] remote is set (or --remote was given) the client dials
@@ -64,12 +70,22 @@ func dialClient() (*client.Client, error) {
 	if waitTimeout <= 0 {
 		waitTimeout = defaultsResolved.AutospawnWaitTimeout
 	}
-	if !remoteMode && strings.HasPrefix(dialURL, "unix://") && !clientNoAutospawn {
+	localUnix := !remoteMode && strings.HasPrefix(dialURL, "unix://")
+	if localUnix && !clientNoAutospawn {
 		auto.Enabled = true
 		auto.PollTimeout = waitTimeout
 		auto.ExtraArgs = []string{
 			"--idle-timeout", defaultsResolved.AutospawnIdleTimeout.String(),
 			"--db", Config.Server.DB,
+		}
+	}
+
+	// --restart-server: drain and exit any running local server before
+	// the normal dial-and-autospawn path picks up. Best-effort: a
+	// connect failure here just means there was nothing to shut down.
+	if clientRestartServer && localUnix {
+		if err := shutdownLocalServer(opts); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: --restart-server: %v\n", err)
 		}
 	}
 
@@ -103,6 +119,48 @@ func cmdContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
+// shutdownLocalServer probes the unix-socket server and, if it answers,
+// asks it to drain and exit. Polls until Health stops succeeding (or the
+// deadline expires) so the caller knows the next autospawn will fork a
+// fresh server, not reuse an in-flight shutdown. Returns nil on either
+// "no server" or "server confirmed down".
+func shutdownLocalServer(opts client.Options) error {
+	c, err := client.DialWithOptions(opts)
+	if err != nil {
+		return nil
+	}
+	defer c.Close()
+
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	probeErr := c.Health(probeCtx)
+	probeCancel()
+	if probeErr != nil {
+		// Nothing answering — nothing to shut down.
+		return nil
+	}
+
+	sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer scancel()
+	if err := c.Shutdown(sctx); err != nil {
+		return fmt.Errorf("shutdown request: %w", err)
+	}
+
+	// Wait for the server to actually go away. The server's clean
+	// shutdown path unlinks the socket, so a successful Health probe
+	// here means the old server is still draining.
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		hctx, hcancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		err := c.Health(hctx)
+		hcancel()
+		if err != nil {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("server still answering after shutdown request")
+}
+
 func init() {
 	rootCmd.PersistentFlags().StringVar(&clientRemote, "remote", "",
 		"remote batchq server URL: https://host[:port]/subpath")
@@ -110,4 +168,6 @@ func init() {
 		"bearer token for the remote server")
 	rootCmd.PersistentFlags().BoolVar(&clientNoAutospawn, "no-autospawn", false,
 		"do not auto-start a local server when the socket is unreachable")
+	rootCmd.PersistentFlags().BoolVar(&clientRestartServer, "restart-server", false,
+		"shut down any running local server before this command (no effect for remote)")
 }

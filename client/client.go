@@ -222,6 +222,14 @@ func (c *Client) Health(ctx context.Context) error {
 	return c.do(ctx, http.MethodGet, "/healthz", nil, nil)
 }
 
+// Shutdown asks the server to drain in-flight requests and exit. Callers
+// that want "ensure no server is running" should treat a connect failure
+// (no such file or connection refused) as a successful no-op — there was
+// nothing to shut down.
+func (c *Client) Shutdown(ctx context.Context) error {
+	return c.do(ctx, http.MethodPost, api.Prefix+api.RouteShutdown, nil, nil)
+}
+
 func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api.JobDTO, error) {
 	var resp api.SubmitJobResponse
 	if err := c.do(ctx, http.MethodPost, api.Prefix+api.RouteJobs, req, &resp); err != nil {

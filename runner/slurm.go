@@ -239,13 +239,16 @@ func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 		fmt.Printf("Error listing PROXYQUEUED jobs: %v\n", err)
 		return
 	}
+	fmt.Printf("Reconciling %d PROXYQUEUED job(s)\n", len(proxied))
 	for _, job := range proxied {
 		slurmJobIdStr := job.RunningDetails["slurm_job_id"]
 		if slurmJobIdStr == "" {
+			fmt.Printf("  %s: no slurm_job_id in running_details — skipping\n", job.JobID)
 			continue
 		}
 		slurmJobId, err := strconv.Atoi(slurmJobIdStr)
 		if err != nil {
+			fmt.Printf("  %s: bad slurm_job_id %q — skipping (%v)\n", job.JobID, slurmJobIdStr, err)
 			continue
 		}
 		slurmState, err := SlurmGetJobState(slurmJobId)
@@ -254,8 +257,10 @@ func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 			continue
 		}
 		if slurmState == nil {
+			fmt.Printf("  %s: slurm id %d not found in sacct — skipping\n", job.JobID, slurmJobId)
 			continue
 		}
+		fmt.Printf("  %s: slurm id %d state=%s\n", job.JobID, slurmJobId, slurmState.State)
 		uctx, ucancel := context.WithTimeout(ctx, 30*time.Second)
 		if uerr := r.client.UpdateRunningDetails(uctx, r.runnerId, job.JobID, map[string]string{
 			"slurm_status":      slurmState.State,

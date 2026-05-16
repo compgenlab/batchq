@@ -39,4 +39,9 @@ const (
 	RouteRunnerJobRunning    = "/runners/{runner_id}/jobs/{id}/running"
 	RouteRunnerJobEnd        = "/runners/{runner_id}/jobs/{id}/end"
 	RouteRunnerJobProxyEnd   = "/runners/{runner_id}/jobs/{id}/proxy-end"
+
+	// RouteShutdown asks a local server to drain in-flight requests and
+	// stop. Intended for local-socket use; remote deployments should
+	// gate /admin/* at the reverse proxy.
+	RouteShutdown = "/admin/shutdown"
 )
