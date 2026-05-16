@@ -35,17 +35,25 @@ var detailsCmd = &cobra.Command{
 					}
 					log.Fatalln(err)
 				}
-				if job := api.JobToDef(dto); job != nil {
-					// Status string → StatusCode for the v1 printer.
-					if s, perr := api.ParseStatus(dto.Status); perr == nil {
-						job.Status = s
-					}
-					job.Print()
-					fmt.Println("")
-				}
+				printJobDetails(dto)
 			}
 		}
 	},
+}
+
+// printJobDetails renders the long-form view of a single job (used by
+// `details` and by `search` when the query has exactly one hit).
+func printJobDetails(dto *api.JobDTO) {
+	job := api.JobToDef(dto)
+	if job == nil {
+		return
+	}
+	// Status string → StatusCode for the v1 printer.
+	if s, perr := api.ParseStatus(dto.Status); perr == nil {
+		job.Status = s
+	}
+	job.Print()
+	fmt.Println("")
 }
 
 var queueCmd = &cobra.Command{
@@ -54,22 +62,6 @@ var queueCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		c := mustDialClient()
 		defer c.Close()
-
-		fmt.Printf("| %-36.36s ", "jobid")
-		fmt.Printf("| %-8.8s ", "status")
-		fmt.Printf("| %-20.20s ", "job-name")
-		if Config.Batchq.Multiuser {
-			fmt.Printf("| %-12.12s ", "username")
-		}
-		fmt.Printf("|%-5.5s", "procs")
-		fmt.Printf("| %-8.8s ", "mem")
-		fmt.Printf("| %-11.11s ", "walltime")
-		fmt.Println("|")
-		if Config.Batchq.Multiuser {
-			fmt.Println("|--------------------------------------|----------|----------------------|--------------|-----|----------|-------------|")
-		} else {
-			fmt.Println("|--------------------------------------|----------|----------------------|-----|----------|-------------|")
-		}
 
 		ctx, cancel := cmdContext()
 		defer cancel()
@@ -89,66 +81,88 @@ var queueCmd = &cobra.Command{
 		if err != nil {
 			log.Fatalln(err)
 		}
-
-		for _, dto := range dtos {
-			job := api.JobToDef(dto)
-			if s, perr := api.ParseStatus(dto.Status); perr == nil {
-				job.Status = s
-			}
-			fmt.Printf("| %-36.36s ", job.JobId)
-			fmt.Printf("| %-8.8s ", job.Status.String())
-			fmt.Printf("| %-20.20s ", job.Name)
-			if Config.Batchq.Multiuser {
-				fmt.Printf("| %-12.12s ", job.GetDetail("user", ""))
-			}
-			fmt.Printf("| %-3.3s ", job.GetDetail("procs", ""))
-			fmt.Printf("| %-8.8s ", jobs.PrintMemoryString(job.GetDetail("mem", "")))
-			switch job.Status {
-			case jobs.CANCELED:
-				fmt.Printf("| %-11.11s ", "")
-				fmt.Printf("| %-20.20s\n", job.Notes)
-			case jobs.SUCCESS:
-				elapsed := job.EndTime.Sub(job.StartTime)
-				fmt.Printf("| %-11.11s ", jobs.WalltimeToString(int(elapsed.Seconds())))
-				fmt.Println("|")
-			case jobs.FAILED:
-				elapsed := job.EndTime.Sub(job.StartTime)
-				fmt.Printf("| %-11.11s ", jobs.WalltimeToString(int(elapsed.Seconds())))
-				fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
-			case jobs.RUNNING:
-				elapsed := time.Now().UTC().Sub(job.StartTime)
-				fmt.Printf("| %-11.11s ", jobs.WalltimeToString(int(elapsed.Seconds())))
-				fmt.Printf("| %-20.20s\n", fmt.Sprintf("pid:%s", job.GetRunningDetail("pid", "")))
-			case jobs.PROXYQUEUED:
-				fmt.Printf("| %-11.11s ", jobs.WalltimeStringToString(job.GetDetail("walltime", "")))
-				fmt.Print("|")
-				if job.GetRunningDetail("slurm_job_id", "") != "" {
-					fmt.Printf(" %s", fmt.Sprintf("slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), job.GetRunningDetail("slurm_job_id", "")))
-				}
-				if len(job.AfterOk) > 0 {
-					depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
-					if len(depStr) > 20 {
-						fmt.Printf(" %-17.17s...", depStr)
-					} else {
-						fmt.Printf(" %-20s", depStr)
-					}
-				}
-				fmt.Println("")
-			default:
-				fmt.Printf("| %-11.11s ", jobs.WalltimeStringToString(job.GetDetail("walltime", "")))
-				fmt.Print("|")
-				if len(job.AfterOk) > 0 {
-					depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
-					if len(depStr) > 20 {
-						fmt.Printf(" %-17.17s...", depStr)
-					} else {
-						fmt.Printf(" %-20s", depStr)
-					}
-				}
-				fmt.Println("")
-			}
-		}
+		printQueueTable(dtos)
 	},
+}
+
+// printQueueTable renders the standard tabular queue view for a slice
+// of jobs. Shared by `queue` and `search` (when a query has multiple
+// hits).
+func printQueueTable(dtos []*api.JobDTO) {
+	fmt.Printf("| %-36.36s ", "jobid")
+	fmt.Printf("| %-8.8s ", "status")
+	fmt.Printf("| %-20.20s ", "job-name")
+	if Config.Batchq.Multiuser {
+		fmt.Printf("| %-12.12s ", "username")
+	}
+	fmt.Printf("|%-5.5s", "procs")
+	fmt.Printf("| %-8.8s ", "mem")
+	fmt.Printf("| %-11.11s ", "walltime")
+	fmt.Println("|")
+	if Config.Batchq.Multiuser {
+		fmt.Println("|--------------------------------------|----------|----------------------|--------------|-----|----------|-------------|")
+	} else {
+		fmt.Println("|--------------------------------------|----------|----------------------|-----|----------|-------------|")
+	}
+
+	for _, dto := range dtos {
+		job := api.JobToDef(dto)
+		if s, perr := api.ParseStatus(dto.Status); perr == nil {
+			job.Status = s
+		}
+		fmt.Printf("| %-36.36s ", job.JobId)
+		fmt.Printf("| %-8.8s ", job.Status.String())
+		fmt.Printf("| %-20.20s ", job.Name)
+		if Config.Batchq.Multiuser {
+			fmt.Printf("| %-12.12s ", job.GetDetail("user", ""))
+		}
+		fmt.Printf("| %-3.3s ", job.GetDetail("procs", ""))
+		fmt.Printf("| %-8.8s ", jobs.PrintMemoryString(job.GetDetail("mem", "")))
+		switch job.Status {
+		case jobs.CANCELED:
+			fmt.Printf("| %-11.11s ", "")
+			fmt.Printf("| %-20.20s\n", job.Notes)
+		case jobs.SUCCESS:
+			elapsed := job.EndTime.Sub(job.StartTime)
+			fmt.Printf("| %-11.11s ", jobs.WalltimeToString(int(elapsed.Seconds())))
+			fmt.Println("|")
+		case jobs.FAILED:
+			elapsed := job.EndTime.Sub(job.StartTime)
+			fmt.Printf("| %-11.11s ", jobs.WalltimeToString(int(elapsed.Seconds())))
+			fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
+		case jobs.RUNNING:
+			elapsed := time.Now().UTC().Sub(job.StartTime)
+			fmt.Printf("| %-11.11s ", jobs.WalltimeToString(int(elapsed.Seconds())))
+			fmt.Printf("| %-20.20s\n", fmt.Sprintf("pid:%s", job.GetRunningDetail("pid", "")))
+		case jobs.PROXYQUEUED:
+			fmt.Printf("| %-11.11s ", jobs.WalltimeStringToString(job.GetDetail("walltime", "")))
+			fmt.Print("|")
+			if job.GetRunningDetail("slurm_job_id", "") != "" {
+				fmt.Printf(" %s", fmt.Sprintf("slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), job.GetRunningDetail("slurm_job_id", "")))
+			}
+			if len(job.AfterOk) > 0 {
+				depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
+				if len(depStr) > 20 {
+					fmt.Printf(" %-17.17s...", depStr)
+				} else {
+					fmt.Printf(" %-20s", depStr)
+				}
+			}
+			fmt.Println("")
+		default:
+			fmt.Printf("| %-11.11s ", jobs.WalltimeStringToString(job.GetDetail("walltime", "")))
+			fmt.Print("|")
+			if len(job.AfterOk) > 0 {
+				depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
+				if len(depStr) > 20 {
+					fmt.Printf(" %-17.17s...", depStr)
+				} else {
+					fmt.Printf(" %-20s", depStr)
+				}
+			}
+			fmt.Println("")
+		}
+	}
 }
 
 var statusCmd = &cobra.Command{
