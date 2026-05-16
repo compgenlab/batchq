@@ -120,10 +120,15 @@ func cmdContext() (context.Context, context.CancelFunc) {
 }
 
 // shutdownLocalServer probes the unix-socket server and, if it answers,
-// asks it to drain and exit. Polls until Health stops succeeding (or the
-// deadline expires) so the caller knows the next autospawn will fork a
-// fresh server, not reuse an in-flight shutdown. Returns nil on either
-// "no server" or "server confirmed down".
+// asks it to drain and exit. Returns nil on either "no server" or
+// "server confirmed down".
+//
+// If Shutdown fails (e.g. against an old server that predates the
+// /admin/shutdown route and answers 404), the fallback path forcibly
+// unlinks the socket file. The old server keeps its bound socket inode
+// but the path no longer resolves to it, so new clients dial nothing
+// and the autospawn forks a fresh server. The orphaned old process
+// idles out on its own.
 func shutdownLocalServer(opts client.Options) error {
 	c, err := client.DialWithOptions(opts)
 	if err != nil {
@@ -135,14 +140,17 @@ func shutdownLocalServer(opts client.Options) error {
 	probeErr := c.Health(probeCtx)
 	probeCancel()
 	if probeErr != nil {
-		// Nothing answering — nothing to shut down.
+		// Nothing answering — nothing to shut down. (The autospawn flow
+		// will deal with any stale socket file on its own.)
 		return nil
 	}
 
 	sctx, scancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer scancel()
-	if err := c.Shutdown(sctx); err != nil {
-		return fmt.Errorf("shutdown request: %w", err)
+	shutdownErr := c.Shutdown(sctx)
+	scancel()
+
+	if shutdownErr != nil {
+		return forceUnlinkSocket(c.SocketPath(), shutdownErr)
 	}
 
 	// Wait for the server to actually go away. The server's clean
@@ -158,7 +166,24 @@ func shutdownLocalServer(opts client.Options) error {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	return fmt.Errorf("server still answering after shutdown request")
+	// The server accepted the request but is still answering. Probably
+	// stuck mid-drain. Fall back to the force-unlink path.
+	return forceUnlinkSocket(c.SocketPath(), fmt.Errorf("server still answering after shutdown request"))
+}
+
+// forceUnlinkSocket detaches the socket path from any process still
+// bound to it. Used as a fallback when the graceful shutdown request
+// fails or hangs. The orphaned process keeps its inode but is now
+// unreachable via the path.
+func forceUnlinkSocket(sockPath string, cause error) error {
+	if sockPath == "" {
+		return fmt.Errorf("shutdown request: %w", cause)
+	}
+	fmt.Fprintf(os.Stderr, "warning: graceful shutdown failed (%v); force-unlinking %s\n", cause, sockPath)
+	if err := os.Remove(sockPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("shutdown request: %w; force-unlink also failed: %v", cause, err)
+	}
+	return nil
 }
 
 func init() {
