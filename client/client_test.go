@@ -333,9 +333,9 @@ func intToStr(i int) string {
 
 // TestHTTPSBaseHonorsPathPrefix verifies that a https:// URL with a path
 // component is preserved as a mount-point prefix on every request — i.e.
-// `batchq-remote://example.com/proxy/path` (resolved to
-// `https://example.com/proxy/path`) sends `/proxy/path/api/v1/jobs`
-// rather than `/api/v1/jobs`. This is the reverse-proxy-subpath case.
+// `[batchq] remote = "https://example.com/proxy/path"` sends
+// `/proxy/path/api/v1/jobs` rather than `/api/v1/jobs`. This is the
+// reverse-proxy-subpath case.
 func TestHTTPSBaseHonorsPathPrefix(t *testing.T) {
 	cases := []struct {
 		url  string

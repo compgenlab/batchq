@@ -22,7 +22,7 @@ On a workstation, a CLI client transparently fork-execs `batchq server --idle-ti
 The conventional layout under `$BATCHQ_HOME` (default `~/.batchq`):
 
 - `config` — TOML config file.
-- `batchq.db` — SQLite queue database (default `sqlite3://` backend target).
+- `batchq.db` — SQLite queue database (default `[server] db` target).
 - `batchq.sock` — server's unix socket (default `[server] listen`). Also the single-instance election token — see `server/server.go:listenUnix`.
 - `batchq-web.sock` — `batchq web` UI socket (default `[web] socket`).
 - `spool/` — simple-runner per-job temp dir.
@@ -33,8 +33,8 @@ The conventional layout under `$BATCHQ_HOME` (default `~/.batchq`):
 - `cmd/` — Cobra subcommands.
   - `root.go` loads `~/.batchq/config` (overridable via `BATCHQ_HOME`), then layers env-var overrides and built-in defaults on top. The resolved `Config` is exposed via the package-level `*support.Config`; the raw TOML-loaded copy is retained in `rawConfig` purely for the debug command's source labelling. `submit`/`show`/`hold`/`cleanup`/`run`/`web` all open a REST client via `cmd/clientconn.go:dialClient()`.
   - `debug.go` — renders `batchq debug`. Compares `rawConfig`, `envOverrides`, `defaultsResolved`, and persistent flag vars to label each value's source. Token values are redacted.
-  - `server.go` is the server entrypoint; flags: `--listen`, `--sqlite-wal`, `--idle-timeout`. The backend (sqlite3 path) comes from the persistent `--backend` flag / `[batchq] backend` config.
-  - `clientconn.go` — `dialClient()` resolves the server URL (flag > `Config.Server.Listen`, which already has defaults applied), wires autospawn for unix URLs using `defaultsResolved.AutospawnIdleTimeout`, and returns a `*client.Client`. `--no-autospawn` opts out.
+  - `server.go` is the server entrypoint; flags: `--listen`, `--db`, `--sqlite-wal`, `--idle-timeout`. The DB URL (sqlite3 path) comes from `--db` / `[server] db` config. Refuses to start when `[batchq] remote` is set.
+  - `clientconn.go` — `dialClient()` picks the API endpoint: if `[batchq] remote` (or `--remote`) is set, dial that HTTPS URL with no autospawn; otherwise dial `Config.Server.Listen` (the local unix socket) and autospawn if nothing is answering. `--no-autospawn` opts out of the autospawn path.
 - `api/` — shared REST contract: route constants (`api/routes.go`) and request/response DTOs (`api/types.go`). `JobDTO` is the wire format; `api.JobToDef` / `api.JobFromDef` bridge to `jobs.JobDef`.
 - `storage/` — persistence layer. `Storage` interface + `sqliteStorage` impl using `modernc.org/sqlite`. `Open(ctx, path, Options)` creates the file and applies `schema.sql` (embedded) idempotently on every open. Journal mode defaults to `DELETE` (rollback) because WAL's `-shm` shared-memory file is unsafe on NFS/Lustre; `Options{WAL: true}` opts into WAL when the DB is on local disk.
 - `service/` — server-side business logic that wraps `Storage`: dep resolution, queue ordering, atomic claim, hold/release, cleanup recursion. No HTTP knowledge here.
@@ -53,7 +53,7 @@ The conventional layout under `$BATCHQ_HOME` (default `~/.batchq`):
   - `paths.go` — `GetBatchqHome()` resolves `$BATCHQ_HOME` or `~/.batchq`.
   - `defaults.go` — `NewDefaults()` is the single source of truth for every home-relative built-in default (`Backend`, `ServerListen`, `ServerLock`, `WebSocket`, `ConfigFile`, plus `Shell`, `AutospawnIdleTimeout`, `JobStdout`/`Stderr`/`Wd`). Anything that needs a default should pull from here rather than inlining a path or string.
   - `config.go` — typed TOML Config + `LoadConfig` (pure TOML parse) + `Config.Clone` / `Config.ApplyEnv(EnvOverrides)` / `Config.ApplyDefaults(Defaults)`. `Duration` wrapper decodes Go-duration strings (`"1m"`). The expected init pattern is *load → clone (for debug) → ApplyEnv → ApplyDefaults*; after that, call sites just read `Config.X` directly and the fallback chain is gone.
-  - `backend.go` — `ParseBackend`, `SqlitePath`, `RemoteHTTPURL`, `IsLocal` for `[batchq] backend` URLs.
+  - `backend.go` — `ParseBackend` / `SqlitePath` for `[server] db` URLs (local sqlite3/postgres only), plus `ParseRemote` for `[batchq] remote` (https-only client URL).
   - `utils.go` — `ExpandPathAbs`, `Contains`, `AmIRoot`, etc.
 
 ### Job state machine
@@ -99,35 +99,38 @@ Loaded from `~/.batchq/config` (TOML, via `github.com/BurntSushi/toml`). `suppor
 
 The lower three layers (env, config, default) are folded into a single resolved `Config` during `cmd/root.go:init` via `LoadConfig → ApplyEnv → ApplyDefaults`. After that, call sites just read `Config.X` and get the answer — *no per-site fallback chain*. Flags are layered on top at the call site where they live (typically as `if flag != "" { use flag } else { use Config.X }`).
 
-For knobs that have a built-in default (`Backend`, `Server.Listen`, `Server.Lock`, `Web.Socket`, `Batchq.Runner`, `JobDefaults.Stdout`/`Stderr`/`Wd`, `SimpleRunner.Shell`), `Config.X` is never empty after init. For optional knobs (numeric/bool fields, `JobDefaults.Procs/Mem/Walltime/Name`, `SlurmRunner.User/Account/...`), zero values still mean "not set" and call sites should treat them that way.
+For knobs that have a built-in default (`Server.DB`, `Server.Listen`, `Web.Socket`, `Batchq.Runner`, `Batchq.AutospawnWaitTimeout`, `JobDefaults.Stdout`/`Stderr`/`Wd`, `SimpleRunner.Shell`), `Config.X` is never empty after init. For optional knobs (numeric/bool fields, `Batchq.Remote`, `JobDefaults.Procs/Mem/Walltime/Name`, `SlurmRunner.User/Account/...`), zero values still mean "not set" and call sites should treat them that way.
 
 **Env-var overrides**: only `BATCHQ_TOKEN` is consumed today, overriding `[batchq] token` for bearer-auth secrets so they stay out of argv and out of a checked-in config. `BATCHQ_HOME` is consumed earlier, at `support.GetBatchqHome()`, and shifts every home-relative default. Adding another env var means extending `support.EnvOverrides` and `Config.ApplyEnv`; the debug command picks it up automatically once you add a row.
 
 Sections:
 
-- `[batchq]` — `runner` (`simple` | `slurm`), `backend` (URL), `token`, `multiuser`.
-- `[server]` — `listen`, `idle_timeout`, `sqlite_wal`. Ignored when `backend` is `batchq-remote://`.
+- `[batchq]` — `runner` (`simple` | `slurm`), `remote` (HTTPS URL of remote API server, optional), `token`, `multiuser`, `autospawn_wait_timeout`.
+- `[server]` — `listen`, `db` (local sqlite3 / postgres URL), `idle_timeout`, `sqlite_wal`. Ignored when `[batchq] remote` is set.
 - `[web]` — `socket`, `listen`.
 - `[job_defaults]` — submit-time defaults: `name`, `procs`, `mem`, `walltime`, `wd`, `stdout`, `stderr`, `hold`, `env`.
 - `[simple_runner]` — `max_procs`, `max_mem`, `max_walltime`, `shell`, `use_cgroup_v1`, `use_cgroup_v2`.
-- `[slurm_runner]` — `user`, `account`, `partition`, `max_jobs`.
+- `[slurm_runner]` — `user`, `account`, `partition`, `max_jobs` (per-invocation submit cap; `--max-jobs` flag), `max_slurm_jobs` (cap on this user's live SLURM-queue jobs; `--slurm-max-jobs` flag).
 
-### Backend selector
+### Local vs remote
 
-The `[batchq] backend` URL (also `--backend` flag) drives where queue data lives and whether a local server runs:
+Two orthogonal config keys decide where data lives and how clients reach it:
 
-- `sqlite3:///path/to/db` — local SQLite file; server runs locally and may be autospawned by clients.
-- `postgres://user:pass@host/db` — local server on Postgres (future).
-- `batchq-remote://host[:port]/path` — remote HTTPS REST API. No local server. Plain HTTP is intentionally not supported; operators terminate TLS at a reverse proxy.
+- `[server] db` (also `--db` on `batchq server`) — the **server-side** database URL. Local-only:
+  - `sqlite3:///path/to/db` — local SQLite file.
+  - `postgres://user:pass@host/db` — local server on Postgres (future).
+- `[batchq] remote` (also `--remote` on every client) — optional **client-side** URL of a remote batchq server. When set, clients dial this HTTPS URL directly and no local server is involved (and `batchq server` refuses to start). When unset, clients use the local `[server] listen` unix socket and may autospawn a server.
+  - Form: `https://host[:port]/subpath`. Default port `443`. Only `https://` is accepted — plain HTTP exposure of the REST API is not supported; operators terminate TLS at a reverse proxy.
+  - The URL path is treated as a mount-point prefix — the client appends `/api/v1/...` to it.
 
-`support/backend.go` (`ParseBackend`, `SqlitePath`, `RemoteHTTPURL`, `IsLocal`) is the canonical parser. `cmd/server.go` refuses to start when the backend is `batchq-remote://`.
+`support/backend.go` exposes `ParseBackend` / `SqlitePath` for `[server] db` and `ParseRemote` for `[batchq] remote`.
 
 Job IDs are UUID strings (with hyphens) — anywhere code splits on `-` or `:` it must account for this.
 
 ## Authentication / transport
 
 - **Unix socket** (the only thing batchq binds today): created with mode `0600`. No in-band auth — FS permissions are the contract. This is how `gpg-agent` / `ssh-agent` work.
-- **Network access**: served via a reverse proxy (nginx, Caddy, Traefik, ...) in front of the unix socket. The proxy terminates TLS and forwards to batchq; remote clients use `--backend batchq-remote://your-host` (or `batchq-remote://your-host/proxy/path` for a subpath deployment). The URL path is treated as a mount-point prefix — the client adds `/api/v1/...` to every request. Bearer-token auth (`Authorization: Bearer <token>` with tokens HMAC-signed against a `$BATCHQ_HOME/master.key`) is designed but not yet implemented — until it lands, remote deployments need to gate access at the proxy layer.
+- **Network access**: served via a reverse proxy (nginx, Caddy, Traefik, ...) in front of the unix socket. The proxy terminates TLS and forwards to batchq; remote clients set `[batchq] remote = "https://your-host"` (or `"https://your-host/proxy/path"` for a subpath deployment). The URL path is treated as a mount-point prefix — the client adds `/api/v1/...` to every request. Bearer-token auth (`Authorization: Bearer <token>` with tokens HMAC-signed against a `$BATCHQ_HOME/master.key`) is designed but not yet implemented — until it lands, remote deployments need to gate access at the proxy layer.
 - **Bearer-token plumbing** (the client side already exists): `--token` flag > `BATCHQ_TOKEN` env > `[batchq] token` config. The env var is the recommended slot for the secret — it stays out of `ps` listings and out of any checked-in TOML.
 
 ## Testing

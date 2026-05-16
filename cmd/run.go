@@ -27,8 +27,11 @@ var runCmd = &cobra.Command{
 		}
 		switch runnerType {
 		case "slurm":
-			if slurmMaxJobs < 0 && Config.SlurmRunner.MaxJobs > 0 {
-				slurmMaxJobs = Config.SlurmRunner.MaxJobs
+			if slurmMaxJobs < 0 && Config.SlurmRunner.MaxSlurmJobs > 0 {
+				slurmMaxJobs = Config.SlurmRunner.MaxSlurmJobs
+			}
+			if maxJobs < 0 && Config.SlurmRunner.MaxJobs > 0 {
+				maxJobs = Config.SlurmRunner.MaxJobs
 			}
 			if slurmAcct == "" {
 				slurmAcct = Config.SlurmRunner.Account
@@ -116,7 +119,7 @@ var slurmMaxJobs int
 func init() {
 	runCmd.Flags().IntVar(&maxProcs, "max-procs", -1, "Maximum processors to use")
 	runCmd.Flags().StringVar(&maxMemStr, "max-mem", "", "Max-memory (MB,GB)")
-	runCmd.Flags().IntVar(&maxJobs, "max-jobs", -1, "Max number of jobs to run")
+	runCmd.Flags().IntVar(&maxJobs, "max-jobs", -1, "Max number of jobs to run/submit in one invocation")
 	runCmd.Flags().StringVar(&maxTimeStr, "max-walltime", "", "Max-time (D-HH:MM:SS)")
 	runCmd.Flags().BoolVar(&forever, "forever", false, "Run forever, waiting for new jobs")
 	runCmd.Flags().BoolVar(&useCgroupV2, "use-cgroupv2", false, "Use cgroup v2 to control resources (requires root)")

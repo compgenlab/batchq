@@ -24,31 +24,45 @@ type Config struct {
 }
 
 // BatchqConfig holds deployment-wide settings: which runner is in use,
-// where the queue lives, and how to authenticate.
+// the (optional) remote API server to talk to, and how to authenticate.
 type BatchqConfig struct {
 	// Runner selects the runner type when `batchq run` is invoked without
 	// an explicit --slurm / runner flag. "simple" | "slurm".
 	Runner string `toml:"runner"`
 
-	// Backend is the queue location URL with a scheme. Exactly one form:
-	//   sqlite3:///path/to/db                  — local SQLite
-	//   postgres://user:pass@host:5432/dbname  — local server, Postgres (future)
-	//   batchq-remote://host[:port]/path       — remote HTTPS REST API
-	Backend string `toml:"backend"`
+	// Remote is the HTTPS URL of a remote batchq server (e.g.
+	// "https://host[:port]/subpath"). When set, all clients dial this
+	// URL and no local server is started. When empty, clients use the
+	// local [server] socket.
+	//
+	// Only https:// is accepted. Operators terminate TLS at a reverse
+	// proxy that fronts the remote server's unix socket. The default
+	// port is 443.
+	Remote string `toml:"remote"`
 
-	// Token is the bearer token used when Backend is a batchq-remote://
-	// URL. Ignored for local backends.
+	// Token is the bearer token used when Remote is set. Ignored for the
+	// purely local socket path.
 	Token string `toml:"token"`
 
 	// Multiuser triggers display modes that surface job owners. Set on
 	// shared deployments where many users share a batchq.
 	Multiuser bool `toml:"multiuser"`
+
+	// AutospawnWaitTimeout caps how long a CLI client waits for a
+	// freshly-spawned local server to bind its socket. Bumping this is
+	// useful on slow filesystems (NFS, Lustre) where 5s is tight.
+	AutospawnWaitTimeout Duration `toml:"autospawn_wait_timeout"`
 }
 
 // ServerConfig holds server-runtime knobs. None of these apply when
-// Backend is a batchq-remote:// URL (no local server is running).
+// [batchq] remote is set (no local server is running).
 type ServerConfig struct {
-	Listen      string   `toml:"listen"`
+	Listen string `toml:"listen"`
+
+	// DB is the database backend URL the server opens. Exactly one form:
+	//   sqlite3:///path/to/db                  — local SQLite
+	//   postgres://user:pass@host:5432/dbname  — local Postgres (future)
+	DB          string   `toml:"db"`
 	IdleTimeout Duration `toml:"idle_timeout"`
 	SqliteWAL   bool     `toml:"sqlite_wal"`
 }
@@ -83,7 +97,16 @@ type SlurmRunnerConfig struct {
 	User      string `toml:"user"`
 	Account   string `toml:"account"`
 	Partition string `toml:"partition"`
-	MaxJobs   int    `toml:"max_jobs"`
+
+	// MaxJobs caps how many jobs a single `batchq run --slurm`
+	// invocation submits before exiting. Each submission decrements the
+	// available count. Zero / unset means unlimited.
+	MaxJobs int `toml:"max_jobs"`
+
+	// MaxSlurmJobs caps how many of this user's jobs may be in the SLURM
+	// queue at once. The runner polls `squeue` and pauses submitting when
+	// the live count reaches this limit. Zero / unset means unlimited.
+	MaxSlurmJobs int `toml:"max_slurm_jobs"`
 }
 
 // LoadConfig parses a TOML config file from path. A missing file yields
@@ -157,14 +180,17 @@ func (c *Config) ApplyEnv(e EnvOverrides) {
 // JobDefaults numeric/optional fields (procs, mem, walltime, hold, env,
 // name) stay zero-valued because their absence is itself meaningful.
 func (c *Config) ApplyDefaults(d Defaults) {
-	if c.Batchq.Backend == "" {
-		c.Batchq.Backend = d.Backend
-	}
 	if c.Batchq.Runner == "" {
 		c.Batchq.Runner = "simple"
 	}
+	if c.Batchq.AutospawnWaitTimeout.AsDuration() == 0 {
+		c.Batchq.AutospawnWaitTimeout = Duration(d.AutospawnWaitTimeout)
+	}
 	if c.Server.Listen == "" {
 		c.Server.Listen = d.ServerListen
+	}
+	if c.Server.DB == "" {
+		c.Server.DB = d.Backend
 	}
 	if c.Web.Socket == "" {
 		c.Web.Socket = d.WebSocket

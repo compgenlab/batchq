@@ -130,9 +130,10 @@ func batchqRows(raw *support.Config, d support.Defaults) []debugRow {
 			value:  firstNonEmpty(raw.Batchq.Runner, "simple"),
 			source: source(raw.Batchq.Runner != "", "config", "default"),
 		},
-		stringRow("backend", clientBackend, raw.Batchq.Backend, d.Backend),
+		stringRow("remote", clientRemote, raw.Batchq.Remote, ""),
 		tokenRow(),
 		boolRow("multiuser", raw.Batchq.Multiuser),
+		durationRow("autospawn_wait_timeout", raw.Batchq.AutospawnWaitTimeout.AsDuration(), d.AutospawnWaitTimeout),
 	}
 }
 
@@ -156,6 +157,7 @@ func tokenRow() debugRow {
 func serverRows(raw *support.Config, d support.Defaults) []debugRow {
 	return []debugRow{
 		stringRow("listen", "", raw.Server.Listen, d.ServerListen),
+		stringRow("db", serverDB, raw.Server.DB, d.Backend),
 		durationRow("idle_timeout", raw.Server.IdleTimeout.AsDuration(), 0),
 		boolRow("sqlite_wal", raw.Server.SqliteWAL),
 	}
@@ -199,6 +201,7 @@ func slurmRunnerRows(raw *support.Config) []debugRow {
 		stringRow("account", "", raw.SlurmRunner.Account, ""),
 		stringRow("partition", "", raw.SlurmRunner.Partition, ""),
 		intRow("max_jobs", raw.SlurmRunner.MaxJobs),
+		intRow("max_slurm_jobs", raw.SlurmRunner.MaxSlurmJobs),
 	}
 }
 

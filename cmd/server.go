@@ -19,6 +19,7 @@ import (
 
 var (
 	serverListen      string
+	serverDB          string
 	serverWAL         bool
 	serverIdleTimeout time.Duration
 )
@@ -33,13 +34,12 @@ unix domain socket. Network exposure is the reverse proxy's job —
 batchq itself never binds a TCP port. All other batchq components (CLI
 commands, runners, the web UI) connect to it as REST clients.
 
-The backend (sqlite3:/// path, postgres://..., etc.) is taken from the
-persistent --backend flag or the [batchq] backend config key. The server
-refuses to start when the backend is batchq-remote:// because in that
-mode there is no local server — the remote one is the server.
+The database (sqlite3:/// path, postgres://...) is taken from the
+--db flag or [server] db config key. If [batchq] remote is set then
+this host runs no local server and 'batchq server' refuses to start.
 
 Default listener:  unix://$BATCHQ_HOME/batchq.sock
-Default backend:   sqlite3://$BATCHQ_HOME/batchq.db
+Default db:        sqlite3://$BATCHQ_HOME/batchq.db
 `,
 	RunE: runServer,
 }
@@ -49,6 +49,8 @@ func init() {
 
 	serverCmd.Flags().StringVar(&serverListen, "listen", "",
 		"Listener URL (unix:///path/to/sock). Default: "+d.ServerListen)
+	serverCmd.Flags().StringVar(&serverDB, "db", "",
+		"Database URL: sqlite3:///path or postgres://... Default: "+d.Backend)
 	serverCmd.Flags().BoolVar(&serverWAL, "sqlite-wal", false,
 		"Enable SQLite WAL journal mode. NOT SAFE on networked filesystems; only use when the DB file is on local disk.")
 	serverCmd.Flags().DurationVar(&serverIdleTimeout, "idle-timeout", 0,
@@ -58,21 +60,24 @@ func init() {
 }
 
 func runServer(_ *cobra.Command, _ []string) error {
-	// Backend: --backend flag (persistent root) > Config (already
-	// merged with defaults during init).
-	backendRaw := clientBackend
-	if backendRaw == "" {
-		backendRaw = Config.Batchq.Backend
+	// Remote and local-server are mutually exclusive: if a remote API
+	// is configured for clients, this host should not run a local
+	// server — refuse to start so the misconfiguration is obvious.
+	if Config.Batchq.Remote != "" {
+		return fmt.Errorf("server: [batchq] remote is set (%q); a local server cannot run alongside it", Config.Batchq.Remote)
 	}
-	backend, err := support.ParseBackend(backendRaw)
+
+	// DB: --db flag > Config (already merged with defaults during init).
+	dbRaw := serverDB
+	if dbRaw == "" {
+		dbRaw = Config.Server.DB
+	}
+	backend, err := support.ParseBackend(dbRaw)
 	if err != nil {
 		return err
 	}
-	if !backend.IsLocal() {
-		return fmt.Errorf("server: cannot run a local server with remote backend %q", backendRaw)
-	}
 	if backend.Scheme != support.BackendSqlite3 {
-		return fmt.Errorf("server: backend %q not yet implemented", backend.Scheme)
+		return fmt.Errorf("server: db scheme %q not yet implemented", backend.Scheme)
 	}
 	storagePath, err := backend.SqlitePath()
 	if err != nil {
@@ -116,7 +121,7 @@ func runServer(_ *cobra.Command, _ []string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "batchq server listening on %s (backend: %s)\n", serverListen, backend.Raw)
+	fmt.Fprintf(os.Stderr, "batchq server listening on %s (db: %s)\n", serverListen, backend.Raw)
 	if serverIdleTimeout > 0 {
 		fmt.Fprintf(os.Stderr, "batchq server: idle timeout %s\n", serverIdleTimeout)
 	}

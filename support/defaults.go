@@ -29,8 +29,9 @@ type Defaults struct {
 	WebSocket    string // $HOME/batchq-web.sock
 	ConfigFile   string // $HOME/config
 
-	Shell               string        // job interpreter when none is configured
+	Shell                string        // job interpreter when none is configured
 	AutospawnIdleTimeout time.Duration // server lifetime when forked by a CLI client
+	AutospawnWaitTimeout time.Duration // how long a client waits for the spawned server to bind
 
 	JobStdout string // submit-time default for the captured stdout path
 	JobStderr string // submit-time default for the captured stderr path
@@ -48,6 +49,7 @@ func NewDefaults() Defaults {
 		ConfigFile:           filepath.Join(home, DefaultConfigFile),
 		Shell:                "/bin/bash",
 		AutospawnIdleTimeout: time.Minute,
+		AutospawnWaitTimeout: 10 * time.Second,
 		JobStdout:            "./batchq-%JOBID.stdout",
 		JobStderr:            "./batchq-%JOBID.stderr",
 		JobWd:                ".",

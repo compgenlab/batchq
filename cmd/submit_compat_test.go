@@ -80,14 +80,14 @@ func startCompatServer(t *testing.T) *client.Client {
 		Config = &support.Config{}
 	}
 	prevListen := Config.Server.Listen
-	prevBackend := clientBackend
+	prevRemote := clientRemote
 	prevNoSpawn := clientNoAutospawn
 	Config.Server.Listen = "unix://" + sockPath
 	// Disable autospawn so a slow probe doesn't try to fork batchq.
 	clientNoAutospawn = true
 	t.Cleanup(func() {
 		Config.Server.Listen = prevListen
-		clientBackend = prevBackend
+		clientRemote = prevRemote
 		clientNoAutospawn = prevNoSpawn
 	})
 

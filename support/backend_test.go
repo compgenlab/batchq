@@ -13,9 +13,6 @@ func TestParseBackendSqlite3(t *testing.T) {
 	if b.Scheme != BackendSqlite3 {
 		t.Fatalf("scheme: got %q want sqlite3", b.Scheme)
 	}
-	if !b.IsLocal() {
-		t.Fatal("sqlite3 should be local")
-	}
 	path, err := b.SqlitePath()
 	if err != nil {
 		t.Fatalf("SqlitePath: %v", err)
@@ -35,34 +32,9 @@ func TestParseBackendSqlite3RejectsHost(t *testing.T) {
 	}
 }
 
-func TestParseBackendBatchqRemoteHTTPS(t *testing.T) {
-	b, err := ParseBackend("batchq-remote://example.com/api/v1")
-	if err != nil {
-		t.Fatalf("ParseBackend: %v", err)
-	}
-	if b.IsLocal() {
-		t.Fatal("batchq-remote should not be local")
-	}
-	got, err := b.RemoteHTTPURL()
-	if err != nil {
-		t.Fatalf("RemoteHTTPURL: %v", err)
-	}
-	if got != "https://example.com/api/v1" {
-		t.Fatalf("URL: got %q", got)
-	}
-}
-
-func TestParseBackendBatchqRemoteWithPort(t *testing.T) {
-	b, err := ParseBackend("batchq-remote://10.0.0.5:8443/api/v1")
-	if err != nil {
-		t.Fatalf("ParseBackend: %v", err)
-	}
-	got, err := b.RemoteHTTPURL()
-	if err != nil {
-		t.Fatalf("RemoteHTTPURL: %v", err)
-	}
-	if got != "https://10.0.0.5:8443/api/v1" {
-		t.Fatalf("URL: got %q", got)
+func TestParseBackendRejectsRemoteScheme(t *testing.T) {
+	if _, err := ParseBackend("batchq-remote://example.com/api/v1"); err == nil {
+		t.Fatal("expected error: remote URLs are no longer backends")
 	}
 }
 
@@ -79,5 +51,57 @@ func TestParseBackendUnsupportedScheme(t *testing.T) {
 func TestParseBackendEmpty(t *testing.T) {
 	if _, err := ParseBackend(""); err == nil {
 		t.Fatal("expected error on empty URL")
+	}
+}
+
+func TestParseRemoteHTTPS(t *testing.T) {
+	got, err := ParseRemote("https://example.com/api/v1")
+	if err != nil {
+		t.Fatalf("ParseRemote: %v", err)
+	}
+	if got != "https://example.com/api/v1" {
+		t.Fatalf("URL: got %q", got)
+	}
+}
+
+func TestParseRemoteWithPort(t *testing.T) {
+	got, err := ParseRemote("https://10.0.0.5:8443/api/v1")
+	if err != nil {
+		t.Fatalf("ParseRemote: %v", err)
+	}
+	if got != "https://10.0.0.5:8443/api/v1" {
+		t.Fatalf("URL: got %q", got)
+	}
+}
+
+func TestParseRemoteSubpath(t *testing.T) {
+	got, err := ParseRemote("https://server/subpath")
+	if err != nil {
+		t.Fatalf("ParseRemote: %v", err)
+	}
+	if got != "https://server/subpath" {
+		t.Fatalf("URL: got %q", got)
+	}
+}
+
+func TestParseRemoteRejectsHTTP(t *testing.T) {
+	_, err := ParseRemote("http://example.com")
+	if err == nil {
+		t.Fatal("expected error on plain http")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Fatalf("error message: %v", err)
+	}
+}
+
+func TestParseRemoteRejectsEmpty(t *testing.T) {
+	if _, err := ParseRemote(""); err == nil {
+		t.Fatal("expected error on empty URL")
+	}
+}
+
+func TestParseRemoteRejectsMissingHost(t *testing.T) {
+	if _, err := ParseRemote("https://"); err == nil {
+		t.Fatal("expected error on missing host")
 	}
 }

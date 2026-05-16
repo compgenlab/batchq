@@ -1,15 +1,14 @@
 package support
 
-// backend.go parses the unified backend URL used by [batchq] backend and
-// the --backend CLI flag. The scheme picks the implementation:
+// backend.go parses the [server] db URL used by the local server. The
+// scheme picks the implementation:
 //
 //   sqlite3:///path/to/db                  — local SQLite
 //   postgres://user:pass@host:5432/dbname  — local Postgres (future)
-//   batchq-remote://host[:port]/path       — remote HTTPS REST API
 //
-// batchq-remote always uses HTTPS — plain HTTP exposure of the REST API
-// is not supported. Operators terminate TLS at a reverse proxy. Anything
-// else is an error.
+// Remote access (clients talking to a batchq server on another host) is
+// a separate concept — see [batchq] remote and ParseRemote below — and
+// is not expressed as a "backend" URL.
 
 import (
 	"errors"
@@ -19,12 +18,11 @@ import (
 )
 
 const (
-	BackendSqlite3      = "sqlite3"
-	BackendPostgres     = "postgres"
-	BackendBatchqRemote = "batchq-remote"
+	BackendSqlite3  = "sqlite3"
+	BackendPostgres = "postgres"
 )
 
-// Backend is a parsed backend URL.
+// Backend is a parsed [server] db URL.
 type Backend struct {
 	Scheme string
 	Raw    string
@@ -44,22 +42,11 @@ func ParseBackend(raw string) (*Backend, error) {
 	}
 	scheme := strings.ToLower(u.Scheme)
 	switch scheme {
-	case BackendSqlite3, BackendPostgres, BackendBatchqRemote:
+	case BackendSqlite3, BackendPostgres:
 	default:
-		return nil, fmt.Errorf("backend: unsupported scheme %q (want sqlite3, postgres, batchq-remote)", u.Scheme)
+		return nil, fmt.Errorf("backend: unsupported scheme %q (want sqlite3 or postgres)", u.Scheme)
 	}
 	return &Backend{Scheme: scheme, Raw: raw, URL: u}, nil
-}
-
-// IsLocal reports whether this backend runs an in-process server (sqlite3
-// or postgres) vs. dialing a remote one (batchq-remote).
-func (b *Backend) IsLocal() bool {
-	switch b.Scheme {
-	case BackendSqlite3, BackendPostgres:
-		return true
-	default:
-		return false
-	}
 }
 
 // SqlitePath returns the on-disk path for a sqlite3:// backend. Errors if
@@ -81,23 +68,35 @@ func (b *Backend) SqlitePath() (string, error) {
 	return b.URL.Path, nil
 }
 
-// RemoteHTTPURL converts a batchq-remote:// URL into an https:// URL the
-// client can dial. batchq does not support plain-HTTP exposure of the
-// REST API; operators terminate TLS at a reverse proxy.
-func (b *Backend) RemoteHTTPURL() (string, error) {
-	if b.Scheme != BackendBatchqRemote {
-		return "", fmt.Errorf("backend: RemoteHTTPURL on scheme %q", b.Scheme)
+// ParseRemote validates the [batchq] remote URL and returns a canonical
+// https:// URL the REST client can dial. Only https:// is accepted —
+// plain HTTP exposure of the REST API is not supported; operators
+// terminate TLS at a reverse proxy. The default port is 443 (handled
+// implicitly by net/http when the port is absent).
+//
+// The URL path is preserved as a mount-point prefix; the client appends
+// /api/v1/... to it.
+func ParseRemote(raw string) (string, error) {
+	if raw == "" {
+		return "", errors.New("remote: empty URL")
 	}
-	if b.URL.Host == "" {
-		return "", errors.New("backend: batchq-remote URL missing host")
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("remote: parse %q: %w", raw, err)
+	}
+	if strings.ToLower(u.Scheme) != "https" {
+		return "", fmt.Errorf("remote: scheme must be https (got %q)", u.Scheme)
+	}
+	if u.Host == "" {
+		return "", errors.New("remote: URL missing host")
 	}
 	out := url.URL{
 		Scheme:   "https",
-		User:     b.URL.User,
-		Host:     b.URL.Host,
-		Path:     b.URL.Path,
-		RawQuery: b.URL.RawQuery,
-		Fragment: b.URL.Fragment,
+		User:     u.User,
+		Host:     u.Host,
+		Path:     u.Path,
+		RawQuery: u.RawQuery,
+		Fragment: u.Fragment,
 	}
 	return out.String(), nil
 }
