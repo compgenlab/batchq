@@ -50,6 +50,7 @@
     <button class="tab-btn" data-tab="dependencies" role="tab">Dependencies</button>
     <button class="tab-btn" data-tab="script"       role="tab">Script</button>
     <button class="tab-btn" data-tab="runtime"      role="tab">Runtime</button>
+    {{if .RunForest}}<button class="tab-btn" data-tab="run" role="tab">Run</button>{{end}}
     <button class="tab-btn" data-tab="raw"          role="tab">Raw</button>
   </div>
 
@@ -244,6 +245,28 @@
     {{end}}
   </div>
 
+  <!-- === Workflow run ==================================================== -->
+  {{if .RunForest}}
+    <div class="tab-panel" data-tab="run">
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="section">Workflow run · <span class="mono" style="font-size:0.7em;">{{.RunForest.RunID}}</span></h2>
+          <span class="muted mono">{{.RunForest.JobCount}} {{if eq .RunForest.JobCount 1}}job{{else}}jobs{{end}}</span>
+          <a class="btn ghost" href="/jobs?run_id={{.RunForest.RunID}}" style="margin-left:auto;">Show in queue</a>
+        </div>
+        {{if .RunForest.Roots}}
+          <div class="run-forest">
+            {{range .RunForest.Roots}}
+              {{template "run-tree" .}}
+            {{end}}
+          </div>
+        {{else}}
+          <p class="muted">No jobs found in this run.</p>
+        {{end}}
+      </section>
+    </div>
+  {{end}}
+
   <!-- === Raw (all details) =============================================== -->
   <div class="tab-panel" data-tab="raw">
     <section class="panel">
@@ -271,6 +294,28 @@
         <ul>
           {{range .Children}}
             {{template "tree" .}}
+          {{end}}
+        </ul>
+      {{end}}
+    </li>
+  </ul>
+{{end}}
+
+{{define "run-tree"}}
+  <ul class="tree run-tree">
+    <li class="run-node {{if .Current}}current{{end}}">
+      {{if .Current}}
+        <span class="run-here" title="Current job">●</span>
+        <strong class="mono" style="font-size:12px;">{{.Job.JobId}}</strong>
+      {{else}}
+        <a href="/jobs/{{.Job.JobId}}" class="mono" style="font-size:12px;">{{.Job.JobId}}</a>
+      {{end}}
+      <span class="status {{statusClass .Job.Status}}">{{.Job.Status}}</span>
+      {{if .Job.Name}}<span class="meta">{{.Job.Name}}</span>{{end}}
+      {{if .Children}}
+        <ul>
+          {{range .Children}}
+            {{template "run-tree" .}}
           {{end}}
         </ul>
       {{end}}

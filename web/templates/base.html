@@ -581,6 +581,23 @@
       ul.tree li { margin: 6px 0; }
       ul.tree li .meta { color: var(--muted); margin-left: 6px; font-size: 12px; }
 
+      /* Run-tree: highlight the current job, light dot marker. */
+      ul.tree.run-tree { padding-left: 14px; }
+      ul.tree.run-tree li.run-node.current {
+        background: linear-gradient(90deg, var(--accent-soft), transparent 60%);
+        border-radius: var(--radius-sm);
+        padding: 2px 8px 2px 4px;
+        margin-left: -8px;
+      }
+      ul.tree.run-tree .run-here {
+        display: inline-block;
+        color: var(--accent);
+        margin-right: 6px;
+        font-size: 8px;
+        vertical-align: middle;
+      }
+      ul.tree.run-tree li.run-node.current strong { color: var(--accent-2); }
+
       /* === Modal =================================================== */
       .modal-backdrop {
         position: fixed;
@@ -698,6 +715,11 @@
         <a href="/jobs" {{if eq .ContentTemplate "queue-content"}}class="active"{{end}}>Queue</a>
       </nav>
       <form class="search" action="/jobs" method="get" role="search">
+        {{/* Carry current status filter into the search submit so the
+             user's view doesn't reset to defaults. */}}
+        {{range $status, $on := .SelectedStatus}}
+          {{if $on}}<input type="hidden" name="status" value="{{$status}}">{{end}}
+        {{end}}
         <label class="search-prefix" for="search-q">Search</label>
         <input id="search-q" type="search" name="q" placeholder="job id, name, script, or file path" value="{{.Query}}" autocomplete="off">
       </form>

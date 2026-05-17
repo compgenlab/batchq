@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -79,7 +80,30 @@ type jobPage struct {
 	SlurmScript     string
 	ParentTree      *jobTreeNode
 	ChildTree       *jobTreeNode
+	RunForest       *runForest
 	Query           string
+	// SelectedStatus is unused on the job page itself, but exposed so
+	// the shared header search form (in base.html) can carry status
+	// filter context if the user navigated here from a filtered queue.
+	// Always nil for now — populated only if we start passing through
+	// referrer status.
+	SelectedStatus map[string]bool
+}
+
+// runForest is the dependency-shaped view of every job sharing a
+// run_id, rendered on the job detail page when the current job is
+// part of a workflow run.
+type runForest struct {
+	RunID        string
+	CurrentJobID string
+	Roots        []*runNode
+	JobCount     int
+}
+
+type runNode struct {
+	Job      *jobs.JobDef
+	Children []*runNode
+	Current  bool // true when this is the job whose detail page we're on
 }
 
 func StartServer(opts Options) error {
@@ -263,6 +287,26 @@ func loadWebTemplates() (*template.Template, error) {
 			}
 			return d.String()
 		},
+		// statusQuery turns a SelectedStatus map into &status=X&status=Y
+		// so links can carry the active filter across views. Returns
+		// template.URL so the result is emitted verbatim without
+		// re-escaping the leading '&'.
+		"statusQuery": func(selected map[string]bool) template.URL {
+			if len(selected) == 0 {
+				return ""
+			}
+			var parts []string
+			for k, v := range selected {
+				if v {
+					parts = append(parts, "status="+url.QueryEscape(k))
+				}
+			}
+			if len(parts) == 0 {
+				return ""
+			}
+			sort.Strings(parts)
+			return template.URL("&" + strings.Join(parts, "&"))
+		},
 	}
 
 	return template.New("base").Funcs(funcs).ParseFS(webTemplatesFS, "templates/*.html")
@@ -386,6 +430,17 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// If the job belongs to a workflow run, build a forest of every
+	// job in that run so the user can see the whole pipeline shape.
+	var forest *runForest
+	if rid := job.RunID(); rid != "" {
+		forest, err = s.buildRunForest(ctx, rid, job.JobId)
+		if err != nil {
+			s.serveError(w, r, "run forest", err)
+			return
+		}
+	}
+
 	data := jobPage{
 		Title:           "batchq job " + job.JobId,
 		ContentTemplate: "job-content",
@@ -398,6 +453,7 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 		SlurmScript:     slurmScript,
 		ParentTree:      parentTree,
 		ChildTree:       childTree,
+		RunForest:       forest,
 		Query:           "",
 	}
 
@@ -586,6 +642,90 @@ func (s *webServer) buildChildTree(ctx context.Context, jobId string, visited ma
 		return node.Children[i].Job.JobId < node.Children[j].Job.JobId
 	})
 	return node, nil
+}
+
+// buildRunForest fetches every job sharing runID and assembles them
+// into a dependency-shaped forest. Roots are jobs whose afterok
+// parents are all *outside* the run (or have no parents). A node
+// flagged Current marks the job whose detail page we're rendering so
+// the template can highlight it.
+//
+// A job that has multiple parents within the run will appear under
+// the first parent that gets resolved (per the visited set); we
+// don't duplicate.
+func (s *webServer) buildRunForest(ctx context.Context, runID, currentJobID string) (*runForest, error) {
+	dtos, err := s.client.ListJobs(ctx, client.ListJobsOptions{
+		RunID:   runID,
+		ShowAll: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(dtos) == 0 {
+		return nil, nil
+	}
+
+	jobsByID := make(map[string]*jobs.JobDef, len(dtos))
+	for _, dto := range dtos {
+		if j := dtoToJobDef(dto); j != nil {
+			jobsByID[j.JobId] = j
+		}
+	}
+
+	// childrenByParent: parent id -> child ids that live in this run.
+	// inRunDegree: how many of a job's afterok parents are also in the
+	// run. Zero means root within the run.
+	childrenByParent := map[string][]string{}
+	inRunDegree := map[string]int{}
+	for id, job := range jobsByID {
+		inRunDegree[id] = 0
+		for _, parent := range job.AfterOk {
+			if _, ok := jobsByID[parent]; ok {
+				childrenByParent[parent] = append(childrenByParent[parent], id)
+				inRunDegree[id]++
+			}
+		}
+	}
+
+	visited := map[string]bool{}
+	var build func(id string) *runNode
+	build = func(id string) *runNode {
+		if visited[id] {
+			return nil
+		}
+		visited[id] = true
+		node := &runNode{Job: jobsByID[id], Current: id == currentJobID}
+		kids := append([]string(nil), childrenByParent[id]...)
+		sort.Strings(kids)
+		for _, child := range kids {
+			if c := build(child); c != nil {
+				node.Children = append(node.Children, c)
+			}
+		}
+		return node
+	}
+
+	var rootIDs []string
+	for id := range jobsByID {
+		if inRunDegree[id] == 0 {
+			rootIDs = append(rootIDs, id)
+		}
+	}
+	sort.Strings(rootIDs)
+
+	var roots []*runNode
+	for _, id := range rootIDs {
+		if n := build(id); n != nil {
+			roots = append(roots, n)
+		}
+	}
+
+	return &runForest{
+		RunID:        runID,
+		CurrentJobID: currentJobID,
+		Roots:        roots,
+		JobCount:     len(jobsByID),
+	}, nil
 }
 
 func (s *webServer) jobsForFilter(ctx context.Context, statuses []jobs.StatusCode) ([]*jobs.JobDef, error) {

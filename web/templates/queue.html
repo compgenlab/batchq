@@ -62,7 +62,7 @@
             <td class="run">
               {{$rid := .RunID}}
               {{if $rid}}
-                <a href="/jobs?run_id={{$rid}}" class="run-link" title="Show all jobs in this run">{{$rid}}</a>
+                <a href="/jobs?run_id={{$rid}}{{statusQuery $.SelectedStatus}}" class="run-link" title="Show all jobs in this run">{{$rid}}</a>
               {{else}}<span class="subtle">—</span>{{end}}
             </td>
             <td class="time">{{formatTime .SubmitTime}}</td>
