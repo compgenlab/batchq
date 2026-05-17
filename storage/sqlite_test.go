@@ -532,7 +532,12 @@ func TestGetQueueJobs(t *testing.T) {
 	s := newTestStore(t)
 	ctx := ctxT(t)
 
-	mustInsert(t, s, mkJob("j", map[string]string{"procs": "4", "mem": "1024", "script": "x"}))
+	mustInsert(t, s, mkJob("j", map[string]string{
+		"procs":  "4",
+		"mem":    "1024",
+		"script": "x",
+		"run_id": "pipeline-x",
+	}))
 	queue, err := s.GetQueueJobs(ctx, false, false)
 	if err != nil {
 		t.Fatalf("GetQueueJobs: %v", err)
@@ -541,13 +546,20 @@ func TestGetQueueJobs(t *testing.T) {
 		t.Fatalf("queue: %+v", queue)
 	}
 	gotProcs := false
+	gotRun := ""
 	for _, d := range queue[0].Details {
 		if d.Key == "procs" && d.Value == "4" {
 			gotProcs = true
 		}
+		if d.Key == "run_id" {
+			gotRun = d.Value
+		}
 	}
 	if !gotProcs {
 		t.Fatalf("procs detail missing")
+	}
+	if gotRun != "pipeline-x" {
+		t.Fatalf("run_id missing from queue projection: %+v", queue[0].Details)
 	}
 }
 
