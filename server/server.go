@@ -433,6 +433,13 @@ func (s *Server) runOwnershipMonitor(ctx context.Context) {
 	if sockPath == "" {
 		return
 	}
+	// DisableKeepAlives is critical: a cached unix connection points
+	// at the inode we got at dial time, not at whatever the path now
+	// resolves to. If the socket file is unlinked (or replaced by a
+	// new server), the cached connection would still hit our own
+	// listener, and ownership would always confirm — defeating the
+	// whole point of this monitor. Forcing a fresh dial each tick
+	// makes the path-resolution actually exercise.
 	httpClient := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
@@ -440,6 +447,7 @@ func (s *Server) runOwnershipMonitor(ctx context.Context) {
 				var d net.Dialer
 				return d.DialContext(dialCtx, "unix", sockPath)
 			},
+			DisableKeepAlives: true,
 		},
 	}
 	defer httpClient.CloseIdleConnections()

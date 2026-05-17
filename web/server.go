@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -58,8 +61,8 @@ type queuePage struct {
 	Title           string
 	ContentTemplate string
 	Jobs            []*jobs.JobDef
-	ShowAll         bool
 	Query           string
+	RunID           string
 	StatusOptions   []string
 	SelectedStatus  map[string]bool
 }
@@ -76,16 +79,30 @@ type jobPage struct {
 	SlurmScript     string
 	ParentTree      *jobTreeNode
 	ChildTree       *jobTreeNode
+	RunForest       *runForest
 	Query           string
+	// SelectedStatus is unused on the job page itself, but exposed so
+	// the shared header search form (in base.html) can carry status
+	// filter context if the user navigated here from a filtered queue.
+	// Always nil for now — populated only if we start passing through
+	// referrer status.
+	SelectedStatus map[string]bool
 }
 
-type searchPage struct {
-	Title           string
-	ContentTemplate string
-	Query           string
-	Results         []*jobs.JobDef
-	StatusOptions   []string
-	SelectedStatus  map[string]bool
+// runForest is the dependency-shaped view of every job sharing a
+// run_id, rendered on the job detail page when the current job is
+// part of a workflow run.
+type runForest struct {
+	RunID        string
+	CurrentJobID string
+	Roots        []*runNode
+	JobCount     int
+}
+
+type runNode struct {
+	Job      *jobs.JobDef
+	Children []*runNode
+	Current  bool // true when this is the job whose detail page we're on
 }
 
 func StartServer(opts Options) error {
@@ -110,10 +127,11 @@ func StartServer(opts Options) error {
 
 	server := &webServer{client: opts.Client, templates: templates, verbose: opts.Verbose}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/jobs/", server.handleJob)
-	mux.HandleFunc("/jobs", server.handleQueue)
-	mux.HandleFunc("/search", server.handleSearch)
-	mux.HandleFunc("/", server.handleQueue)
+	// Go 1.22+ path patterns — {id} captured via r.PathValue.
+	mux.HandleFunc("GET /jobs/{id}/logs/{stream}", server.handleJobLogs)
+	mux.HandleFunc("GET /jobs/{id}", server.handleJob)
+	mux.HandleFunc("GET /jobs", server.handleQueue)
+	mux.HandleFunc("GET /", server.handleQueue)
 
 	httpServer := &http.Server{
 		Handler:      mux,
@@ -124,14 +142,33 @@ func StartServer(opts Options) error {
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM)
 
+	// Always print the listening address — operators need to know
+	// what URL to hit. --verbose stays meaningful for per-request
+	// logging via s.logf.
+	var displayURL string
+	switch kind {
+	case "tcp":
+		displayURL = "http://" + address
+	case "unix":
+		displayURL = "unix://" + address
+	default:
+		displayURL = kind + ":" + address
+	}
+	fmt.Fprintf(os.Stderr, "batchq web listening on %s\n", displayURL)
+
 	go func() {
-		if opts.Verbose {
-			log.Printf("batchq web listening on %s: %s", kind, address)
-		}
 		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("web server error: %v", err)
 		}
 	}()
+
+	// Keepalive: ping the batchq server every keepaliveInterval so its
+	// idle-timeout never fires while the web UI is up. The web process
+	// being alive implies users may interact at any moment; we don't
+	// want the batchq server to evict itself underneath us.
+	keepaliveCtx, keepaliveCancel := context.WithCancel(context.Background())
+	defer keepaliveCancel()
+	go server.runKeepalive(keepaliveCtx)
 
 	<-shutdownCh
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -228,6 +265,47 @@ func loadWebTemplates() (*template.Template, error) {
 		"statusClass": func(status jobs.StatusCode) string {
 			return strings.ToLower(status.String())
 		},
+		"lower": strings.ToLower,
+		// Display helpers for detail values stored as raw strings.
+		"memDisplay":      jobs.PrintMemoryString,
+		"walltimeDisplay": jobs.WalltimeStringToString,
+		"envCount":        countEnvEntries,
+		// truthy reports whether a string is non-empty after trimming.
+		"truthy": func(s string) bool { return strings.TrimSpace(s) != "" },
+		// logPath returns the (substituted, wd-anchored) path of the
+		// requested stdout/stderr stream for the given job.
+		"logPath": resolveLogPath,
+		// elapsed renders a duration between two times, e.g. "1h 32m 4s".
+		"elapsed": func(start, end time.Time) string {
+			if start.IsZero() || end.IsZero() {
+				return ""
+			}
+			d := end.Sub(start).Round(time.Second)
+			if d < 0 {
+				return ""
+			}
+			return d.String()
+		},
+		// statusQuery turns a SelectedStatus map into &status=X&status=Y
+		// so links can carry the active filter across views. Returns
+		// template.URL so the result is emitted verbatim without
+		// re-escaping the leading '&'.
+		"statusQuery": func(selected map[string]bool) template.URL {
+			if len(selected) == 0 {
+				return ""
+			}
+			var parts []string
+			for k, v := range selected {
+				if v {
+					parts = append(parts, "status="+url.QueryEscape(k))
+				}
+			}
+			if len(parts) == 0 {
+				return ""
+			}
+			sort.Strings(parts)
+			return template.URL("&" + strings.Join(parts, "&"))
+		},
 	}
 
 	return template.New("base").Funcs(funcs).ParseFS(webTemplatesFS, "templates/*.html")
@@ -244,18 +322,48 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	statuses, selected := parseStatusFilter(r)
-	jobList, err := s.jobsForFilter(ctx, statuses)
-	if err != nil {
-		s.serveError(w, r, "queue lookup", err)
-		return
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+
+	// With a query OR a run_id, the queue becomes a "find a specific
+	// set" view over all jobs (completed included). The plain queue
+	// path applies status filtering against active/all jobs.
+	var jobList []*jobs.JobDef
+	var err error
+	if query != "" || runID != "" {
+		dtos, lerr := s.client.ListJobs(ctx, client.ListJobsOptions{
+			ShowAll:  true,
+			Query:    query,
+			RunID:    runID,
+			Statuses: statusStrings(statuses),
+		})
+		if lerr != nil {
+			s.serveError(w, r, "search", lerr)
+			return
+		}
+		jobList = dtosToJobDefs(dtos)
+	} else {
+		jobList, err = s.jobsForFilter(ctx, statuses)
+		if err != nil {
+			s.serveError(w, r, "queue lookup", err)
+			return
+		}
 	}
-	showAll := len(statuses) == 0
+	title := "batchq queue"
+	switch {
+	case query != "" && runID != "":
+		title = "batchq · " + query + " · run " + runID
+	case query != "":
+		title = "batchq search · " + query
+	case runID != "":
+		title = "batchq · run " + runID
+	}
 	data := queuePage{
-		Title:           "batchq queue",
+		Title:           title,
 		ContentTemplate: "queue-content",
+		Query:           query,
+		RunID:           runID,
 		Jobs:            jobList,
-		ShowAll:         showAll,
-		Query:           "",
 		StatusOptions:   statusOptions(),
 		SelectedStatus:  selected,
 	}
@@ -265,8 +373,8 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 	s.logf("web request %s %s", r.Method, r.URL.Path)
-	jobId := strings.TrimPrefix(r.URL.Path, "/jobs/")
-	if jobId == "" || strings.Contains(jobId, "/") {
+	jobId := r.PathValue("id")
+	if jobId == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -319,6 +427,17 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// If the job belongs to a workflow run, build a forest of every
+	// job in that run so the user can see the whole pipeline shape.
+	var forest *runForest
+	if rid := job.RunID(); rid != "" {
+		forest, err = s.buildRunForest(ctx, rid, job.JobId)
+		if err != nil {
+			s.serveError(w, r, "run forest", err)
+			return
+		}
+	}
+
 	data := jobPage{
 		Title:           "batchq job " + job.JobId,
 		ContentTemplate: "job-content",
@@ -331,46 +450,8 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 		SlurmScript:     slurmScript,
 		ParentTree:      parentTree,
 		ChildTree:       childTree,
+		RunForest:       forest,
 		Query:           "",
-	}
-
-	s.render(w, r, data)
-}
-
-func (s *webServer) handleSearch(w http.ResponseWriter, r *http.Request) {
-	s.logf("web request %s %s", r.Method, r.URL.Path)
-	if r.URL.Path != "/search" {
-		http.NotFound(w, r)
-		return
-	}
-
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-
-	ctx, cancel := context.WithTimeout(r.Context(), webRequestTimeout)
-	defer cancel()
-
-	statuses, selected := parseStatusFilter(r)
-	var results []*jobs.JobDef
-	if query != "" {
-		dtos, err := s.client.ListJobs(ctx, client.ListJobsOptions{
-			ShowAll:  true,
-			Query:    query,
-			Statuses: statusStrings(statuses),
-		})
-		if err != nil {
-			s.serveError(w, r, "search", err)
-			return
-		}
-		results = dtosToJobDefs(dtos)
-	}
-
-	data := searchPage{
-		Title:           "batchq search",
-		ContentTemplate: "search-content",
-		Query:           query,
-		Results:         results,
-		StatusOptions:   statusOptions(),
-		SelectedStatus:  selected,
 	}
 
 	s.render(w, r, data)
@@ -560,6 +641,90 @@ func (s *webServer) buildChildTree(ctx context.Context, jobId string, visited ma
 	return node, nil
 }
 
+// buildRunForest fetches every job sharing runID and assembles them
+// into a dependency-shaped forest. Roots are jobs whose afterok
+// parents are all *outside* the run (or have no parents). A node
+// flagged Current marks the job whose detail page we're rendering so
+// the template can highlight it.
+//
+// A job that has multiple parents within the run will appear under
+// the first parent that gets resolved (per the visited set); we
+// don't duplicate.
+func (s *webServer) buildRunForest(ctx context.Context, runID, currentJobID string) (*runForest, error) {
+	dtos, err := s.client.ListJobs(ctx, client.ListJobsOptions{
+		RunID:   runID,
+		ShowAll: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(dtos) == 0 {
+		return nil, nil
+	}
+
+	jobsByID := make(map[string]*jobs.JobDef, len(dtos))
+	for _, dto := range dtos {
+		if j := dtoToJobDef(dto); j != nil {
+			jobsByID[j.JobId] = j
+		}
+	}
+
+	// childrenByParent: parent id -> child ids that live in this run.
+	// inRunDegree: how many of a job's afterok parents are also in the
+	// run. Zero means root within the run.
+	childrenByParent := map[string][]string{}
+	inRunDegree := map[string]int{}
+	for id, job := range jobsByID {
+		inRunDegree[id] = 0
+		for _, parent := range job.AfterOk {
+			if _, ok := jobsByID[parent]; ok {
+				childrenByParent[parent] = append(childrenByParent[parent], id)
+				inRunDegree[id]++
+			}
+		}
+	}
+
+	visited := map[string]bool{}
+	var build func(id string) *runNode
+	build = func(id string) *runNode {
+		if visited[id] {
+			return nil
+		}
+		visited[id] = true
+		node := &runNode{Job: jobsByID[id], Current: id == currentJobID}
+		kids := append([]string(nil), childrenByParent[id]...)
+		sort.Strings(kids)
+		for _, child := range kids {
+			if c := build(child); c != nil {
+				node.Children = append(node.Children, c)
+			}
+		}
+		return node
+	}
+
+	var rootIDs []string
+	for id := range jobsByID {
+		if inRunDegree[id] == 0 {
+			rootIDs = append(rootIDs, id)
+		}
+	}
+	sort.Strings(rootIDs)
+
+	var roots []*runNode
+	for _, id := range rootIDs {
+		if n := build(id); n != nil {
+			roots = append(roots, n)
+		}
+	}
+
+	return &runForest{
+		RunID:        runID,
+		CurrentJobID: currentJobID,
+		Roots:        roots,
+		JobCount:     len(jobsByID),
+	}, nil
+}
+
 func (s *webServer) jobsForFilter(ctx context.Context, statuses []jobs.StatusCode) ([]*jobs.JobDef, error) {
 	var (
 		dtos []*api.JobDTO
@@ -680,4 +845,120 @@ func isActiveStatusSet(statuses []jobs.StatusCode) bool {
 		}
 	}
 	return true
+}
+
+// keepaliveInterval is how often the web server pings the batchq server
+// to defer its idle-timeout. The batchq server defaults to a 1m idle
+// timeout when autospawned; 30s gives us a comfortable margin.
+const keepaliveInterval = 30 * time.Second
+
+// logTailBytes caps the size of a log file returned to the browser by
+// default. Bigger values balloon page weight; ?full=1 opts out.
+const logTailBytes = 256 * 1024
+
+// runKeepalive pings the batchq server periodically so its idle
+// shutdown doesn't fire underneath the web UI. Returns when ctx is
+// cancelled.
+func (s *webServer) runKeepalive(ctx context.Context) {
+	ticker := time.NewTicker(keepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := s.client.Health(pingCtx); err != nil {
+				s.logf("keepalive ping failed: %v", err)
+			}
+			cancel()
+		}
+	}
+}
+
+// handleJobLogs serves a job's stdout or stderr file. Streams text/plain
+// with the last logTailBytes by default; ?full=1 returns everything.
+func (s *webServer) handleJobLogs(w http.ResponseWriter, r *http.Request) {
+	s.logf("web request %s %s", r.Method, r.URL.Path)
+	jobId := r.PathValue("id")
+	stream := r.PathValue("stream")
+	if stream != "stdout" && stream != "stderr" {
+		http.NotFound(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), webRequestTimeout)
+	defer cancel()
+
+	job, err := s.getJob(ctx, jobId)
+	if err != nil {
+		s.serveError(w, r, "log: job lookup", err)
+		return
+	}
+	if job == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	path := resolveLogPath(job, stream)
+	if path == "" {
+		http.Error(w, "no "+stream+" path configured for this job", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Log-Path", path)
+
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			w.Header().Set("X-Log-State", "not-yet-written")
+			fmt.Fprintf(w, "(no %s file yet — job may not have started)\n\nexpected at: %s\n", stream, path)
+			return
+		}
+		s.serveError(w, r, "log: open", err)
+		return
+	}
+	defer f.Close()
+
+	full := r.URL.Query().Get("full") == "1"
+	info, err := f.Stat()
+	if err != nil {
+		s.serveError(w, r, "log: stat", err)
+		return
+	}
+	w.Header().Set("X-Log-Size", fmt.Sprintf("%d", info.Size()))
+
+	if !full && info.Size() > logTailBytes {
+		// Seek to the tail and prepend a notice so the user knows we
+		// truncated.
+		if _, err := f.Seek(-logTailBytes, io.SeekEnd); err != nil {
+			s.serveError(w, r, "log: seek", err)
+			return
+		}
+		w.Header().Set("X-Log-Truncated", "1")
+		fmt.Fprintf(w, "[showing last %d of %d bytes — append ?full=1 for the whole file]\n\n", logTailBytes, info.Size())
+	}
+	if _, err := io.Copy(w, f); err != nil {
+		// Headers may already be sent; just log.
+		log.Printf("web log copy %s: %v", path, err)
+	}
+}
+
+// resolveLogPath returns the (possibly relative) on-disk path for the
+// requested stream. %JOBID is substituted with the actual job id, and a
+// relative path is anchored to the job's working directory.
+func resolveLogPath(job *jobs.JobDef, stream string) string {
+	raw := job.GetDetail(stream, "")
+	if raw == "" {
+		return ""
+	}
+	expanded := strings.ReplaceAll(raw, "%JOBID", job.JobId)
+	if strings.HasPrefix(expanded, "/") {
+		return expanded
+	}
+	if wd := job.GetDetail("wd", ""); wd != "" && wd != "." {
+		return filepath.Join(wd, expanded)
+	}
+	return expanded
 }

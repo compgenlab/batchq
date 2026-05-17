@@ -494,13 +494,50 @@ func TestSearchJobs(t *testing.T) {
 	if len(results) != 1 || results[0].JobId != "beta-1" {
 		t.Fatalf("script search: %+v", results)
 	}
+
+	// Input/output file paths should also be searchable.
+	withInputs := mkJob("gamma-1", map[string]string{"script": "noop"})
+	withInputs.InputFiles = []string{"/data/raw/sample-A.fastq"}
+	withInputs.OutputFiles = []string{"/data/clean/sample-A.bam"}
+	mustInsert(t, s, withInputs)
+
+	results, _ = s.SearchJobs(ctx, "sample-A.fastq", nil)
+	if len(results) != 1 || results[0].JobId != "gamma-1" {
+		t.Fatalf("input-file search: %+v", results)
+	}
+	results, _ = s.SearchJobs(ctx, "clean/sample", nil)
+	if len(results) != 1 || results[0].JobId != "gamma-1" {
+		t.Fatalf("output-file search: %+v", results)
+	}
+
+	// Searching by run_id should return every job in that run.
+	mustInsert(t, s, mkJob("run-a", map[string]string{"run_id": "pipeline-2025-q2"}))
+	mustInsert(t, s, mkJob("run-b", map[string]string{"run_id": "pipeline-2025-q2"}))
+	mustInsert(t, s, mkJob("run-c", map[string]string{"run_id": "pipeline-2024-q4"}))
+
+	results, _ = s.SearchJobs(ctx, "2025-q2", nil)
+	if len(results) != 2 {
+		t.Fatalf("run-id search returned %d results, want 2: %+v", len(results), results)
+	}
+	seen := map[string]bool{}
+	for _, j := range results {
+		seen[j.JobId] = true
+	}
+	if !seen["run-a"] || !seen["run-b"] {
+		t.Fatalf("run-id search missed expected jobs: %+v", seen)
+	}
 }
 
 func TestGetQueueJobs(t *testing.T) {
 	s := newTestStore(t)
 	ctx := ctxT(t)
 
-	mustInsert(t, s, mkJob("j", map[string]string{"procs": "4", "mem": "1024", "script": "x"}))
+	mustInsert(t, s, mkJob("j", map[string]string{
+		"procs":  "4",
+		"mem":    "1024",
+		"script": "x",
+		"run_id": "pipeline-x",
+	}))
 	queue, err := s.GetQueueJobs(ctx, false, false)
 	if err != nil {
 		t.Fatalf("GetQueueJobs: %v", err)
@@ -509,13 +546,20 @@ func TestGetQueueJobs(t *testing.T) {
 		t.Fatalf("queue: %+v", queue)
 	}
 	gotProcs := false
+	gotRun := ""
 	for _, d := range queue[0].Details {
 		if d.Key == "procs" && d.Value == "4" {
 			gotProcs = true
 		}
+		if d.Key == "run_id" {
+			gotRun = d.Value
+		}
 	}
 	if !gotProcs {
 		t.Fatalf("procs detail missing")
+	}
+	if gotRun != "pipeline-x" {
+		t.Fatalf("run_id missing from queue projection: %+v", queue[0].Details)
 	}
 }
 

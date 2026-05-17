@@ -86,10 +86,10 @@ func startWebForTest(t *testing.T, c *client.Client) *http.Client {
 	wsrv := &webServer{client: c, templates: templates, verbose: false}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/jobs/", wsrv.handleJob)
-	mux.HandleFunc("/jobs", wsrv.handleQueue)
-	mux.HandleFunc("/search", wsrv.handleSearch)
-	mux.HandleFunc("/", wsrv.handleQueue)
+	mux.HandleFunc("GET /jobs/{id}/logs/{stream}", wsrv.handleJobLogs)
+	mux.HandleFunc("GET /jobs/{id}", wsrv.handleJob)
+	mux.HandleFunc("GET /jobs", wsrv.handleQueue)
+	mux.HandleFunc("GET /", wsrv.handleQueue)
 
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -208,16 +208,16 @@ func TestWebSearchFindsJob(t *testing.T) {
 
 	httpc := startWebForTest(t, c)
 
-	hit := get(t, httpc, "/search?q=needle")
+	hit := get(t, httpc, "/jobs?q=needle")
 	if !strings.Contains(hit, dto.JobID) {
 		t.Fatalf("search page missing job ID %s", dto.JobID)
 	}
 
-	miss := get(t, httpc, "/search?q=no-such-token-xyz")
+	miss := get(t, httpc, "/jobs?q=no-such-token-xyz")
 	if strings.Contains(miss, dto.JobID) {
 		t.Fatalf("search page matched unrelated job for unrelated query")
 	}
-	if !strings.Contains(miss, "No matching jobs") {
+	if !strings.Contains(miss, "No jobs in this view") {
 		t.Fatalf("search page missing empty-state message")
 	}
 }

@@ -1,73 +1,78 @@
 {{define "queue-content"}}
-  <section class="panel">
-    <form class="filters" method="get" action="/jobs">
-      <fieldset>
-        <legend>Status</legend>
-        <div class="status-list">
-          {{range .StatusOptions}}
-            <label>
-              <input type="checkbox" name="status" value="{{.}}" {{if index $.SelectedStatus .}}checked{{end}}>
-              {{.}}
-            </label>
-          {{end}}
+  <section class="panel compact">
+    <form class="filters filters-form" method="get" action="/jobs">
+      {{if .Query}}<input type="hidden" name="q"      value="{{.Query}}">{{end}}
+      {{if .RunID}}<input type="hidden" name="run_id" value="{{.RunID}}">{{end}}
+      <div class="filter-chips" role="group" aria-label="Status filter">
+        {{range .StatusOptions}}
+          <label class="chip {{if index $.SelectedStatus .}}checked{{end}}" data-status="{{lower .}}">
+            <input type="checkbox" name="status" value="{{.}}" {{if index $.SelectedStatus .}}checked{{end}}>
+            <span class="chip-dot"></span>
+            <span>{{.}}</span>
+          </label>
+        {{end}}
+      </div>
+      <div class="filter-actions">
+        <div class="preset-group" role="group" aria-label="Quick presets">
+          <button type="button" class="preset" data-filter-quick="active">Active</button>
+          <button type="button" class="preset" data-filter-quick="failed">Failed</button>
+          <button type="button" class="preset" data-filter-quick="all">All</button>
         </div>
-        <div class="divider"></div>
-        <div class="button-row">
-          <div class="quick-filters">
-            <button type="button" data-filter="active">Active</button>
-            <button type="button" data-filter="all">All</button>
-          </div>
-          <div class="actions">
-            <button type="submit">Apply</button>
-            <button type="button" class="clear">Clear</button>
-          </div>
-        </div>
-      </fieldset>
+        <button type="button" class="btn danger" data-filter-quick="none">Clear</button>
+      </div>
+      <noscript>
+        <button type="submit" class="btn primary" style="margin-left:8px;">Apply</button>
+      </noscript>
     </form>
   </section>
 
   <section class="panel">
-    <div class="grid">
-      <div>
-        <strong>Jobs:</strong> {{len .Jobs}}
-      </div>
-      <div>
-        <strong>Filter:</strong>
-        {{if .ShowAll}}
-          All
-        {{else}}
-          Active
-        {{end}}
-      </div>
+    <div class="panel-header">
+      <h2 class="section">
+        {{if .Query}}Search results for &ldquo;{{.Query}}&rdquo;
+        {{else if .RunID}}Run · <span class="mono" style="font-size:0.85em;">{{.RunID}}</span>
+        {{else}}Queue{{end}}
+      </h2>
+      <span class="muted mono">
+        {{len .Jobs}} {{if eq (len .Jobs) 1}}{{if or .Query .RunID}}match{{else}}job{{end}}{{else}}{{if or .Query .RunID}}matches{{else}}jobs{{end}}{{end}}
+      </span>
+      {{if or .Query .RunID}}
+        <a class="btn ghost" href="/jobs" style="margin-left:auto;">Clear filters</a>
+      {{end}}
     </div>
-  </section>
 
-  <section class="panel">
-    <table>
+    <table class="list">
       <thead>
         <tr>
-          <th>Job ID</th>
-          <th>Status</th>
-          <th>Name</th>
-          <th>Submit</th>
-          <th>Start</th>
-          <th>End</th>
+          <th style="width:28%">Job</th>
+          <th style="width:12%">Status</th>
+          <th style="width:20%">Name</th>
+          <th style="width:14%">Run</th>
+          <th>Submitted</th>
+          <th>Started</th>
+          <th>Ended</th>
         </tr>
       </thead>
       <tbody>
         {{range .Jobs}}
           <tr>
-            <td><a href="/jobs/{{.JobId}}">{{.JobId}}</a></td>
+            <td class="id"><a href="/jobs/{{.JobId}}">{{.JobId}}</a></td>
             <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
-            <td>{{.Name}}</td>
-            <td>{{formatTime .SubmitTime}}</td>
-            <td>{{formatTime .StartTime}}</td>
-            <td>{{formatTime .EndTime}}</td>
+            <td class="name">{{.Name}}</td>
+            <td class="run">
+              {{$rid := .RunID}}
+              {{if $rid}}
+                <a href="/jobs?run_id={{$rid}}{{statusQuery $.SelectedStatus}}" class="run-link" title="Show all jobs in this run">{{$rid}}</a>
+              {{else}}<span class="subtle">—</span>{{end}}
+            </td>
+            <td class="time">{{formatTime .SubmitTime}}</td>
+            <td class="time">{{formatTime .StartTime}}</td>
+            <td class="time">{{formatTime .EndTime}}</td>
           </tr>
         {{end}}
         {{if not .Jobs}}
           <tr>
-            <td colspan="6" class="muted">No jobs to display.</td>
+            <td colspan="7" class="empty">No jobs in this view.</td>
           </tr>
         {{end}}
       </tbody>

@@ -10,18 +10,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// searchCmd queries the server for jobs whose id, name, or script
-// content matches the given term. The output shape depends on the hit
-// count: a single match prints the full details (like `batchq details`)
-// since that's almost always what you want; multiple matches fall back
-// to the standard queue table (like `batchq queue`). Zero matches
-// prints a message to stderr and exits 1 so scripts can detect it.
+// searchCmd queries the server for jobs whose id, name, script
+// content, or input/output file paths match the given term. The output
+// shape depends on the hit count: a single match prints the full
+// details (like `batchq details`) since that's almost always what you
+// want; multiple matches fall back to the standard queue table (like
+// `batchq queue`). Zero matches prints a message to stderr and exits 1
+// so scripts can detect it.
 //
 // Search is across ALL jobs (completed included) — the use case is
 // "find that one job," not "filter the live queue."
 var searchCmd = &cobra.Command{
 	Use:   "search term",
-	Short: "Find jobs matching a substring of id, name, or script",
+	Short: "Find jobs matching id, name, script, or input/output paths",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		term := strings.TrimSpace(args[0])
