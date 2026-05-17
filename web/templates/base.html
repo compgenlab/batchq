@@ -163,20 +163,24 @@
         width: min(360px, 50vw);
       }
       .search input[type="search"]::placeholder { color: var(--subtle); }
-      .search button {
-        appearance: none;
-        border: 0;
-        background: var(--surface-2);
+      .search .search-prefix {
+        display: inline-flex;
+        align-items: center;
         padding: 0 14px;
+        background: var(--surface-2);
+        border-right: 1px solid var(--border);
         font-family: var(--font-sans);
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 600;
-        color: var(--ink-2);
-        cursor: pointer;
-        border-left: 1px solid var(--border);
-        transition: background 120ms ease, color 120ms ease;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--muted);
+        user-select: none;
       }
-      .search button:hover { background: var(--accent-soft); color: var(--accent-2); }
+      .search:focus-within .search-prefix {
+        color: var(--accent-2);
+        background: var(--accent-soft);
+      }
 
       /* === Main ==================================================== */
       main {
@@ -676,8 +680,8 @@
         <a href="/jobs" {{if eq .ContentTemplate "queue-content"}}class="active"{{end}}>Queue</a>
       </nav>
       <form class="search" action="/jobs" method="get" role="search">
-        <input type="search" name="q" placeholder="job id, name, or script content" value="{{.Query}}" autocomplete="off">
-        <button type="submit">Find</button>
+        <label class="search-prefix" for="search-q">Search</label>
+        <input id="search-q" type="search" name="q" placeholder="job id, name, or script content" value="{{.Query}}" autocomplete="off">
       </form>
     </header>
 
