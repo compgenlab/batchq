@@ -81,15 +81,6 @@ type jobPage struct {
 	Query           string
 }
 
-type searchPage struct {
-	Title           string
-	ContentTemplate string
-	Query           string
-	Results         []*jobs.JobDef
-	StatusOptions   []string
-	SelectedStatus  map[string]bool
-}
-
 func StartServer(opts Options) error {
 	log.SetOutput(os.Stderr)
 	if opts.Client == nil {
@@ -116,7 +107,6 @@ func StartServer(opts Options) error {
 	mux.HandleFunc("GET /jobs/{id}/logs/{stream}", server.handleJobLogs)
 	mux.HandleFunc("GET /jobs/{id}", server.handleJob)
 	mux.HandleFunc("GET /jobs", server.handleQueue)
-	mux.HandleFunc("GET /search", server.handleSearch)
 	mux.HandleFunc("GET /", server.handleQueue)
 
 	httpServer := &http.Server{
@@ -288,20 +278,44 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	statuses, selected := parseStatusFilter(r)
-	jobList, err := s.jobsForFilter(ctx, statuses)
-	if err != nil {
-		s.serveError(w, r, "queue lookup", err)
-		return
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	// With a query, the queue becomes a search view over all jobs
+	// (completed included) — finding "that one job" is the use case.
+	// Without a query, the standard queue path applies status filtering.
+	var jobList []*jobs.JobDef
+	var err error
+	if query != "" {
+		dtos, lerr := s.client.ListJobs(ctx, client.ListJobsOptions{
+			ShowAll:  true,
+			Query:    query,
+			Statuses: statusStrings(statuses),
+		})
+		if lerr != nil {
+			s.serveError(w, r, "search", lerr)
+			return
+		}
+		jobList = dtosToJobDefs(dtos)
+	} else {
+		jobList, err = s.jobsForFilter(ctx, statuses)
+		if err != nil {
+			s.serveError(w, r, "queue lookup", err)
+			return
+		}
 	}
 	showAll := len(statuses) == 0
+	title := "batchq queue"
+	if query != "" {
+		title = "batchq search · " + query
+	}
 	data := queuePage{
-		Title:           "batchq queue",
+		Title:           title,
 		ContentTemplate: "queue-content",
-		Jobs:            jobList,
-		ShowAll:         showAll,
-		Query:           "",
-		StatusOptions:   statusOptions(),
-		SelectedStatus:  selected,
+		Query:           query,
+		Jobs:           jobList,
+		ShowAll:        showAll,
+		StatusOptions:  statusOptions(),
+		SelectedStatus: selected,
 	}
 
 	s.render(w, r, data)
@@ -376,45 +390,6 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 		ParentTree:      parentTree,
 		ChildTree:       childTree,
 		Query:           "",
-	}
-
-	s.render(w, r, data)
-}
-
-func (s *webServer) handleSearch(w http.ResponseWriter, r *http.Request) {
-	s.logf("web request %s %s", r.Method, r.URL.Path)
-	if r.URL.Path != "/search" {
-		http.NotFound(w, r)
-		return
-	}
-
-	query := strings.TrimSpace(r.URL.Query().Get("q"))
-
-	ctx, cancel := context.WithTimeout(r.Context(), webRequestTimeout)
-	defer cancel()
-
-	statuses, selected := parseStatusFilter(r)
-	var results []*jobs.JobDef
-	if query != "" {
-		dtos, err := s.client.ListJobs(ctx, client.ListJobsOptions{
-			ShowAll:  true,
-			Query:    query,
-			Statuses: statusStrings(statuses),
-		})
-		if err != nil {
-			s.serveError(w, r, "search", err)
-			return
-		}
-		results = dtosToJobDefs(dtos)
-	}
-
-	data := searchPage{
-		Title:           "batchq search",
-		ContentTemplate: "search-content",
-		Query:           query,
-		Results:         results,
-		StatusOptions:   statusOptions(),
-		SelectedStatus:  selected,
 	}
 
 	s.render(w, r, data)

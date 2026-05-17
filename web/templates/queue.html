@@ -1,6 +1,7 @@
 {{define "queue-content"}}
   <section class="panel compact">
     <form class="filters filters-form" method="get" action="/jobs">
+      {{if .Query}}<input type="hidden" name="q" value="{{.Query}}">{{end}}
       <div class="filter-chips" role="group" aria-label="Status filter">
         {{range .StatusOptions}}
           <label class="chip {{if index $.SelectedStatus .}}checked{{end}}" data-status="{{lower .}}">
@@ -25,8 +26,14 @@
 
   <section class="panel">
     <div class="panel-header">
-      <h2 class="section">Queue</h2>
-      <span class="muted mono">{{len .Jobs}} {{if eq (len .Jobs) 1}}job{{else}}jobs{{end}}{{if .ShowAll}} · all{{else}} · filtered{{end}}</span>
+      <h2 class="section">{{if .Query}}Search results for &ldquo;{{.Query}}&rdquo;{{else}}Queue{{end}}</h2>
+      <span class="muted mono">
+        {{len .Jobs}} {{if eq (len .Jobs) 1}}{{if .Query}}match{{else}}job{{end}}{{else}}{{if .Query}}matches{{else}}jobs{{end}}{{end}}
+        {{if not .Query}}{{if .ShowAll}} · all{{else}} · filtered{{end}}{{end}}
+      </span>
+      {{if .Query}}
+        <a class="btn ghost" href="/jobs" style="margin-left:auto;">Clear search</a>
+      {{end}}
     </div>
     <table class="list">
       <thead>

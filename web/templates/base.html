@@ -674,9 +674,8 @@
       <a class="brand" href="/jobs">batchq<span class="dot"></span></a>
       <nav class="tabs">
         <a href="/jobs" {{if eq .ContentTemplate "queue-content"}}class="active"{{end}}>Queue</a>
-        <a href="/search" {{if eq .ContentTemplate "search-content"}}class="active"{{end}}>Search</a>
       </nav>
-      <form class="search" action="/search" method="get" role="search">
+      <form class="search" action="/jobs" method="get" role="search">
         <input type="search" name="q" placeholder="job id, name, or script content" value="{{.Query}}" autocomplete="off">
         <button type="submit">Find</button>
       </form>
@@ -687,8 +686,6 @@
         {{template "queue-content" .}}
       {{else if eq .ContentTemplate "job-content"}}
         {{template "job-content" .}}
-      {{else if eq .ContentTemplate "search-content"}}
-        {{template "search-content" .}}
       {{else}}
         <p>Unknown content template.</p>
       {{end}}
