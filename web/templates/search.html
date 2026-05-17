@@ -12,11 +12,15 @@
         {{end}}
       </div>
       <div class="filter-actions">
-        <button type="button" class="btn ghost" data-filter-quick="active">Active</button>
-        <button type="button" class="btn ghost" data-filter-quick="all">All</button>
-        <button type="button" class="btn ghost" data-filter-quick="none">Clear</button>
-        <button type="submit" class="btn primary">Apply</button>
+        <div class="preset-group" role="group" aria-label="Quick presets">
+          <button type="button" class="preset" data-filter-quick="active">Active</button>
+          <button type="button" class="preset" data-filter-quick="all">All</button>
+        </div>
+        <button type="button" class="btn danger" data-filter-quick="none">Clear</button>
       </div>
+      <noscript>
+        <button type="submit" class="btn primary" style="margin-left:8px;">Apply</button>
+      </noscript>
     </form>
   </section>
 
