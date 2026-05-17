@@ -505,8 +505,16 @@ func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses [
 				SELECT 1 FROM job_details d
 				WHERE d.job_id = j.id AND d.key = 'script' AND d.value LIKE ?
 			)
+			OR EXISTS (
+				SELECT 1 FROM job_inputs i
+				WHERE i.job_id = j.id AND i.path LIKE ?
+			)
+			OR EXISTS (
+				SELECT 1 FROM job_outputs o
+				WHERE o.job_id = j.id AND o.path LIKE ?
+			)
 		)`
-	args := []any{like, like, like}
+	args := []any{like, like, like, like, like}
 	if len(statuses) > 0 {
 		placeholders := make([]string, len(statuses))
 		for i, st := range statuses {

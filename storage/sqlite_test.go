@@ -494,6 +494,21 @@ func TestSearchJobs(t *testing.T) {
 	if len(results) != 1 || results[0].JobId != "beta-1" {
 		t.Fatalf("script search: %+v", results)
 	}
+
+	// Input/output file paths should also be searchable.
+	withInputs := mkJob("gamma-1", map[string]string{"script": "noop"})
+	withInputs.InputFiles = []string{"/data/raw/sample-A.fastq"}
+	withInputs.OutputFiles = []string{"/data/clean/sample-A.bam"}
+	mustInsert(t, s, withInputs)
+
+	results, _ = s.SearchJobs(ctx, "sample-A.fastq", nil)
+	if len(results) != 1 || results[0].JobId != "gamma-1" {
+		t.Fatalf("input-file search: %+v", results)
+	}
+	results, _ = s.SearchJobs(ctx, "clean/sample", nil)
+	if len(results) != 1 || results[0].JobId != "gamma-1" {
+		t.Fatalf("output-file search: %+v", results)
+	}
 }
 
 func TestGetQueueJobs(t *testing.T) {
