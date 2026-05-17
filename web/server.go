@@ -124,10 +124,21 @@ func StartServer(opts Options) error {
 	shutdownCh := make(chan os.Signal, 1)
 	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM)
 
+	// Always print the listening address — operators need to know
+	// what URL to hit. --verbose stays meaningful for per-request
+	// logging via s.logf.
+	var displayURL string
+	switch kind {
+	case "tcp":
+		displayURL = "http://" + address
+	case "unix":
+		displayURL = "unix://" + address
+	default:
+		displayURL = kind + ":" + address
+	}
+	fmt.Fprintf(os.Stderr, "batchq web listening on %s\n", displayURL)
+
 	go func() {
-		if opts.Verbose {
-			log.Printf("batchq web listening on %s: %s", kind, address)
-		}
 		if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("web server error: %v", err)
 		}
