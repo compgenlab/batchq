@@ -1,73 +1,54 @@
 {{define "queue-content"}}
-  <section class="panel">
-    <form class="filters" method="get" action="/jobs">
-      <fieldset>
-        <legend>Status</legend>
-        <div class="status-list">
-          {{range .StatusOptions}}
-            <label>
-              <input type="checkbox" name="status" value="{{.}}" {{if index $.SelectedStatus .}}checked{{end}}>
-              {{.}}
-            </label>
-          {{end}}
-        </div>
-        <div class="divider"></div>
-        <div class="button-row">
-          <div class="quick-filters">
-            <button type="button" data-filter="active">Active</button>
-            <button type="button" data-filter="all">All</button>
-          </div>
-          <div class="actions">
-            <button type="submit">Apply</button>
-            <button type="button" class="clear">Clear</button>
-          </div>
-        </div>
-      </fieldset>
+  <section class="panel compact">
+    <form class="filters filters-form" method="get" action="/jobs">
+      <div class="filter-chips" role="group" aria-label="Status filter">
+        {{range .StatusOptions}}
+          <label class="chip {{if index $.SelectedStatus .}}checked{{end}}" data-status="{{lower .}}">
+            <input type="checkbox" name="status" value="{{.}}" {{if index $.SelectedStatus .}}checked{{end}}>
+            <span class="chip-dot"></span>
+            <span>{{.}}</span>
+          </label>
+        {{end}}
+      </div>
+      <div class="filter-actions">
+        <button type="button" class="btn ghost" data-filter-quick="active">Active</button>
+        <button type="button" class="btn ghost" data-filter-quick="all">All</button>
+        <button type="button" class="btn ghost" data-filter-quick="none">Clear</button>
+        <button type="submit" class="btn primary">Apply</button>
+      </div>
     </form>
   </section>
 
   <section class="panel">
-    <div class="grid">
-      <div>
-        <strong>Jobs:</strong> {{len .Jobs}}
-      </div>
-      <div>
-        <strong>Filter:</strong>
-        {{if .ShowAll}}
-          All
-        {{else}}
-          Active
-        {{end}}
-      </div>
+    <div class="panel-header">
+      <h2 class="section">Queue</h2>
+      <span class="muted mono">{{len .Jobs}} {{if eq (len .Jobs) 1}}job{{else}}jobs{{end}}{{if .ShowAll}} · all{{else}} · filtered{{end}}</span>
     </div>
-  </section>
-
-  <section class="panel">
-    <table>
+    <table class="list">
       <thead>
         <tr>
-          <th>Job ID</th>
-          <th>Status</th>
-          <th>Name</th>
-          <th>Submit</th>
-          <th>Start</th>
-          <th>End</th>
+          <th style="width:30%">Job</th>
+          <th style="width:12%">Status</th>
+          <th style="width:22%">Name</th>
+          <th>Submitted</th>
+          <th>Started</th>
+          <th>Ended</th>
         </tr>
       </thead>
       <tbody>
         {{range .Jobs}}
           <tr>
-            <td><a href="/jobs/{{.JobId}}">{{.JobId}}</a></td>
+            <td class="id"><a href="/jobs/{{.JobId}}">{{.JobId}}</a></td>
             <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
-            <td>{{.Name}}</td>
-            <td>{{formatTime .SubmitTime}}</td>
-            <td>{{formatTime .StartTime}}</td>
-            <td>{{formatTime .EndTime}}</td>
+            <td class="name">{{.Name}}</td>
+            <td class="time">{{formatTime .SubmitTime}}</td>
+            <td class="time">{{formatTime .StartTime}}</td>
+            <td class="time">{{formatTime .EndTime}}</td>
           </tr>
         {{end}}
         {{if not .Jobs}}
           <tr>
-            <td colspan="6" class="muted">No jobs to display.</td>
+            <td colspan="6" class="empty">No jobs in this view.</td>
           </tr>
         {{end}}
       </tbody>

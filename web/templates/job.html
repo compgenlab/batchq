@@ -1,171 +1,272 @@
 {{define "job-content"}}
+  {{$job := .Job}}
+  {{$stdoutPath := logPath $job "stdout"}}
+  {{$stderrPath := logPath $job "stderr"}}
+
+  <!-- === Hero ============================================================ -->
   <section class="panel">
-    <div class="grid">
+    <div class="hero">
       <div>
-        <div class="muted">Job ID</div>
-        <div><strong>{{.Job.JobId}}</strong></div>
+        <h1 class="heading">
+          <span class="id">{{$job.JobId}}</span>
+          {{if $job.Name}}{{$job.Name}}{{else}}<span class="muted">(unnamed)</span>{{end}}
+        </h1>
+      </div>
+      <div class="pillrow">
+        <span class="status {{statusClass $job.Status}}">{{$job.Status}}</span>
+        {{if $job.RunID}}
+          <span class="muted mono">run · {{$job.RunID}}</span>
+        {{end}}
+      </div>
+    </div>
+
+    <div class="timeline" style="margin-top: 18px; display: flex; gap: 24px; flex-wrap: wrap; font-family: var(--font-mono); font-size: 12px; color: var(--muted);">
+      <div>
+        <span class="subtle">submitted</span>
+        <strong style="color:var(--ink-2); display:block; margin-top:2px;">{{formatTime $job.SubmitTime}}</strong>
       </div>
       <div>
-        <div class="muted">Status</div>
-        <div><span class="status {{statusClass .Job.Status}}">{{.Job.Status}}</span></div>
+        <span class="subtle">started</span>
+        <strong style="color:var(--ink-2); display:block; margin-top:2px;">{{if $job.StartTime.IsZero}}—{{else}}{{formatTime $job.StartTime}}{{end}}</strong>
       </div>
       <div>
-        <div class="muted">Name</div>
-        <div>{{.Job.Name}}</div>
+        <span class="subtle">ended</span>
+        <strong style="color:var(--ink-2); display:block; margin-top:2px;">{{if $job.EndTime.IsZero}}—{{else}}{{formatTime $job.EndTime}}{{end}}</strong>
       </div>
-      <div>
-        <div class="muted">Submit</div>
-        <div>{{formatTime .Job.SubmitTime}}</div>
-      </div>
-      <div>
-        <div class="muted">Start</div>
-        <div>{{formatTime .Job.StartTime}}</div>
-      </div>
-      <div>
-        <div class="muted">End</div>
-        <div>{{formatTime .Job.EndTime}}</div>
-      </div>
+      {{$elapsed := elapsed $job.StartTime $job.EndTime}}
+      {{if $elapsed}}
+        <div>
+          <span class="subtle">elapsed</span>
+          <strong style="color:var(--ink-2); display:block; margin-top:2px;">{{$elapsed}}</strong>
+        </div>
+      {{end}}
     </div>
   </section>
 
-  <section class="panel">
-    <h2>Dependencies</h2>
-    <div class="grid">
-      <div>
-        <div class="muted">Depends on</div>
-        <ul>
-          {{range .Parents}}
-            <li>
-              <a href="/jobs/{{.JobId}}">{{.JobId}}</a>
-              <span class="status {{statusClass .Status}}">{{.Status}}</span>
-              <span class="job-name">{{.Name}}</span>
-            </li>
-          {{end}}
-          {{if not .Parents}}
-            <li class="muted">None</li>
+  <!-- === Tab bar ========================================================= -->
+  <div class="tab-bar" role="tablist">
+    <button class="tab-btn" data-tab="overview"     role="tab" aria-selected="true">Overview</button>
+    <button class="tab-btn" data-tab="files"        role="tab">Files</button>
+    <button class="tab-btn" data-tab="dependencies" role="tab">Dependencies</button>
+    <button class="tab-btn" data-tab="script"       role="tab">Script</button>
+    <button class="tab-btn" data-tab="runtime"      role="tab">Runtime</button>
+    <button class="tab-btn" data-tab="raw"          role="tab">Raw</button>
+  </div>
+
+  <!-- === Overview ======================================================== -->
+  <div class="tab-panel active" data-tab="overview">
+    <section class="panel">
+      <h2 class="section">Submission</h2>
+      <dl class="kv">
+        {{if $job.Name}}<dt>Name</dt><dd class="prose">{{$job.Name}}</dd>{{end}}
+        {{if $job.RunID}}<dt>Run ID</dt><dd>{{$job.RunID}}</dd>{{end}}
+        <dt>Priority</dt><dd>{{$job.Priority}}</dd>
+        {{$procs := $job.GetDetail "procs" ""}}
+        {{if truthy $procs}}<dt>Processors</dt><dd>{{$procs}}</dd>{{end}}
+        {{$mem := $job.GetDetail "mem" ""}}
+        {{if truthy $mem}}<dt>Memory</dt><dd>{{memDisplay $mem}}</dd>{{end}}
+        {{$wt := $job.GetDetail "walltime" ""}}
+        {{if truthy $wt}}<dt>Walltime</dt><dd>{{walltimeDisplay $wt}}</dd>{{end}}
+        {{$wd := $job.GetDetail "wd" ""}}
+        {{if truthy $wd}}<dt>Working dir</dt><dd>{{$wd}}</dd>{{end}}
+        {{$env := $job.GetDetail "env" ""}}
+        {{if truthy $env}}<dt>Environment</dt><dd>{{envCount $env}} captured variables</dd>{{end}}
+        {{$user := $job.GetDetail "user" ""}}
+        {{if truthy $user}}<dt>User</dt><dd>{{$user}}</dd>{{end}}
+        {{if $job.Notes}}<dt>Notes</dt><dd class="prose">{{$job.Notes}}</dd>{{end}}
+      </dl>
+    </section>
+  </div>
+
+  <!-- === Files =========================================================== -->
+  <div class="tab-panel" data-tab="files">
+    <section class="panel">
+      <h2 class="section">Standard streams</h2>
+      <dl class="kv">
+        <dt>stdout</dt>
+        <dd>
+          {{if truthy $stdoutPath}}
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <code>{{$stdoutPath}}</code>
+              <button type="button" class="btn" data-log-open="stdout" data-job-id="{{$job.JobId}}">View</button>
+            </div>
+          {{else}}<span class="muted">not configured</span>{{end}}
+        </dd>
+
+        <dt>stderr</dt>
+        <dd>
+          {{if truthy $stderrPath}}
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <code>{{$stderrPath}}</code>
+              <button type="button" class="btn" data-log-open="stderr" data-job-id="{{$job.JobId}}">View</button>
+            </div>
+          {{else}}<span class="muted">not configured</span>{{end}}
+        </dd>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <h2 class="section">Inputs</h2>
+      {{if $job.InputFiles}}
+        <ul class="file-list">
+          {{range $job.InputFiles}}
+            <li><code>{{.}}</code></li>
           {{end}}
         </ul>
-      </div>
-      <div>
-        <div class="muted">Dependents</div>
-        <ul>
-          {{range .Children}}
-            <li>
-              <a href="/jobs/{{.JobId}}">{{.JobId}}</a>
-              <span class="status {{statusClass .Status}}">{{.Status}}</span>
-              <span class="job-name">{{.Name}}</span>
-            </li>
-          {{end}}
-          {{if not .Children}}
-            <li class="muted">None</li>
+      {{else}}
+        <p class="muted">No input files declared.</p>
+      {{end}}
+    </section>
+
+    <section class="panel">
+      <h2 class="section">Outputs</h2>
+      {{if $job.OutputFiles}}
+        <ul class="file-list">
+          {{range $job.OutputFiles}}
+            <li><code>{{.}}</code></li>
           {{end}}
         </ul>
+      {{else}}
+        <p class="muted">No output files declared.</p>
+      {{end}}
+    </section>
+  </div>
+
+  <!-- === Dependencies ==================================================== -->
+  <div class="tab-panel" data-tab="dependencies">
+    <section class="panel">
+      <h2 class="section">Direct relationships</h2>
+      <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+        <div>
+          <div class="muted mono" style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">Depends on</div>
+          {{if .Parents}}
+            <ul class="file-list">
+              {{range .Parents}}
+                <li>
+                  <span style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <a href="/jobs/{{.JobId}}" class="mono" style="font-size:12px;">{{.JobId}}</a>
+                    <span class="status {{statusClass .Status}}">{{.Status}}</span>
+                  </span>
+                  <span class="muted" style="font-size:12px;">{{.Name}}</span>
+                </li>
+              {{end}}
+            </ul>
+          {{else}}
+            <p class="muted">No upstream dependencies.</p>
+          {{end}}
+        </div>
+        <div>
+          <div class="muted mono" style="font-size:11px; text-transform:uppercase; letter-spacing:0.06em; margin-bottom:8px;">Dependents</div>
+          {{if .Children}}
+            <ul class="file-list">
+              {{range .Children}}
+                <li>
+                  <span style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+                    <a href="/jobs/{{.JobId}}" class="mono" style="font-size:12px;">{{.JobId}}</a>
+                    <span class="status {{statusClass .Status}}">{{.Status}}</span>
+                  </span>
+                  <span class="muted" style="font-size:12px;">{{.Name}}</span>
+                </li>
+              {{end}}
+            </ul>
+          {{else}}
+            <p class="muted">No downstream dependents.</p>
+          {{end}}
+        </div>
       </div>
-    </div>
-  </section>
-
-  <section class="panel">
-    <h2>Details</h2>
-    <div class="kv">
-      <div class="muted">Priority</div><div>{{.Job.Priority}}</div>
-      <div class="muted">Notes</div><div>{{.Job.Notes}}</div>
-      <div class="muted">Return Code</div><div>{{.Job.ReturnCode}}</div>
-    </div>
-    {{if .DetailRows}}
-      <table>
-        <thead>
-          <tr>
-            <th>Key</th>
-            <th>Value</th>
-          </tr>
-        </thead>
-        <tbody>
-          {{range .DetailRows}}
-            <tr>
-              <td>{{.Key}}</td>
-              <td>
-                {{if .IsPre}}
-                  <pre>{{.Value}}</pre>
-                {{else}}
-                  {{.Value}}
-                {{end}}
-              </td>
-            </tr>
-          {{end}}
-        </tbody>
-      </table>
-    {{else}}
-      <div class="muted">No job details.</div>
-    {{end}}
-  </section>
-
-  {{if .RunningRows}}
-    <section class="panel">
-      <h2>Running Details</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Key</th>
-            <th>Value</th>
-          </tr>
-        </thead>
-        <tbody>
-          {{range .RunningRows}}
-            <tr>
-              <td>{{.Key}}</td>
-              <td>
-                {{if .IsPre}}
-                  <pre>{{.Value}}</pre>
-                {{else}}
-                  {{.Value}}
-                {{end}}
-              </td>
-            </tr>
-          {{end}}
-        </tbody>
-      </table>
     </section>
-  {{end}}
 
-  {{if .Script}}
-    <section class="panel">
-      <h2>Job Script</h2>
-      <pre>{{.Script}}</pre>
-    </section>
-  {{end}}
-
-  {{if .SlurmScript}}
-    <section class="panel">
-      <h2>SLURM Script</h2>
-      <pre>{{.SlurmScript}}</pre>
-    </section>
-  {{end}}
-
-  <section class="panel">
-    <h2>Dependency Tree (Parents)</h2>
     {{if .ParentTree}}
-      {{template "tree" .ParentTree}}
-    {{else}}
-      <div class="muted">No parent jobs.</div>
+      <section class="panel">
+        <h2 class="section">Parent tree</h2>
+        {{template "tree" .ParentTree}}
+      </section>
     {{end}}
-  </section>
 
-  <section class="panel">
-    <h2>Dependency Tree (Children)</h2>
     {{if .ChildTree}}
-      {{template "tree" .ChildTree}}
-    {{else}}
-      <div class="muted">No children jobs.</div>
+      <section class="panel">
+        <h2 class="section">Child tree</h2>
+        {{template "tree" .ChildTree}}
+      </section>
     {{end}}
-  </section>
+  </div>
+
+  <!-- === Script ========================================================== -->
+  <div class="tab-panel" data-tab="script">
+    {{if .Script}}
+      <section class="panel">
+        <h2 class="section">Job script</h2>
+        <pre class="code">{{.Script}}</pre>
+      </section>
+    {{else}}
+      <section class="panel"><p class="muted">No job script attached.</p></section>
+    {{end}}
+
+    {{if .SlurmScript}}
+      <section class="panel">
+        <h2 class="section">SLURM script</h2>
+        <pre class="code">{{.SlurmScript}}</pre>
+      </section>
+    {{end}}
+  </div>
+
+  <!-- === Runtime ========================================================= -->
+  <div class="tab-panel" data-tab="runtime">
+    <section class="panel">
+      <h2 class="section">Execution</h2>
+      <dl class="kv">
+        <dt>Status</dt><dd><span class="status {{statusClass $job.Status}}">{{$job.Status}}</span></dd>
+        <dt>Return code</dt><dd>{{$job.ReturnCode}}</dd>
+        {{$pid := $job.GetRunningDetail "pid" ""}}
+        {{if truthy $pid}}<dt>PID</dt><dd>{{$pid}}</dd>{{end}}
+        {{$host := $job.GetRunningDetail "host" ""}}
+        {{if truthy $host}}<dt>Host</dt><dd>{{$host}}</dd>{{end}}
+        {{$sid := $job.GetRunningDetail "slurm_job_id" ""}}
+        {{if truthy $sid}}<dt>SLURM job ID</dt><dd>{{$sid}}</dd>{{end}}
+        {{$sstat := $job.GetRunningDetail "slurm_status" ""}}
+        {{if truthy $sstat}}<dt>SLURM status</dt><dd>{{$sstat}}</dd>{{end}}
+        {{$slast := $job.GetRunningDetail "slurm_last_update" ""}}
+        {{if truthy $slast}}<dt>Last SLURM poll</dt><dd>{{$slast}}</dd>{{end}}
+        {{$sst := $job.GetRunningDetail "slurm_submit_time" ""}}
+        {{if truthy $sst}}<dt>SLURM submitted</dt><dd>{{$sst}}</dd>{{end}}
+      </dl>
+    </section>
+
+    {{if .RunningRows}}
+      <section class="panel">
+        <h2 class="section">All running details</h2>
+        <dl class="kv">
+          {{range .RunningRows}}
+            <dt>{{.Key}}</dt><dd>{{.Value}}</dd>
+          {{end}}
+        </dl>
+      </section>
+    {{end}}
+  </div>
+
+  <!-- === Raw (all details) =============================================== -->
+  <div class="tab-panel" data-tab="raw">
+    <section class="panel">
+      <h2 class="section">All job details</h2>
+      {{if .DetailRows}}
+        <dl class="kv">
+          {{range .DetailRows}}
+            <dt>{{.Key}}</dt><dd>{{.Value}}</dd>
+          {{end}}
+        </dl>
+      {{else}}
+        <p class="muted">No details recorded.</p>
+      {{end}}
+    </section>
+  </div>
 {{end}}
 
 {{define "tree"}}
   <ul class="tree">
     <li>
-      <a href="/jobs/{{.Job.JobId}}">{{.Job.JobId}}</a>
+      <a href="/jobs/{{.Job.JobId}}" class="mono" style="font-size:12px;">{{.Job.JobId}}</a>
       <span class="status {{statusClass .Job.Status}}">{{.Job.Status}}</span>
-      <span class="job-name">{{.Job.Name}}</span>
+      <span class="meta">{{.Job.Name}}</span>
       {{if .Children}}
         <ul>
           {{range .Children}}

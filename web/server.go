@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -110,10 +112,12 @@ func StartServer(opts Options) error {
 
 	server := &webServer{client: opts.Client, templates: templates, verbose: opts.Verbose}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/jobs/", server.handleJob)
-	mux.HandleFunc("/jobs", server.handleQueue)
-	mux.HandleFunc("/search", server.handleSearch)
-	mux.HandleFunc("/", server.handleQueue)
+	// Go 1.22+ path patterns — {id} captured via r.PathValue.
+	mux.HandleFunc("GET /jobs/{id}/logs/{stream}", server.handleJobLogs)
+	mux.HandleFunc("GET /jobs/{id}", server.handleJob)
+	mux.HandleFunc("GET /jobs", server.handleQueue)
+	mux.HandleFunc("GET /search", server.handleSearch)
+	mux.HandleFunc("GET /", server.handleQueue)
 
 	httpServer := &http.Server{
 		Handler:      mux,
@@ -143,6 +147,14 @@ func StartServer(opts Options) error {
 			log.Printf("web server error: %v", err)
 		}
 	}()
+
+	// Keepalive: ping the batchq server every keepaliveInterval so its
+	// idle-timeout never fires while the web UI is up. The web process
+	// being alive implies users may interact at any moment; we don't
+	// want the batchq server to evict itself underneath us.
+	keepaliveCtx, keepaliveCancel := context.WithCancel(context.Background())
+	defer keepaliveCancel()
+	go server.runKeepalive(keepaliveCtx)
 
 	<-shutdownCh
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -239,6 +251,27 @@ func loadWebTemplates() (*template.Template, error) {
 		"statusClass": func(status jobs.StatusCode) string {
 			return strings.ToLower(status.String())
 		},
+		"lower": strings.ToLower,
+		// Display helpers for detail values stored as raw strings.
+		"memDisplay":      jobs.PrintMemoryString,
+		"walltimeDisplay": jobs.WalltimeStringToString,
+		"envCount":        countEnvEntries,
+		// truthy reports whether a string is non-empty after trimming.
+		"truthy": func(s string) bool { return strings.TrimSpace(s) != "" },
+		// logPath returns the (substituted, wd-anchored) path of the
+		// requested stdout/stderr stream for the given job.
+		"logPath": resolveLogPath,
+		// elapsed renders a duration between two times, e.g. "1h 32m 4s".
+		"elapsed": func(start, end time.Time) string {
+			if start.IsZero() || end.IsZero() {
+				return ""
+			}
+			d := end.Sub(start).Round(time.Second)
+			if d < 0 {
+				return ""
+			}
+			return d.String()
+		},
 	}
 
 	return template.New("base").Funcs(funcs).ParseFS(webTemplatesFS, "templates/*.html")
@@ -276,8 +309,8 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 	s.logf("web request %s %s", r.Method, r.URL.Path)
-	jobId := strings.TrimPrefix(r.URL.Path, "/jobs/")
-	if jobId == "" || strings.Contains(jobId, "/") {
+	jobId := r.PathValue("id")
+	if jobId == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -691,4 +724,120 @@ func isActiveStatusSet(statuses []jobs.StatusCode) bool {
 		}
 	}
 	return true
+}
+
+// keepaliveInterval is how often the web server pings the batchq server
+// to defer its idle-timeout. The batchq server defaults to a 1m idle
+// timeout when autospawned; 30s gives us a comfortable margin.
+const keepaliveInterval = 30 * time.Second
+
+// logTailBytes caps the size of a log file returned to the browser by
+// default. Bigger values balloon page weight; ?full=1 opts out.
+const logTailBytes = 256 * 1024
+
+// runKeepalive pings the batchq server periodically so its idle
+// shutdown doesn't fire underneath the web UI. Returns when ctx is
+// cancelled.
+func (s *webServer) runKeepalive(ctx context.Context) {
+	ticker := time.NewTicker(keepaliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			if err := s.client.Health(pingCtx); err != nil {
+				s.logf("keepalive ping failed: %v", err)
+			}
+			cancel()
+		}
+	}
+}
+
+// handleJobLogs serves a job's stdout or stderr file. Streams text/plain
+// with the last logTailBytes by default; ?full=1 returns everything.
+func (s *webServer) handleJobLogs(w http.ResponseWriter, r *http.Request) {
+	s.logf("web request %s %s", r.Method, r.URL.Path)
+	jobId := r.PathValue("id")
+	stream := r.PathValue("stream")
+	if stream != "stdout" && stream != "stderr" {
+		http.NotFound(w, r)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), webRequestTimeout)
+	defer cancel()
+
+	job, err := s.getJob(ctx, jobId)
+	if err != nil {
+		s.serveError(w, r, "log: job lookup", err)
+		return
+	}
+	if job == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	path := resolveLogPath(job, stream)
+	if path == "" {
+		http.Error(w, "no "+stream+" path configured for this job", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Log-Path", path)
+
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			w.Header().Set("X-Log-State", "not-yet-written")
+			fmt.Fprintf(w, "(no %s file yet — job may not have started)\n\nexpected at: %s\n", stream, path)
+			return
+		}
+		s.serveError(w, r, "log: open", err)
+		return
+	}
+	defer f.Close()
+
+	full := r.URL.Query().Get("full") == "1"
+	info, err := f.Stat()
+	if err != nil {
+		s.serveError(w, r, "log: stat", err)
+		return
+	}
+	w.Header().Set("X-Log-Size", fmt.Sprintf("%d", info.Size()))
+
+	if !full && info.Size() > logTailBytes {
+		// Seek to the tail and prepend a notice so the user knows we
+		// truncated.
+		if _, err := f.Seek(-logTailBytes, io.SeekEnd); err != nil {
+			s.serveError(w, r, "log: seek", err)
+			return
+		}
+		w.Header().Set("X-Log-Truncated", "1")
+		fmt.Fprintf(w, "[showing last %d of %d bytes — append ?full=1 for the whole file]\n\n", logTailBytes, info.Size())
+	}
+	if _, err := io.Copy(w, f); err != nil {
+		// Headers may already be sent; just log.
+		log.Printf("web log copy %s: %v", path, err)
+	}
+}
+
+// resolveLogPath returns the (possibly relative) on-disk path for the
+// requested stream. %JOBID is substituted with the actual job id, and a
+// relative path is anchored to the job's working directory.
+func resolveLogPath(job *jobs.JobDef, stream string) string {
+	raw := job.GetDetail(stream, "")
+	if raw == "" {
+		return ""
+	}
+	expanded := strings.ReplaceAll(raw, "%JOBID", job.JobId)
+	if strings.HasPrefix(expanded, "/") {
+		return expanded
+	}
+	if wd := job.GetDetail("wd", ""); wd != "" && wd != "." {
+		return filepath.Join(wd, expanded)
+	}
+	return expanded
 }

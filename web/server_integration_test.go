@@ -86,10 +86,11 @@ func startWebForTest(t *testing.T, c *client.Client) *http.Client {
 	wsrv := &webServer{client: c, templates: templates, verbose: false}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/jobs/", wsrv.handleJob)
-	mux.HandleFunc("/jobs", wsrv.handleQueue)
-	mux.HandleFunc("/search", wsrv.handleSearch)
-	mux.HandleFunc("/", wsrv.handleQueue)
+	mux.HandleFunc("GET /jobs/{id}/logs/{stream}", wsrv.handleJobLogs)
+	mux.HandleFunc("GET /jobs/{id}", wsrv.handleJob)
+	mux.HandleFunc("GET /jobs", wsrv.handleQueue)
+	mux.HandleFunc("GET /search", wsrv.handleSearch)
+	mux.HandleFunc("GET /", wsrv.handleQueue)
 
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
