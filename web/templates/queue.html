@@ -34,7 +34,6 @@
       </h2>
       <span class="muted mono">
         {{len .Jobs}} {{if eq (len .Jobs) 1}}{{if or .Query .RunID}}match{{else}}job{{end}}{{else}}{{if or .Query .RunID}}matches{{else}}jobs{{end}}{{end}}
-        {{if not (or .Query .RunID)}}{{if .ShowAll}} · all{{else}} · filtered{{end}}{{end}}
       </span>
       {{if or .Query .RunID}}
         <a class="btn ghost" href="/jobs" style="margin-left:auto;">Clear filters</a>

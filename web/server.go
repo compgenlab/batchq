@@ -61,7 +61,6 @@ type queuePage struct {
 	Title           string
 	ContentTemplate string
 	Jobs            []*jobs.JobDef
-	ShowAll         bool
 	Query           string
 	RunID           string
 	StatusOptions   []string
@@ -350,7 +349,6 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	showAll := len(statuses) == 0
 	title := "batchq queue"
 	switch {
 	case query != "" && runID != "":
@@ -365,10 +363,9 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 		ContentTemplate: "queue-content",
 		Query:           query,
 		RunID:           runID,
-		Jobs:           jobList,
-		ShowAll:        showAll,
-		StatusOptions:  statusOptions(),
-		SelectedStatus: selected,
+		Jobs:            jobList,
+		StatusOptions:   statusOptions(),
+		SelectedStatus:  selected,
 	}
 
 	s.render(w, r, data)
