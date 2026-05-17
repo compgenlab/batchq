@@ -787,6 +787,7 @@
               e.preventDefault();
               const k = btn.getAttribute("data-filter-quick");
               if (k === "active") setChecked(form, ACTIVE);
+              else if (k === "failed") setChecked(form, new Set(["FAILED"]));
               else if (k === "all") setChecked(form, ALLSET);
               else if (k === "none") setChecked(form, new Set());
               submit(form);
