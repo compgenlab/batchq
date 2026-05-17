@@ -1,33 +1,50 @@
-all: bin/batchq.linux
+# batchq is pure Go (modernc.org/sqlite); no CGO, no C cross-toolchain.
+# CGO_ENABLED=0 makes Go produce a statically linked binary even without
+# musl, which is what we want for portable distribution.
+
+CGO_ENABLED ?= 0
+export CGO_ENABLED
 
 SOURCES := $(shell find . -name '*.go')
 
+# Version resolution: exact-tag commits get the tag name (e.g. v0.2.0);
+# anything else gets a "v0.2.0-dev-<short-sha>" string. Bump the dev
+# base ("v0.2.0") here when starting work on the next minor series.
+VERSION ?= $(shell \
+	if t=$$(git describe --tags --exact-match 2>/dev/null); then \
+		echo "$$t"; \
+	elif s=$$(git rev-parse --short HEAD 2>/dev/null); then \
+		echo "v0.2.0-dev-$$s"; \
+	else \
+		echo "dev"; \
+	fi)
+
+LDFLAGS := -ldflags "-X github.com/mbreese/batchq/cmd.Version=$(VERSION)"
+
+all: bin/batchq.linux
+
 bin/batchq.macos_amd64: go.mod go.sum $(SOURCES)
-	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 go build -o bin/batchq.macos_amd64 main.go
+	GOOS=darwin GOARCH=amd64 go build $(LDFLAGS) -o $@ main.go
 
 bin/batchq.macos_arm64: go.mod go.sum $(SOURCES)
-	CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 go build -o bin/batchq.macos_arm64 main.go
+	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o $@ main.go
 
-bin/batchq.linux_musl_amd64: go.mod go.sum $(SOURCES)
-	CC=x86_64-linux-musl-gcc \
-	CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags='-extldflags "-static"' -o bin/batchq.linux_musl_amd64 main.go
+bin/batchq.linux_amd64: go.mod go.sum $(SOURCES)
+	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o $@ main.go
 
-bin/batchq.linux_musl_aarch64: go.mod go.sum $(SOURCES)
-	CC=aarch64-linux-musl-gcc \
-	CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -ldflags='-extldflags "-static"' -o bin/batchq.linux_musl_aarch64 main.go
-
-#bin/batchq.linux_arm64: go.mod go.sum $(SOURCES)
-#	CC=aarch64-linux-gnu-gcc \
-#	CGO_ENABLED=1 GOOS=linux GOARCH=arm64 go build -o bin/batchq.linux_arm64 main.go
+bin/batchq.linux_arm64: go.mod go.sum $(SOURCES)
+	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o $@ main.go
 
 bin/batchq.linux: go.mod go.sum $(SOURCES)
-	CGO_ENABLED=1 GOOS=linux go build -o bin/batchq.linux main.go
-
+	GOOS=linux go build $(LDFLAGS) -o $@ main.go
 
 clean:
-	rm bin/*
+	rm -f bin/*
 
 run:
-	CGO_ENABLED=1 go run main.go
+	go run $(LDFLAGS) main.go
 
-.PHONY: run clean
+test:
+	go test ./...
+
+.PHONY: all clean run test

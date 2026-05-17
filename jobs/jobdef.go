@@ -78,6 +78,14 @@ type JobDef struct {
 	AfterOk        []string
 	Details        []JobDefDetail
 	RunningDetails []JobRunningDetail
+
+	// InputFiles and OutputFiles are optional submit-time metadata used
+	// for pipeline introspection. They never change after submission.
+	// Persisted in the job_inputs / job_outputs tables (one row per
+	// path) rather than in Details, so reverse lookups by path are
+	// indexed.
+	InputFiles  []string
+	OutputFiles []string
 }
 
 type JobDefDetail struct {
@@ -131,6 +139,39 @@ func (job *JobDef) GetRunningDetail(key string, defval string) string {
 	return defval
 }
 
+// RunID returns the workflow run identifier ("run_id" detail), or "" if
+// unset. Convenience over GetDetail.
+func (job *JobDef) RunID() string {
+	return job.GetDetail("run_id", "")
+}
+
+// SetRunID stores the workflow run identifier as a detail. No-op once
+// the job has been submitted (matches AddDetail semantics).
+func (job *JobDef) SetRunID(id string) *JobDef {
+	if id != "" {
+		job.AddDetail("run_id", id)
+	}
+	return job
+}
+
+// AddInputFile records an input-file path. No-op once the job has been
+// submitted; duplicates are dropped.
+func (job *JobDef) AddInputFile(path string) *JobDef {
+	if job.JobId == "" && path != "" && !support.Contains(job.InputFiles, path) {
+		job.InputFiles = append(job.InputFiles, path)
+	}
+	return job
+}
+
+// AddOutputFile records an output-file path. No-op once the job has been
+// submitted; duplicates are dropped.
+func (job *JobDef) AddOutputFile(path string) *JobDef {
+	if job.JobId == "" && path != "" && !support.Contains(job.OutputFiles, path) {
+		job.OutputFiles = append(job.OutputFiles, path)
+	}
+	return job
+}
+
 func (job *JobDef) AddAfterOk(depId string) *JobDef {
 	// can only alter a job that hasn't been submitted.
 	if job.JobId == "" {
@@ -154,6 +195,21 @@ func (job *JobDef) Print() {
 
 	if len(job.AfterOk) > 0 {
 		fmt.Printf("after-ok : %s\n", strings.Join(job.AfterOk, ","))
+	}
+	if v := job.RunID(); v != "" {
+		fmt.Printf("run-id   : %s\n", v)
+	}
+	if len(job.InputFiles) > 0 {
+		fmt.Printf("inputs   : %s\n", job.InputFiles[0])
+		for _, p := range job.InputFiles[1:] {
+			fmt.Printf("           %s\n", p)
+		}
+	}
+	if len(job.OutputFiles) > 0 {
+		fmt.Printf("outputs  : %s\n", job.OutputFiles[0])
+		for _, p := range job.OutputFiles[1:] {
+			fmt.Printf("           %s\n", p)
+		}
 	}
 
 	fmt.Printf("---[job details]---\n")

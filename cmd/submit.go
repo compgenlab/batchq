@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -9,9 +9,9 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/mbreese/batchq/db"
+	"github.com/mbreese/batchq/api"
+	"github.com/mbreese/batchq/client"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/support"
 	"github.com/spf13/cobra"
@@ -63,34 +63,25 @@ var submitCmd = &cobra.Command{
 
 		details := make(map[string]string)
 
-		// these are the default values...
-		details["stdout"] = "./batchq-%JOBID.stdout"
-		details["stderr"] = "./batchq-%JOBID.stderr"
-		details["wd"] = "."
-
-		// get default/config values if not specified
-		if tmp, ok := Config.GetInt("job_defaults", "procs"); ok && tmp > 0 {
-			details["procs"] = strconv.Itoa(tmp)
+		// Submit-time defaults — Config.JobDefaults has built-in
+		// fallbacks already applied (stdout/stderr/wd); the optional
+		// numeric/walltime/mem knobs remain zero-valued when not set.
+		details["stdout"] = Config.JobDefaults.Stdout
+		details["stderr"] = Config.JobDefaults.Stderr
+		details["wd"] = Config.JobDefaults.Wd
+		if Config.JobDefaults.Procs > 0 {
+			details["procs"] = strconv.Itoa(Config.JobDefaults.Procs)
 		}
-		if tmp, ok := Config.Get("job_defaults", "mem"); ok {
-			details["mem"] = strconv.Itoa(jobs.ParseMemoryString(tmp))
+		if v := Config.JobDefaults.Mem; v != "" {
+			details["mem"] = strconv.Itoa(jobs.ParseMemoryString(v))
 		}
-		if tmp, ok := Config.Get("job_defaults", "walltime"); ok {
-			details["walltime"] = strconv.Itoa(jobs.ParseWalltimeString(tmp))
+		if v := Config.JobDefaults.Walltime; v != "" {
+			details["walltime"] = strconv.Itoa(jobs.ParseWalltimeString(v))
 		}
-		if tmp, ok := Config.Get("job_defaults", "wd"); ok {
-			details["wd"] = tmp
-		}
-		if tmp, ok := Config.Get("job_defaults", "stdout"); ok {
-			details["stdout"] = tmp
-		}
-		if tmp, ok := Config.Get("job_defaults", "stderr"); ok {
-			details["stderr"] = tmp
-		}
-		if tmp, ok := Config.GetBool("job_defaults", "hold"); ok && tmp {
+		if Config.JobDefaults.Hold {
 			jobHold = true
 		}
-		if tmp, ok := Config.GetBool("job_defaults", "env"); ok && tmp {
+		if Config.JobDefaults.Env {
 			jobEnv = true
 		}
 
@@ -107,6 +98,9 @@ var submitCmd = &cobra.Command{
 		// #BATCHQ -env
 		// #BATCHQ -hold
 		// #BATCHQ -afterok val1,val2
+		// #BATCHQ -run-id workflow-run-id
+		// #BATCHQ -input  path   (repeatable; accumulates)
+		// #BATCHQ -output path   (repeatable; accumulates)
 
 		incomment := true
 		for _, line := range strings.Split(scriptSrc, "\n") {
@@ -177,6 +171,23 @@ var submitCmd = &cobra.Command{
 							if jobDeps == "" {
 								jobDeps = v
 							}
+						case "run-id":
+							if v == "" {
+								log.Fatal("Missing value for -run-id")
+							}
+							if jobRunID == "" {
+								jobRunID = v
+							}
+						case "input":
+							if v == "" {
+								log.Fatal("Missing value for -input")
+							}
+							jobInputs = append(jobInputs, v)
+						case "output":
+							if v == "" {
+								log.Fatal("Missing value for -output")
+							}
+							jobOutputs = append(jobOutputs, v)
 						default:
 						}
 					}
@@ -290,9 +301,7 @@ var submitCmd = &cobra.Command{
 
 		// if the job name isn't set, look for a default option
 		if jobName == "" {
-			if tmp, ok := Config.Get("job_defaults", "name"); ok {
-				jobName = tmp
-			}
+			jobName = Config.JobDefaults.Name
 		}
 
 		// replace relative paths for wd, stderr, stdout
@@ -336,50 +345,62 @@ var submitCmd = &cobra.Command{
 			fmt.Fprint(os.Stderr, scriptSrc)
 		}
 
-		job := jobs.NewJobDef(jobName, scriptSrc)
-		if jobHold {
-			job.Status = jobs.USERHOLD
-		}
+		// The script source is carried in details["script"] over the wire.
+		details["script"] = scriptSrc
 
-		for k, v := range details {
-			job.AddDetail(k, v)
-		}
-
-		var jobq db.BatchDB
-		var err error
-		if jobq, err = db.OpenDB(dbpath); err != nil {
-			log.Fatalln(err)
-		}
-		defer jobq.Close()
-
-		baddep := false
+		var afterOk []string
 		for _, val := range strings.Split(jobDeps, ",") {
 			depid := strings.TrimSpace(val)
 			if depid == "" {
 				continue
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			afterOk = append(afterOk, depid)
+		}
 
-			// fmt.Println("Checking dep: ", depid)
-			dep := jobq.GetJob(ctx, depid)
-			if dep == nil || dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
-				// bad dependency
+		c := mustDialClient()
+		defer c.Close()
+
+		baddep := false
+		for _, depid := range afterOk {
+			ctx, cancel := cmdContext()
+			dep, err := c.GetJob(ctx, depid)
+			cancel()
+			if err != nil {
+				if errors.Is(err, client.ErrNotFound) {
+					fmt.Fprintf(os.Stderr, "ERROR: Bad job dependency: %s\n", depid)
+					baddep = true
+					continue
+				}
+				log.Fatalln(err)
+			}
+			if dep == nil || dep.Status == jobs.CANCELED.String() || dep.Status == jobs.FAILED.String() {
 				fmt.Fprintf(os.Stderr, "ERROR: Bad job dependency: %s\n", depid)
 				baddep = true
 			}
-			job.AddAfterOk(depid)
 		}
 
 		if baddep {
 			os.Exit(1)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := cmdContext()
 		defer cancel()
-		// fmt.Println("Submitting job")
-		job = jobq.SubmitJob(ctx, job)
-		fmt.Printf("%s\n", job.JobId)
+		if jobRunID != "" {
+			details["run_id"] = jobRunID
+		}
+		req := &api.SubmitJobRequest{
+			Name:        jobName,
+			Hold:        jobHold,
+			AfterOk:     afterOk,
+			Details:     details,
+			InputFiles:  jobInputs,
+			OutputFiles: jobOutputs,
+		}
+		dto, err := c.SubmitJob(ctx, req)
+		if err != nil {
+			log.Fatalln(err)
+		}
+		fmt.Printf("%s\n", dto.JobID)
 
 	},
 }
@@ -406,6 +427,9 @@ var jobStdout string
 var jobStderr string
 var jobEnv bool
 var jobHold bool
+var jobRunID string
+var jobInputs []string
+var jobOutputs []string
 
 var verbose bool
 var slurmMode bool
@@ -425,6 +449,9 @@ func init() {
 	submitCmd.Flags().IntVarP(&jobProcs, "procs", "p", -1, "Processors required")
 	submitCmd.Flags().StringVarP(&jobMemStr, "mem", "m", "", "Max-memory (MB,GB)")
 	submitCmd.Flags().StringVarP(&jobTimeStr, "walltime", "t", "", "Max-time (D-HH:MM:SS)")
+	submitCmd.Flags().StringVar(&jobRunID, "run-id", "", "Workflow run ID (groups related jobs)")
+	submitCmd.Flags().StringArrayVar(&jobInputs, "input", nil, "Input file path (repeatable)")
+	submitCmd.Flags().StringArrayVar(&jobOutputs, "output", nil, "Output file path (repeatable)")
 
 	rootCmd.AddCommand(submitCmd)
 }

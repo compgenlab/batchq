@@ -12,14 +12,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/mbreese/batchq/db"
-	"github.com/mbreese/batchq/iniconfig"
+	"github.com/mbreese/batchq/api"
+	"github.com/mbreese/batchq/client"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/support"
 )
@@ -30,8 +29,8 @@ var webTemplatesFS embed.FS
 const webRequestTimeout = 2 * time.Minute
 
 type Options struct {
-	Config     *iniconfig.Config
-	DBPath     string
+	Config     *support.Config
+	Client     *client.Client
 	SocketPath string
 	ListenAddr string
 	Force      bool
@@ -39,7 +38,7 @@ type Options struct {
 }
 
 type webServer struct {
-	db        db.BatchDB
+	client    *client.Client
 	templates *template.Template
 	verbose   bool
 }
@@ -91,6 +90,9 @@ type searchPage struct {
 
 func StartServer(opts Options) error {
 	log.SetOutput(os.Stderr)
+	if opts.Client == nil {
+		return errors.New("web: client required")
+	}
 	socketPath, err := resolveSocketPath(opts)
 	if err != nil {
 		return err
@@ -101,21 +103,12 @@ func StartServer(opts Options) error {
 	}
 	defer cleanup()
 
-	if strings.TrimSpace(opts.DBPath) == "" {
-		return errors.New("db path required")
-	}
 	templates, err := loadWebTemplates()
 	if err != nil {
 		return err
 	}
 
-	jobq, err := db.OpenDB(opts.DBPath)
-	if err != nil {
-		return err
-	}
-	defer jobq.Close()
-
-	server := &webServer{db: jobq, templates: templates, verbose: opts.Verbose}
+	server := &webServer{client: opts.Client, templates: templates, verbose: opts.Verbose}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/jobs/", server.handleJob)
 	mux.HandleFunc("/jobs", server.handleQueue)
@@ -150,14 +143,10 @@ func resolveSocketPath(opts Options) (string, error) {
 	if opts.SocketPath != "" {
 		return normalizeSocketPath(opts.SocketPath)
 	}
-
-	home := iniconfig.GetBatchqHome()
-	defaultSocket := filepath.Join(home, "batchq.sock")
-	if opts.Config == nil {
-		return normalizeSocketPath(defaultSocket)
+	if opts.Config != nil && opts.Config.Web.Socket != "" {
+		return normalizeSocketPath(opts.Config.Web.Socket)
 	}
-	socket, _ := opts.Config.Get("batchq", "web_socket", defaultSocket)
-	return normalizeSocketPath(socket)
+	return normalizeSocketPath(support.NewDefaults().WebSocket)
 }
 
 func resolveListenAddress(opts Options) string {
@@ -167,10 +156,7 @@ func resolveListenAddress(opts Options) string {
 	if opts.Config == nil {
 		return ""
 	}
-	if val, ok := opts.Config.Get("batchq", "web_listen"); ok {
-		return val
-	}
-	return ""
+	return opts.Config.Web.Listen
 }
 
 func normalizeSocketPath(path string) (string, error) {
@@ -258,7 +244,11 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	statuses, selected := parseStatusFilter(r)
-	jobList := s.jobsForFilter(ctx, statuses)
+	jobList, err := s.jobsForFilter(ctx, statuses)
+	if err != nil {
+		s.serveError(w, r, "queue lookup", err)
+		return
+	}
 	showAll := len(statuses) == 0
 	data := queuePage{
 		Title:           "batchq queue",
@@ -284,24 +274,49 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), webRequestTimeout)
 	defer cancel()
 
-	job := s.db.GetJob(ctx, jobId)
+	job, err := s.getJob(ctx, jobId)
+	if err != nil {
+		s.serveError(w, r, "job lookup", err)
+		return
+	}
 	if job == nil {
 		http.NotFound(w, r)
 		return
 	}
 
-	parents := fetchJobs(ctx, s.db, job.AfterOk)
-	children := fetchJobs(ctx, s.db, s.db.GetJobDependents(ctx, job.JobId))
+	parents, err := s.fetchJobs(ctx, job.AfterOk)
+	if err != nil {
+		s.serveError(w, r, "parents lookup", err)
+		return
+	}
+	dependentIDs, err := s.client.GetJobDependents(ctx, job.JobId)
+	if err != nil {
+		s.serveError(w, r, "dependents lookup", err)
+		return
+	}
+	children, err := s.fetchJobs(ctx, dependentIDs)
+	if err != nil {
+		s.serveError(w, r, "children lookup", err)
+		return
+	}
 
 	detailRows, script := buildDetailRows(job.Details, "script")
 	runningRows, slurmScript := buildDetailRowsRunning(job.RunningDetails, "slurm_script")
 	var parentTree *jobTreeNode
 	if len(parents) > 0 {
-		parentTree = buildParentTree(ctx, s.db, job.JobId, map[string]bool{})
+		parentTree, err = s.buildParentTree(ctx, job.JobId, map[string]bool{})
+		if err != nil {
+			s.serveError(w, r, "parent tree", err)
+			return
+		}
 	}
 	var childTree *jobTreeNode
 	if len(children) > 0 {
-		childTree = buildChildTree(ctx, s.db, job.JobId, map[string]bool{})
+		childTree, err = s.buildChildTree(ctx, job.JobId, map[string]bool{})
+		if err != nil {
+			s.serveError(w, r, "child tree", err)
+			return
+		}
 	}
 
 	data := jobPage{
@@ -337,11 +352,16 @@ func (s *webServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	statuses, selected := parseStatusFilter(r)
 	var results []*jobs.JobDef
 	if query != "" {
-		if len(statuses) > 0 {
-			results = s.db.SearchJobs(ctx, query, statuses)
-		} else {
-			results = s.db.SearchJobs(ctx, query, nil)
+		dtos, err := s.client.ListJobs(ctx, client.ListJobsOptions{
+			ShowAll:  true,
+			Query:    query,
+			Statuses: statusStrings(statuses),
+		})
+		if err != nil {
+			s.serveError(w, r, "search", err)
+			return
 		}
+		results = dtosToJobDefs(dtos)
 	}
 
 	data := searchPage{
@@ -367,23 +387,66 @@ func (s *webServer) render(w http.ResponseWriter, r *http.Request, data any) {
 	_, _ = w.Write(buf.Bytes())
 }
 
+func (s *webServer) serveError(w http.ResponseWriter, r *http.Request, what string, err error) {
+	log.Printf("web %s: %s: %v", r.URL.Path, what, err)
+	http.Error(w, fmt.Sprintf("batchq server error: %s", what), http.StatusBadGateway)
+}
+
 func (s *webServer) logf(format string, args ...any) {
 	if s.verbose {
 		log.Printf(format, args...)
 	}
 }
 
-func fetchJobs(ctx context.Context, batchdb db.BatchDB, ids []string) []*jobs.JobDef {
+// getJob fetches a job and converts the DTO to a *jobs.JobDef for the
+// templates. Returns (nil, nil) when the job is not found.
+func (s *webServer) getJob(ctx context.Context, jobID string) (*jobs.JobDef, error) {
+	dto, err := s.client.GetJob(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return dtoToJobDef(dto), nil
+}
+
+func (s *webServer) fetchJobs(ctx context.Context, ids []string) ([]*jobs.JobDef, error) {
 	var list []*jobs.JobDef
 	for _, id := range ids {
-		if job := batchdb.GetJob(ctx, id); job != nil {
+		job, err := s.getJob(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if job != nil {
 			list = append(list, job)
 		}
 	}
 	sort.Slice(list, func(i, j int) bool {
 		return list[i].JobId < list[j].JobId
 	})
-	return list
+	return list, nil
+}
+
+// dtoToJobDef wraps api.JobToDef and additionally parses the wire-format
+// status string back into a StatusCode so templates can render it.
+func dtoToJobDef(dto *api.JobDTO) *jobs.JobDef {
+	if dto == nil {
+		return nil
+	}
+	def := api.JobToDef(dto)
+	def.Status = parseStatusCode(dto.Status)
+	return def
+}
+
+func dtosToJobDefs(dtos []*api.JobDTO) []*jobs.JobDef {
+	out := make([]*jobs.JobDef, 0, len(dtos))
+	for _, dto := range dtos {
+		if def := dtoToJobDef(dto); def != nil {
+			out = append(out, def)
+		}
+	}
+	return out
 }
 
 func buildDetailRows(details []jobs.JobDefDetail, scriptKey string) ([]detailRow, string) {
@@ -435,59 +498,88 @@ func buildDetailRowsRunning(details []jobs.JobRunningDetail, scriptKey string) (
 	return rows, script
 }
 
-func buildParentTree(ctx context.Context, batchdb db.BatchDB, jobId string, visited map[string]bool) *jobTreeNode {
-	job := batchdb.GetJob(ctx, jobId)
+func (s *webServer) buildParentTree(ctx context.Context, jobId string, visited map[string]bool) (*jobTreeNode, error) {
+	job, err := s.getJob(ctx, jobId)
+	if err != nil {
+		return nil, err
+	}
 	if job == nil {
-		return nil
+		return nil, nil
 	}
 	node := &jobTreeNode{Job: job}
 	if visited[jobId] {
-		return node
+		return node, nil
 	}
 	visited[jobId] = true
 	defer delete(visited, jobId)
 	for _, parentId := range job.AfterOk {
-		if parent := buildParentTree(ctx, batchdb, parentId, visited); parent != nil {
+		parent, err := s.buildParentTree(ctx, parentId, visited)
+		if err != nil {
+			return nil, err
+		}
+		if parent != nil {
 			node.Children = append(node.Children, parent)
 		}
 	}
 	sort.Slice(node.Children, func(i, j int) bool {
 		return node.Children[i].Job.JobId < node.Children[j].Job.JobId
 	})
-	return node
+	return node, nil
 }
 
-func buildChildTree(ctx context.Context, batchdb db.BatchDB, jobId string, visited map[string]bool) *jobTreeNode {
-	job := batchdb.GetJob(ctx, jobId)
+func (s *webServer) buildChildTree(ctx context.Context, jobId string, visited map[string]bool) (*jobTreeNode, error) {
+	job, err := s.getJob(ctx, jobId)
+	if err != nil {
+		return nil, err
+	}
 	if job == nil {
-		return nil
+		return nil, nil
 	}
 	node := &jobTreeNode{Job: job}
 	if visited[jobId] {
-		return node
+		return node, nil
 	}
 	visited[jobId] = true
 	defer delete(visited, jobId)
-	childIds := batchdb.GetJobDependents(ctx, jobId)
+	childIds, err := s.client.GetJobDependents(ctx, jobId)
+	if err != nil {
+		return nil, err
+	}
 	for _, childId := range childIds {
-		if child := buildChildTree(ctx, batchdb, childId, visited); child != nil {
+		child, err := s.buildChildTree(ctx, childId, visited)
+		if err != nil {
+			return nil, err
+		}
+		if child != nil {
 			node.Children = append(node.Children, child)
 		}
 	}
 	sort.Slice(node.Children, func(i, j int) bool {
 		return node.Children[i].Job.JobId < node.Children[j].Job.JobId
 	})
-	return node
+	return node, nil
 }
 
-func (s *webServer) jobsForFilter(ctx context.Context, statuses []jobs.StatusCode) []*jobs.JobDef {
-	if len(statuses) == 0 {
-		return s.db.GetQueueJobs(ctx, true, true)
+func (s *webServer) jobsForFilter(ctx context.Context, statuses []jobs.StatusCode) ([]*jobs.JobDef, error) {
+	var (
+		dtos []*api.JobDTO
+		err  error
+	)
+	switch {
+	case len(statuses) == 0:
+		dtos, err = s.client.GetQueueJobs(ctx, true, true)
+	case isActiveStatusSet(statuses):
+		dtos, err = s.client.GetQueueJobs(ctx, false, true)
+	default:
+		dtos, err = s.client.ListJobs(ctx, client.ListJobsOptions{
+			Statuses:     statusStrings(statuses),
+			SortByStatus: true,
+		})
 	}
-	if isActiveStatusSet(statuses) {
-		return s.db.GetQueueJobs(ctx, false, true)
+	if err != nil {
+		return nil, err
 	}
-	return s.db.GetJobsByStatus(ctx, statuses, true)
+	return dtosToJobDefs(dtos), nil
 }
 
 func parseStatusFilter(r *http.Request) ([]jobs.StatusCode, map[string]bool) {
@@ -535,6 +627,21 @@ func statusLookup() map[string]jobs.StatusCode {
 		jobs.FAILED.String():      jobs.FAILED,
 		jobs.CANCELED.String():    jobs.CANCELED,
 	}
+}
+
+func parseStatusCode(name string) jobs.StatusCode {
+	if code, ok := statusLookup()[strings.ToUpper(strings.TrimSpace(name))]; ok {
+		return code
+	}
+	return jobs.UNKNOWN
+}
+
+func statusStrings(codes []jobs.StatusCode) []string {
+	out := make([]string, 0, len(codes))
+	for _, c := range codes {
+		out = append(out, c.String())
+	}
+	return out
 }
 
 func statusOptions() []string {

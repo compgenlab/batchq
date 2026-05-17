@@ -17,9 +17,12 @@ var webCmd = &cobra.Command{
 	Use:   "web",
 	Short: "Start a local web UI",
 	Run: func(cmd *cobra.Command, args []string) {
+		c := mustDialClient()
+		defer c.Close()
+
 		opts := web.Options{
 			Config:     Config,
-			DBPath:     dbpath,
+			Client:     c,
 			SocketPath: webSocket,
 			ListenAddr: webListen,
 			Force:      webForce,
