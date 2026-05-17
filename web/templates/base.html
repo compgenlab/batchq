@@ -294,6 +294,24 @@
       table.list td.id a:hover { color: var(--accent); border-bottom-color: var(--accent-soft); }
       table.list td.name { color: var(--ink); }
       table.list td.time { color: var(--muted); font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+      table.list td.run { font-family: var(--font-mono); font-size: 12px; }
+      table.list td.run .run-link {
+        display: inline-block;
+        max-width: 100%;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent-2);
+        border: 1px solid transparent;
+        transition: background 120ms ease, border-color 120ms ease;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      table.list td.run .run-link:hover {
+        background: var(--surface);
+        border-color: var(--accent);
+      }
       table.list .empty {
         text-align: center;
         color: var(--subtle);

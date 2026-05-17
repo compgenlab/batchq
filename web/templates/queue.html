@@ -1,7 +1,8 @@
 {{define "queue-content"}}
   <section class="panel compact">
     <form class="filters filters-form" method="get" action="/jobs">
-      {{if .Query}}<input type="hidden" name="q" value="{{.Query}}">{{end}}
+      {{if .Query}}<input type="hidden" name="q"      value="{{.Query}}">{{end}}
+      {{if .RunID}}<input type="hidden" name="run_id" value="{{.RunID}}">{{end}}
       <div class="filter-chips" role="group" aria-label="Status filter">
         {{range .StatusOptions}}
           <label class="chip {{if index $.SelectedStatus .}}checked{{end}}" data-status="{{lower .}}">
@@ -26,21 +27,27 @@
 
   <section class="panel">
     <div class="panel-header">
-      <h2 class="section">{{if .Query}}Search results for &ldquo;{{.Query}}&rdquo;{{else}}Queue{{end}}</h2>
+      <h2 class="section">
+        {{if .Query}}Search results for &ldquo;{{.Query}}&rdquo;
+        {{else if .RunID}}Run · <span class="mono" style="font-size:0.85em;">{{.RunID}}</span>
+        {{else}}Queue{{end}}
+      </h2>
       <span class="muted mono">
-        {{len .Jobs}} {{if eq (len .Jobs) 1}}{{if .Query}}match{{else}}job{{end}}{{else}}{{if .Query}}matches{{else}}jobs{{end}}{{end}}
-        {{if not .Query}}{{if .ShowAll}} · all{{else}} · filtered{{end}}{{end}}
+        {{len .Jobs}} {{if eq (len .Jobs) 1}}{{if or .Query .RunID}}match{{else}}job{{end}}{{else}}{{if or .Query .RunID}}matches{{else}}jobs{{end}}{{end}}
+        {{if not (or .Query .RunID)}}{{if .ShowAll}} · all{{else}} · filtered{{end}}{{end}}
       </span>
-      {{if .Query}}
-        <a class="btn ghost" href="/jobs" style="margin-left:auto;">Clear search</a>
+      {{if or .Query .RunID}}
+        <a class="btn ghost" href="/jobs" style="margin-left:auto;">Clear filters</a>
       {{end}}
     </div>
+
     <table class="list">
       <thead>
         <tr>
-          <th style="width:30%">Job</th>
+          <th style="width:28%">Job</th>
           <th style="width:12%">Status</th>
-          <th style="width:22%">Name</th>
+          <th style="width:20%">Name</th>
+          <th style="width:14%">Run</th>
           <th>Submitted</th>
           <th>Started</th>
           <th>Ended</th>
@@ -52,6 +59,12 @@
             <td class="id"><a href="/jobs/{{.JobId}}">{{.JobId}}</a></td>
             <td><span class="status {{statusClass .Status}}">{{.Status}}</span></td>
             <td class="name">{{.Name}}</td>
+            <td class="run">
+              {{$rid := .RunID}}
+              {{if $rid}}
+                <a href="/jobs?run_id={{$rid}}" class="run-link" title="Show all jobs in this run">{{$rid}}</a>
+              {{else}}<span class="subtle">—</span>{{end}}
+            </td>
             <td class="time">{{formatTime .SubmitTime}}</td>
             <td class="time">{{formatTime .StartTime}}</td>
             <td class="time">{{formatTime .EndTime}}</td>
@@ -59,7 +72,7 @@
         {{end}}
         {{if not .Jobs}}
           <tr>
-            <td colspan="6" class="empty">No jobs in this view.</td>
+            <td colspan="7" class="empty">No jobs in this view.</td>
           </tr>
         {{end}}
       </tbody>

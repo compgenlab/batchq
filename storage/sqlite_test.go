@@ -509,6 +509,23 @@ func TestSearchJobs(t *testing.T) {
 	if len(results) != 1 || results[0].JobId != "gamma-1" {
 		t.Fatalf("output-file search: %+v", results)
 	}
+
+	// Searching by run_id should return every job in that run.
+	mustInsert(t, s, mkJob("run-a", map[string]string{"run_id": "pipeline-2025-q2"}))
+	mustInsert(t, s, mkJob("run-b", map[string]string{"run_id": "pipeline-2025-q2"}))
+	mustInsert(t, s, mkJob("run-c", map[string]string{"run_id": "pipeline-2024-q4"}))
+
+	results, _ = s.SearchJobs(ctx, "2025-q2", nil)
+	if len(results) != 2 {
+		t.Fatalf("run-id search returned %d results, want 2: %+v", len(results), results)
+	}
+	seen := map[string]bool{}
+	for _, j := range results {
+		seen[j.JobId] = true
+	}
+	if !seen["run-a"] || !seen["run-b"] {
+		t.Fatalf("run-id search missed expected jobs: %+v", seen)
+	}
 }
 
 func TestGetQueueJobs(t *testing.T) {

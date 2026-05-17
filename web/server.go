@@ -62,6 +62,7 @@ type queuePage struct {
 	Jobs            []*jobs.JobDef
 	ShowAll         bool
 	Query           string
+	RunID           string
 	StatusOptions   []string
 	SelectedStatus  map[string]bool
 }
@@ -279,16 +280,18 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 
 	statuses, selected := parseStatusFilter(r)
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
 
-	// With a query, the queue becomes a search view over all jobs
-	// (completed included) — finding "that one job" is the use case.
-	// Without a query, the standard queue path applies status filtering.
+	// With a query OR a run_id, the queue becomes a "find a specific
+	// set" view over all jobs (completed included). The plain queue
+	// path applies status filtering against active/all jobs.
 	var jobList []*jobs.JobDef
 	var err error
-	if query != "" {
+	if query != "" || runID != "" {
 		dtos, lerr := s.client.ListJobs(ctx, client.ListJobsOptions{
 			ShowAll:  true,
 			Query:    query,
+			RunID:    runID,
 			Statuses: statusStrings(statuses),
 		})
 		if lerr != nil {
@@ -305,13 +308,19 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	showAll := len(statuses) == 0
 	title := "batchq queue"
-	if query != "" {
+	switch {
+	case query != "" && runID != "":
+		title = "batchq · " + query + " · run " + runID
+	case query != "":
 		title = "batchq search · " + query
+	case runID != "":
+		title = "batchq · run " + runID
 	}
 	data := queuePage{
 		Title:           title,
 		ContentTemplate: "queue-content",
 		Query:           query,
+		RunID:           runID,
 		Jobs:           jobList,
 		ShowAll:        showAll,
 		StatusOptions:  statusOptions(),
