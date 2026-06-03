@@ -81,16 +81,17 @@ funneled through that one process so the database stays safe.
 
 ## Running the SLURM runner
 
+A single-pass invocation looks like this:
+
 ```sh
 batchq run --slurm \
   --slurm-user $USER \
   --slurm-account acct123 \
   --slurm-partition general \
-  --slurm-max-jobs 200 \
-  --forever
+  --slurm-max-jobs 200
 ```
 
-Or set the same in config and just run `batchq run --slurm --forever`:
+Or set the same values in config and just run `batchq run --slurm`:
 
 ```toml
 [batchq]
@@ -119,9 +120,7 @@ The runner loops as follows:
 4. **Repeat.**
 
 With `--forever`, this loop runs indefinitely. Without `--forever`, it
-runs one reconciliation + submission pass and exits — which is the
-shape you want for a cron-driven setup (see [Running it from cron](#running-it-from-cron-recommended)
-below).
+runs one reconciliation + submission pass and exits.
 
 ## What gets translated to SLURM
 
@@ -186,18 +185,36 @@ Two knobs control the submission rate:
   job does **not** mark the batchq job FAILED — the runner records the
   reason and tries again later. (See commit `fae265f`.)
 
-## Running it from cron (recommended)
+## Three ways to drive it
 
-The reconciliation loop is designed to work in single-pass mode, so on
-a shared cluster the cleanest way to keep the SLURM runner going is to
-drive it from `cron` rather than leave a long-running process in
-`tmux`. A single-pass invocation submits whatever it can up to its
-caps, reports any newly-finished jobs back to the batchq server, and
-exits — there is no `--forever` and no process to babysit.
+You can run `batchq run --slurm` in any of three shapes. The
+reconciliation loop is exactly the same in each — the difference is
+just how often it fires and who starts it.
 
-A lockfile is the only thing you have to add on top, so that a still-
-running invocation doesn't get a second copy of itself when cron fires
-again:
+### Manually, from a shell
+
+Type the command at a prompt and watch it run:
+
+```sh
+batchq run --slurm --max-jobs 10
+```
+
+The runner reconciles every `PROXYQUEUED` job, submits up to ten new
+ones to SLURM, and exits. You get your prompt back when it's done.
+
+This shape is right for ad-hoc work: pushing a small batch into SLURM
+by hand, watching what a single reconciliation pass actually does
+before automating it, debugging a misconfigured job, or just kicking
+the runner once after a manual `batchq release`. Nothing wrong with
+running it this way day-to-day either, if the batchq backlog only ever
+grows when you push it; you just have to remember to do it.
+
+### From cron (recommended on shared clusters)
+
+The shape you want for steady-state work on a shared HPC cluster: a
+single-pass invocation, wrapped in a lockfile, fired by cron every few
+minutes. No permanent process, no SSH session to keep alive, no
+`tmux` to detach.
 
 ```sh
 #!/bin/bash
@@ -250,17 +267,36 @@ principle, but cron at minute granularity gives you plenty of time
 between checks, and the worst case is a leftover lock after a crash
 (which is easy to spot and delete).
 
+### Continuously, with `--forever`
+
+```sh
+batchq run --slurm --slurm-max-jobs 200 --forever
+```
+
+The same reconciliation loop runs continuously instead of one pass per
+invocation. There is no lockfile to manage and no scheduler to set up
+— but you do have to keep the process alive, typically under `tmux` or
+`nohup`, and that is where this shape gets awkward.
+
+**Don't do this on a shared HPC login or submit node.** Most cluster
+sysadmins frown on long-running user processes there; some kill them
+automatically, and you will annoy people. Use cron on those clusters.
+
+`--forever` is appropriate when:
+
+- You own the host (a personal workstation, your own VM, a dedicated
+  submit box).
+- The host's policy explicitly allows long-running user processes.
+- You are running batchq in front of a single-user SLURM install (so
+  the "annoy the other users" concern doesn't apply).
+
+In every other case, prefer cron.
+
 ## Operating tips
 
 - **One runner per user.** There is no point in running two SLURM
   runners for the same user — they would compete for the same SLURM
   queue budget. Two for different users is fine.
-- **Cron vs. `--forever`.** Cron + lockfile is the recommended pattern
-  on shared clusters (no permanent process, survives logout). If you
-  prefer a long-running process — on your own hardware, or anywhere
-  long-lived user processes are acceptable — `batchq run --slurm
-  --forever` under `tmux` or `nohup` works equally well; the same
-  reconciliation loop runs either way.
 - **Watch the rate.** Submitting too fast can be unfriendly to the
   SLURM scheduler. A handful of submissions per second is a reasonable
   default; if your sysadmins ask you to slow down, lower
