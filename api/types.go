@@ -214,14 +214,20 @@ type RunningDetailsRequest struct {
 }
 
 // EndJobRequest is the body of POST /runners/{runner_id}/jobs/{id}/end.
+// Notes, when non-empty, is persisted to jobs.notes and surfaces on the
+// detail page — runners pass a short reason when ending a job FAILED.
 type EndJobRequest struct {
-	ReturnCode int `json:"return_code"`
+	ReturnCode int    `json:"return_code"`
+	Notes      string `json:"notes,omitempty"`
 }
 
 // EndProxyRequest is the body of POST /runners/{runner_id}/jobs/{id}/proxy-end.
+// Notes, when non-empty, is persisted to jobs.notes (e.g. the SLURM-reported
+// state name when finalizing a FAILED/TIMEOUT/OOM job).
 type EndProxyRequest struct {
-	Status     string     `json:"status"`     // "SUCCESS", "FAILED", "CANCELED"
+	Status     string     `json:"status"` // "SUCCESS", "FAILED", "CANCELED"
 	StartTime  *time.Time `json:"start_time,omitempty"`
 	EndTime    *time.Time `json:"end_time,omitempty"`
 	ReturnCode int        `json:"return_code"`
+	Notes      string     `json:"notes,omitempty"`
 }

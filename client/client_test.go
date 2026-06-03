@@ -192,7 +192,7 @@ func TestClientRunnerLifecycle(t *testing.T) {
 	if err := c.UpdateRunningDetails(ctx, "r-1", dto.JobID, map[string]string{"pid": "12345"}); err != nil {
 		t.Fatalf("UpdateRunningDetails: %v", err)
 	}
-	if err := c.EndJob(ctx, "r-1", dto.JobID, 0); err != nil {
+	if err := c.EndJob(ctx, "r-1", dto.JobID, 0, ""); err != nil {
 		t.Fatalf("EndJob: %v", err)
 	}
 	got, _ := c.GetJob(ctx, dto.JobID)
@@ -214,7 +214,7 @@ func TestClientProxyLifecycle(t *testing.T) {
 		t.Fatalf("MarkJobProxied: %v", err)
 	}
 	now := time.Now().UTC()
-	if err := c.EndProxiedJob(ctx, "r-2", dto.JobID, "SUCCESS", now.Add(-time.Minute), now, 0); err != nil {
+	if err := c.EndProxiedJob(ctx, "r-2", dto.JobID, "SUCCESS", now.Add(-time.Minute), now, 0, ""); err != nil {
 		t.Fatalf("EndProxiedJob: %v", err)
 	}
 	got, _ := c.GetJob(ctx, dto.JobID)

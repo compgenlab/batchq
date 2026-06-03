@@ -281,8 +281,8 @@ func (s *Service) UpdateRunningDetails(ctx context.Context, jobID string, detail
 	return s.store.UpdateRunningDetails(ctx, jobID, details)
 }
 
-func (s *Service) EndJob(ctx context.Context, runnerID, jobID string, returnCode int) error {
-	if err := s.store.EndJob(ctx, jobID, runnerID, returnCode); err != nil {
+func (s *Service) EndJob(ctx context.Context, runnerID, jobID string, returnCode int, notes string) error {
+	if err := s.store.EndJob(ctx, jobID, runnerID, returnCode, notes); err != nil {
 		return err
 	}
 	// Success unblocks dependents; failure already cascades cancels.
@@ -292,8 +292,8 @@ func (s *Service) EndJob(ctx context.Context, runnerID, jobID string, returnCode
 	return nil
 }
 
-func (s *Service) EndProxiedJob(ctx context.Context, jobID string, status jobs.StatusCode, startTime, endTime time.Time, returnCode int) error {
-	if err := s.store.EndProxiedJob(ctx, jobID, status, startTime, endTime, returnCode); err != nil {
+func (s *Service) EndProxiedJob(ctx context.Context, jobID string, status jobs.StatusCode, startTime, endTime time.Time, returnCode int, notes string) error {
+	if err := s.store.EndProxiedJob(ctx, jobID, status, startTime, endTime, returnCode, notes); err != nil {
 		return err
 	}
 	if status == jobs.SUCCESS {

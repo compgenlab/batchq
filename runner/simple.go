@@ -390,7 +390,7 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 	script := filepath.Join(r.spoolDir, fmt.Sprintf("batchq-%s.sh", job.JobID))
 	if err := os.WriteFile(script, []byte(job.Details["script"]), 0755); err != nil {
 		r.logf("Error writing script: %v\n", err)
-		r.failClaimedJob(job.JobID, 1)
+		r.failClaimedJob(job.JobID, 1, fmt.Sprintf("failed to write script file: %v", err))
 		return false
 	}
 
@@ -470,14 +470,14 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 		uid, err := strconv.Atoi(uidS)
 		if err != nil {
 			r.logf("Missing UID from job details: %s\n", job.JobID)
-			r.failClaimedJob(job.JobID, 1)
+			r.failClaimedJob(job.JobID, 1, "missing or invalid UID in job details")
 			return false
 		}
 		gid, err := strconv.Atoi(gidS)
 
 		if err != nil {
 			r.logf("Missing GID from job details: %s\n", job.JobID)
-			r.failClaimedJob(job.JobID, 1)
+			r.failClaimedJob(job.JobID, 1, "missing or invalid GID in job details")
 			return false
 		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{
@@ -533,7 +533,7 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 	err := cmd.Start()
 	if err != nil {
 		r.logf("Error starting jobs: %v\n", err)
-		r.failClaimedJob(job.JobID, 1)
+		r.failClaimedJob(job.JobID, 1, fmt.Sprintf("failed to start process: %v", err))
 		return false
 	}
 	if r.useCgroupV2 && support.AmIRoot() {
@@ -581,11 +581,11 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 		r.logf("Job %s [proc: %d] exited: %s\n", job.JobID, cmd.Process.Pid, state.String())
 		var endErr error
 		if state != nil && state.Success() {
-			endErr = r.client.EndJob(ctx, r.runnerId, job.JobID, 0)
+			endErr = r.client.EndJob(ctx, r.runnerId, job.JobID, 0, "")
 		} else if state != nil {
-			endErr = r.client.EndJob(ctx, r.runnerId, job.JobID, state.ExitCode())
+			endErr = r.client.EndJob(ctx, r.runnerId, job.JobID, state.ExitCode(), "")
 		} else {
-			endErr = r.client.EndJob(ctx, r.runnerId, job.JobID, -1)
+			endErr = r.client.EndJob(ctx, r.runnerId, job.JobID, -1, "process exited without status")
 		}
 		if endErr != nil && !errors.Is(endErr, client.ErrInvalidState) {
 			r.logf("Error finalizing job %s: %v\n", job.JobID, endErr)
@@ -627,11 +627,12 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 // failClaimedJob marks a claimed job as FAILED when the runner couldn't even
 // get the process started. Without this the job would stay stuck in RUNNING
 // — the atomic claim already flipped the status before we discovered the
-// host-side problem.
-func (r *simpleRunner) failClaimedJob(jobID string, code int) {
+// host-side problem. reason is persisted to jobs.notes so the failure is
+// visible on the detail page.
+func (r *simpleRunner) failClaimedJob(jobID string, code int, reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := r.client.EndJob(ctx, r.runnerId, jobID, code); err != nil {
+	if err := r.client.EndJob(ctx, r.runnerId, jobID, code, reason); err != nil {
 		r.logf("Error marking claimed job %s as failed: %v\n", jobID, err)
 	}
 }

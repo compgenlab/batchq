@@ -107,13 +107,16 @@ type Storage interface {
 	UpdateRunningDetails(ctx context.Context, jobID string, details map[string]string) error
 
 	// EndJob transitions a RUNNING job to SUCCESS or FAILED based on
-	// returnCode. On failure, dependents are cascade-canceled.
-	EndJob(ctx context.Context, jobID, runnerID string, returnCode int) error
+	// returnCode. On failure, dependents are cascade-canceled. A non-empty
+	// notes is persisted into the jobs.notes column (visible on the job
+	// detail page); pass "" to leave any existing notes untouched.
+	EndJob(ctx context.Context, jobID, runnerID string, returnCode int, notes string) error
 
 	// EndProxiedJob transitions a PROXYQUEUED job to a terminal status with
 	// times recorded from SLURM. On non-success, dependents are
-	// cascade-canceled.
-	EndProxiedJob(ctx context.Context, jobID string, status jobs.StatusCode, startTime, endTime time.Time, returnCode int) error
+	// cascade-canceled. A non-empty notes is persisted into jobs.notes;
+	// pass "" to leave any existing notes untouched.
+	EndProxiedJob(ctx context.Context, jobID string, status jobs.StatusCode, startTime, endTime time.Time, returnCode int, notes string) error
 
 	// CancelJob marks a job CANCELED (with reason) and cascades to dependents.
 	// No-op for already-terminal jobs.
