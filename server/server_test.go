@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mbreese/batchq/api"
+	"github.com/mbreese/batchq/internal/testsupport"
 	"github.com/mbreese/batchq/service"
 	"github.com/mbreese/batchq/storage"
 )
@@ -363,7 +364,7 @@ func TestRunnerProxyRoundTrip(t *testing.T) {
 // --- Unix-socket end-to-end ------------------------------------------
 
 func TestServeUnixSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "batchq.sock")
 	dbPath := filepath.Join(dir, "batchq.db")
 

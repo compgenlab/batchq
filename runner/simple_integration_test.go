@@ -16,6 +16,7 @@ import (
 
 	"github.com/mbreese/batchq/api"
 	"github.com/mbreese/batchq/client"
+	"github.com/mbreese/batchq/internal/testsupport"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/server"
 	"github.com/mbreese/batchq/service"
@@ -35,7 +36,7 @@ func jobDetails(script string) map[string]string {
 
 func startServerForRunner(t *testing.T) (*client.Client, string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "runner.sock")
 	dbPath := filepath.Join(dir, "runner.db")
 

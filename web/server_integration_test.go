@@ -19,6 +19,7 @@ import (
 
 	"github.com/mbreese/batchq/api"
 	"github.com/mbreese/batchq/client"
+	"github.com/mbreese/batchq/internal/testsupport"
 	"github.com/mbreese/batchq/server"
 	"github.com/mbreese/batchq/service"
 	"github.com/mbreese/batchq/storage"
@@ -26,7 +27,7 @@ import (
 
 func startBackendForWeb(t *testing.T) (*client.Client, string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "backend.sock")
 	dbPath := filepath.Join(dir, "backend.db")
 
@@ -76,7 +77,7 @@ func startBackendForWeb(t *testing.T) (*client.Client, string) {
 // directly instead — the test exercises the same handlers either way.
 func startWebForTest(t *testing.T, c *client.Client) *http.Client {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "web.sock")
 
 	templates, err := loadWebTemplates()

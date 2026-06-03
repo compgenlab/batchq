@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mbreese/batchq/internal/testsupport"
 	"github.com/mbreese/batchq/service"
 	"github.com/mbreese/batchq/storage"
 )
@@ -46,7 +47,7 @@ func waitForSocket(t *testing.T, path string, timeout time.Duration) {
 // second bind() returns EADDRINUSE, the probe finds the live server,
 // and we surface ErrAlreadyRunning.
 func TestSecondInstanceRejected(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "first.sock")
 
 	svc := newSvcForLifecycle(t)
@@ -76,7 +77,7 @@ func TestSecondInstanceRejected(t *testing.T) {
 // After a clean shutdown the socket file is unlinked, so a fresh
 // server on the same path must come up without complaint.
 func TestSocketReclaimedAfterShutdown(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "reclaim.sock")
 
 	svc := newSvcForLifecycle(t)
@@ -112,7 +113,7 @@ func TestSocketReclaimedAfterShutdown(t *testing.T) {
 // it) must be transparently recovered: bind() fails with EADDRINUSE,
 // the probe fails too, we unlink and retry.
 func TestStaleSocketRecovered(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "stale.sock")
 
 	// Fabricate a stale socket: bind one, close the listener, leave the
@@ -142,7 +143,7 @@ func TestStaleSocketRecovered(t *testing.T) {
 }
 
 func TestIdleShutdownFires(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "idle.sock")
 	svc := newSvcForLifecycle(t)
 
@@ -176,7 +177,7 @@ func TestIdleShutdownFires(t *testing.T) {
 }
 
 func TestIdleShutdownResetsOnRequest(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "active.sock")
 	svc := newSvcForLifecycle(t)
 
