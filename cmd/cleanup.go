@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mbreese/batchq/api"
@@ -39,6 +41,15 @@ var cleanupCmd = &cobra.Command{
 			statuses = append(statuses, jobs.SUCCESS)
 		}
 
+		var minAge time.Duration
+		if cleanupOlderThan != "" {
+			d, err := parseAgeDuration(cleanupOlderThan)
+			if err != nil {
+				log.Fatalf("invalid --older-than %q: %v", cleanupOlderThan, err)
+			}
+			minAge = d
+		}
+
 		c := mustDialClient()
 		defer c.Close()
 
@@ -47,6 +58,11 @@ var cleanupCmd = &cobra.Command{
 
 		reader := &clientCleanupReader{c: c}
 		plan := buildCleanupPlan(ctx, reader, statuses)
+
+		if minAge > 0 {
+			plan = filterPlanByAge(plan, minAge, time.Now())
+		}
+
 		for _, job := range plan.candidates {
 			if !plan.blocked[job.JobID] {
 				continue
@@ -68,6 +84,67 @@ var cleanupCmd = &cobra.Command{
 			}
 		}
 	},
+}
+
+// filterPlanByAge drops any job from the removal order whose end_time is
+// unset or younger than minAge. Jobs are kept in plan.candidates (so the
+// "blocked" reporting above still works), but the removalOrder set is the
+// authoritative list of what actually gets deleted.
+func filterPlanByAge(plan cleanupPlan, minAge time.Duration, now time.Time) cleanupPlan {
+	eligible := make(map[string]bool, len(plan.removalOrder))
+	byID := make(map[string]*api.JobDTO, len(plan.candidates))
+	for _, c := range plan.candidates {
+		byID[c.JobID] = c
+	}
+	for _, id := range plan.removalOrder {
+		c, ok := byID[id]
+		if !ok {
+			continue
+		}
+		if c.EndTime == nil || c.EndTime.IsZero() {
+			continue
+		}
+		if now.Sub(*c.EndTime) <= minAge {
+			continue
+		}
+		eligible[id] = true
+	}
+	filteredOrder := make([]string, 0, len(eligible))
+	for _, id := range plan.removalOrder {
+		if eligible[id] {
+			filteredOrder = append(filteredOrder, id)
+		}
+	}
+	plan.removalOrder = filteredOrder
+	return plan
+}
+
+// parseAgeDuration parses a duration string accepting `s`, `m`, `h`, `d`,
+// or `w` suffixes (e.g. "30d", "12h", "1w", "90m"). Bare numbers are not
+// accepted — the unit is required to avoid ambiguity.
+func parseAgeDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, fmt.Errorf("empty duration")
+	}
+	last := s[len(s)-1]
+	switch last {
+	case 'd', 'w':
+		n, err := strconv.Atoi(s[:len(s)-1])
+		if err != nil || n < 0 {
+			return 0, fmt.Errorf("bad number before %q", string(last))
+		}
+		mult := 24 * time.Hour
+		if last == 'w' {
+			mult = 7 * 24 * time.Hour
+		}
+		return time.Duration(n) * mult, nil
+	case 's', 'm', 'h':
+		// Go's ParseDuration handles these natively.
+		return time.ParseDuration(s)
+	default:
+		return 0, fmt.Errorf("unrecognized unit %q (expected s, m, h, d, or w)", string(last))
+	}
 }
 
 // cleanupJobReader abstracts the data access the cleanup planner needs.
@@ -213,11 +290,13 @@ var cleanupCanceled bool
 var cleanupFailed bool
 var cleanupSuccess bool
 var cleanupAll bool
+var cleanupOlderThan string
 
 func init() {
 	cleanupCmd.Flags().BoolVar(&cleanupCanceled, "canceled", false, "Remove canceled jobs")
 	cleanupCmd.Flags().BoolVar(&cleanupFailed, "failed", false, "Remove failed jobs")
 	cleanupCmd.Flags().BoolVar(&cleanupSuccess, "success", false, "Remove successful jobs")
 	cleanupCmd.Flags().BoolVar(&cleanupAll, "all", false, "Remove canceled, failed, and successful jobs")
+	cleanupCmd.Flags().StringVar(&cleanupOlderThan, "older-than", "", "Only remove jobs whose end_time is older than this duration (e.g. 30d, 12h, 1w)")
 	rootCmd.AddCommand(cleanupCmd)
 }
