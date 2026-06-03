@@ -346,7 +346,7 @@ func (s *Server) handleEndJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if err := s.svc.EndJob(r.Context(), runnerID, jobID, req.ReturnCode); err != nil {
+	if err := s.svc.EndJob(r.Context(), runnerID, jobID, req.ReturnCode, req.Notes); err != nil {
 		writeError(w, httpStatus(err), err)
 		return
 	}
@@ -376,7 +376,7 @@ func (s *Server) handleEndProxied(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.svc.EndProxiedJob(r.Context(), jobID, status,
-		derefTime(req.StartTime), derefTime(req.EndTime), req.ReturnCode); err != nil {
+		derefTime(req.StartTime), derefTime(req.EndTime), req.ReturnCode, req.Notes); err != nil {
 		writeError(w, httpStatus(err), err)
 		return
 	}

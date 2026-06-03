@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -169,14 +168,6 @@ func (r *slurmRunner) Start() bool {
 				fmt.Printf("Error canceling SLURM job %s: %v\n", jobdef.JobID, cerr)
 			}
 			ccancel()
-		} else if src == "" {
-			fmt.Printf("Error trying to build sbatch script for job: %s (empty script, possibly due to SLURM sacct delay)\n", jobdef.JobID)
-			// The claim already moved this job to RUNNING; report a transient
-			// failure so the server returns it to QUEUED-equivalent state
-			// (actually FAILED). Sleep to avoid busy-looping; we'll resubmit
-			// from the user side if needed.
-			r.failClaimedJob(ctx, jobdef.JobID)
-			time.Sleep(1 * time.Second)
 		} else {
 			var jobEnv []string
 			if val := jobdef.Details["env"]; val != "" {
@@ -217,16 +208,6 @@ func (r *slurmRunner) Start() bool {
 	fmt.Println("SLURM runner done.")
 
 	return submittedOne
-}
-
-// failClaimedJob marks a job FAILED when the runner already won the claim
-// but couldn't follow through. Without this the job is stuck in RUNNING.
-func (r *slurmRunner) failClaimedJob(ctx context.Context, jobID string) {
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := r.client.EndJob(cctx, r.runnerId, jobID, 1); err != nil && !errors.Is(err, client.ErrInvalidState) {
-		fmt.Printf("Error marking claimed job %s as failed: %v\n", jobID, err)
-	}
 }
 
 func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
@@ -283,8 +264,14 @@ func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 		default:
 			continue
 		}
+		// Only record the SLURM state as notes for non-success terminals; on
+		// success there's nothing useful to say beyond the status itself.
+		var endNotes string
+		if finalStatus != jobs.SUCCESS.String() {
+			endNotes = fmt.Sprintf("slurm reported state: %s", slurmState.State)
+		}
 		ectx, ecancel := context.WithTimeout(ctx, 30*time.Second)
-		if eerr := r.client.EndProxiedJob(ectx, r.runnerId, job.JobID, finalStatus, slurmState.StartAsTime(), slurmState.EndAsTime(), slurmState.ExitCodeInt()); eerr != nil {
+		if eerr := r.client.EndProxiedJob(ectx, r.runnerId, job.JobID, finalStatus, slurmState.StartAsTime(), slurmState.EndAsTime(), slurmState.ExitCodeInt(), endNotes); eerr != nil {
 			fmt.Printf("Error ending proxied job %s: %v\n", job.JobID, eerr)
 		}
 		ecancel()
@@ -310,7 +297,7 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO)
 
 	script := jobdef.Details["script"]
 	if script == "" {
-		return "", nil
+		return "", fmt.Errorf("job has no script body")
 	}
 
 	spl := strings.Split(script, "\n")
@@ -374,29 +361,18 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO)
 			case jobs.UNKNOWN.String(), jobs.USERHOLD.String(), jobs.WAITING.String():
 				return "", fmt.Errorf("not ready to process dep job yet (depid: %s)", dep.JobID)
 			case jobs.RUNNING.String(), jobs.PROXYQUEUED.String():
-				if slurm_id := dep.RunningDetails["slurm_job_id"]; slurm_id != "" {
-					slurm_id_int, err := strconv.Atoi(slurm_id)
-					if err != nil {
-						return "", fmt.Errorf("bad slurm id (depid: %s, slurm_id: %s) %v", dep.JobID, slurm_id, err)
-					}
-					slurmState, err := SlurmGetJobState(slurm_id_int)
-					if err != nil {
-						return "", fmt.Errorf("error getting slurm job status (depid: %s, slurm_id: %d) error: %s", dep.JobID, slurm_id_int, err.Error())
-					}
-					if slurmState == nil {
-						return "", nil
-					}
-					switch slurmState.State {
-					case "PENDING", "RUNNING":
-						slurmAfterOkId = append(slurmAfterOkId, slurm_id)
-					case "COMPLETED":
-						// fine, no need to add
-					default:
-						return "", fmt.Errorf("bad slurm job state (depid: %s, slurm_id: %d, state: %s)", dep.JobID, slurm_id_int, slurmState.State)
-					}
-				} else {
+				// Trust the recorded slurm_job_id. SLURM itself, together with
+				// --kill-on-invalid-dep=yes below, correctly handles a parent
+				// that is PENDING/RUNNING (wait), COMPLETED (satisfy now), or
+				// FAILED/CANCELLED (kill the child). Calling sacct/squeue here
+				// just to validate the parent's state opens a race window: if
+				// the parent was sbatch'd moments ago, its ID may not yet be
+				// visible to outside readers even though we hold the ID.
+				slurm_id := dep.RunningDetails["slurm_job_id"]
+				if slurm_id == "" {
 					return "", fmt.Errorf("missing slurm_job_id (depid: %s)", dep.JobID)
 				}
+				slurmAfterOkId = append(slurmAfterOkId, slurm_id)
 			case jobs.SUCCESS.String():
 				// we're all good... no need to add it.
 			}

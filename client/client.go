@@ -398,16 +398,20 @@ func (c *Client) UpdateRunningDetails(ctx context.Context, runnerID, jobID strin
 		api.RunningDetailsRequest{Details: details}, nil)
 }
 
-func (c *Client) EndJob(ctx context.Context, runnerID, jobID string, returnCode int) error {
+// EndJob reports the terminal state of a locally-run job. A non-empty notes
+// is persisted to jobs.notes — runners pass a short reason when failing a
+// job (e.g. "missing UID from job details").
+func (c *Client) EndJob(ctx context.Context, runnerID, jobID string, returnCode int, notes string) error {
 	return c.do(ctx, http.MethodPost,
 		api.Prefix+"/runners/"+runnerID+"/jobs/"+jobID+"/end",
-		api.EndJobRequest{ReturnCode: returnCode}, nil)
+		api.EndJobRequest{ReturnCode: returnCode, Notes: notes}, nil)
 }
 
 // EndProxiedJob reports the terminal state of a SLURM-proxied job. status
-// must be SUCCESS, FAILED, or CANCELED.
-func (c *Client) EndProxiedJob(ctx context.Context, runnerID, jobID, status string, startTime, endTime time.Time, returnCode int) error {
-	req := api.EndProxyRequest{Status: status, ReturnCode: returnCode}
+// must be SUCCESS, FAILED, or CANCELED. A non-empty notes is persisted to
+// jobs.notes (typically the SLURM-reported state name for non-success).
+func (c *Client) EndProxiedJob(ctx context.Context, runnerID, jobID, status string, startTime, endTime time.Time, returnCode int, notes string) error {
+	req := api.EndProxyRequest{Status: status, ReturnCode: returnCode, Notes: notes}
 	if !startTime.IsZero() {
 		t := startTime.UTC()
 		req.StartTime = &t

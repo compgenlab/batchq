@@ -1068,7 +1068,7 @@ func (s *sqliteStorage) UpdateRunningDetails(ctx context.Context, jobID string, 
 	return tx.Commit()
 }
 
-func (s *sqliteStorage) EndJob(ctx context.Context, jobID, runnerID string, returnCode int) error {
+func (s *sqliteStorage) EndJob(ctx context.Context, jobID, runnerID string, returnCode int, notes string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1083,10 +1083,12 @@ func (s *sqliteStorage) EndJob(ctx context.Context, jobID, runnerID string, retu
 	if returnCode != 0 {
 		newStatus = jobs.FAILED
 	}
+	// COALESCE preserves any existing notes when the caller passes "".
 	res, err := tx.ExecContext(ctx,
-		`UPDATE jobs SET status = ?, end_time = ?, return_code = ?
+		`UPDATE jobs SET status = ?, end_time = ?, return_code = ?,
+		                 notes = COALESCE(NULLIF(?, ''), notes)
 		 WHERE id = ? AND status = ?`,
-		newStatus, nowString(), returnCode, jobID, jobs.RUNNING)
+		newStatus, nowString(), returnCode, notes, jobID, jobs.RUNNING)
 	if err != nil {
 		return err
 	}
@@ -1104,7 +1106,7 @@ func (s *sqliteStorage) EndJob(ctx context.Context, jobID, runnerID string, retu
 	return tx.Commit()
 }
 
-func (s *sqliteStorage) EndProxiedJob(ctx context.Context, jobID string, status jobs.StatusCode, startTime, endTime time.Time, returnCode int) error {
+func (s *sqliteStorage) EndProxiedJob(ctx context.Context, jobID string, status jobs.StatusCode, startTime, endTime time.Time, returnCode int, notes string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1112,9 +1114,10 @@ func (s *sqliteStorage) EndProxiedJob(ctx context.Context, jobID string, status 
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx,
-		`UPDATE jobs SET status = ?, start_time = ?, end_time = ?, return_code = ?
+		`UPDATE jobs SET status = ?, start_time = ?, end_time = ?, return_code = ?,
+		                 notes = COALESCE(NULLIF(?, ''), notes)
 		 WHERE id = ? AND status = ?`,
-		status, formatTime(startTime), formatTime(endTime), returnCode,
+		status, formatTime(startTime), formatTime(endTime), returnCode, notes,
 		jobID, jobs.PROXYQUEUED)
 	if err != nil {
 		return err

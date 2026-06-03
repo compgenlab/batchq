@@ -110,7 +110,7 @@ func TestEndJobSuccessAutoPromotesWaiters(t *testing.T) {
 		t.Fatalf("claim: %+v", claim.Job)
 	}
 
-	if err := svc.EndJob(ctx, "r1", parent.JobID, 0); err != nil {
+	if err := svc.EndJob(ctx, "r1", parent.JobID, 0, ""); err != nil {
 		t.Fatalf("EndJob: %v", err)
 	}
 
@@ -139,7 +139,7 @@ func TestCleanupOnTerminalSucceeds(t *testing.T) {
 	ctx := ctxT(t)
 	dto, _ := svc.SubmitJob(ctx, &api.SubmitJobRequest{Details: map[string]string{"script": "x"}})
 	_, _ = svc.ClaimNextJob(ctx, "r", "simple", storage.Limits{})
-	_ = svc.EndJob(ctx, "r", dto.JobID, 0)
+	_ = svc.EndJob(ctx, "r", dto.JobID, 0, "")
 	if err := svc.CleanupJob(ctx, dto.JobID); err != nil {
 		t.Fatalf("CleanupJob: %v", err)
 	}

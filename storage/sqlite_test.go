@@ -160,7 +160,7 @@ func TestResolveDepsPromotesWhenParentSucceeds(t *testing.T) {
 	if claim.Job == nil || claim.Job.JobId != "p" {
 		t.Fatalf("claim: %+v", claim)
 	}
-	if err := s.EndJob(ctx, "p", "runner-1", 0); err != nil {
+	if err := s.EndJob(ctx, "p", "runner-1", 0, ""); err != nil {
 		t.Fatalf("EndJob: %v", err)
 	}
 	res, err := s.ResolveDependencies(ctx)
@@ -184,7 +184,7 @@ func TestResolveDepsCancelsWhenParentFails(t *testing.T) {
 	mustInsert(t, s, mkJob("c", nil, "p"))
 
 	_, _ = s.ClaimNextJob(ctx, "r", "simple", Limits{})
-	if err := s.EndJob(ctx, "p", "r", 1); err != nil {
+	if err := s.EndJob(ctx, "p", "r", 1, ""); err != nil {
 		t.Fatalf("EndJob: %v", err)
 	}
 	// EndJob with non-zero return code already cascade-cancels children.
@@ -304,7 +304,7 @@ func TestEndJobSuccess(t *testing.T) {
 
 	mustInsert(t, s, mkJob("j", nil))
 	_, _ = s.ClaimNextJob(ctx, "r", "simple", Limits{})
-	if err := s.EndJob(ctx, "j", "r", 0); err != nil {
+	if err := s.EndJob(ctx, "j", "r", 0, ""); err != nil {
 		t.Fatalf("EndJob: %v", err)
 	}
 	got, _ := s.GetJob(ctx, "j")
@@ -322,7 +322,7 @@ func TestEndJobWrongRunner(t *testing.T) {
 
 	mustInsert(t, s, mkJob("j", nil))
 	_, _ = s.ClaimNextJob(ctx, "r1", "simple", Limits{})
-	if err := s.EndJob(ctx, "j", "r2-wrong", 0); err != ErrInvalidState {
+	if err := s.EndJob(ctx, "j", "r2-wrong", 0, ""); err != ErrInvalidState {
 		t.Fatalf("err: got %v, want ErrInvalidState", err)
 	}
 }
@@ -342,7 +342,7 @@ func TestMarkJobProxiedAndEndProxied(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	if err := s.EndProxiedJob(ctx, "j", jobs.SUCCESS, now.Add(-time.Minute), now, 0); err != nil {
+	if err := s.EndProxiedJob(ctx, "j", jobs.SUCCESS, now.Add(-time.Minute), now, 0, ""); err != nil {
 		t.Fatalf("EndProxiedJob: %v", err)
 	}
 	got, _ = s.GetJob(ctx, "j")
@@ -420,7 +420,7 @@ func TestCleanupJob(t *testing.T) {
 	mustInsert(t, s, mkJob("j", map[string]string{"script": "x"}))
 	_, _ = s.ClaimNextJob(ctx, "r", "simple", Limits{})
 	_ = s.UpdateRunningDetails(ctx, "j", map[string]string{"pid": "9999"})
-	_ = s.EndJob(ctx, "j", "r", 0)
+	_ = s.EndJob(ctx, "j", "r", 0, "")
 
 	if err := s.CleanupJob(ctx, "j"); err != nil {
 		t.Fatalf("CleanupJob: %v", err)
