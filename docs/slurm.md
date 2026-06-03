@@ -1,9 +1,19 @@
 # Running on a SLURM cluster
 
-The SLURM runner is the reason batchq exists. It lets you queue a much
-larger backlog of jobs in batchq than SLURM would allow you to put in
-its queue directly, then submits them into SLURM at a controlled rate
-as capacity becomes available.
+The SLURM runner is one of the original motivations for batchq (see
+[overview](overview.md#why-batchq-exists) for the others). It lets you
+queue a much larger backlog of jobs in batchq than your shared
+cluster's admins want you putting into the SLURM queue directly, then
+submits them into SLURM at a controlled rate as capacity becomes
+available.
+
+SLURM itself doesn't impose a per-user job cap — a single-user cluster
+can happily hold tens of thousands of jobs. But admins of shared
+clusters routinely configure a per-user `MaxJobs` (and similar) limit
+because one user's huge backlog degrades scheduler responsiveness for
+everyone else. The SLURM runner exists to be a good citizen on those
+clusters: hold the backlog locally in batchq, feed SLURM at whatever
+rate the local policy permits.
 
 The runner is the **only** component that talks to SLURM. The batchq
 server itself does not know SLURM exists — it just sees a runner that
@@ -16,8 +26,9 @@ and reconciliation never moves server-side.
 
 Use the SLURM runner when:
 
-- You have a SLURM cluster and a per-user `MaxJobs` limit (or you want
-  to be polite about not flooding the queue).
+- You're on a shared SLURM cluster where admins have set a per-user
+  `MaxJobs` limit, or you want to be polite about not flooding the
+  queue even where there is no hard cap.
 - You want to submit a pipeline of thousands of jobs from one place,
   with `afterok` dependencies, without managing the SLURM queue
   yourself.
@@ -154,8 +165,9 @@ Two knobs control the submission rate:
 - **`max_slurm_jobs` (`--slurm-max-jobs`).** The maximum number of
   this user's jobs that may exist in the SLURM queue at once. The
   runner polls `squeue` before every submission and waits if the live
-  count is at the limit. This is the knob to set to your cluster's
-  per-user `MaxJobs` minus a margin.
+  count is at the limit. On a shared cluster, set this to your
+  cluster's per-user `MaxJobs` policy minus a margin; on a cluster
+  with no cap, set it to whatever you think is polite.
 - **`max_jobs` (`--max-jobs`).** A cap on how many jobs this runner
   invocation submits before exiting. Mostly useful for cron-driven
   setups; with `--forever`, leave it unset.

@@ -25,17 +25,39 @@ use you never invoke `batchq server` yourself — the CLI does it for you.
 
 ## Why batchq exists
 
-The motivating problem is HPC pipelines. SLURM and similar schedulers
-cap how many jobs a user can have in the queue at once, so submitting a
-ten-thousand-job pipeline directly is not allowed. The usual workaround
-is a wrapper script that throttles submissions — but that wrapper has no
-durable memory, no concept of dependencies between jobs, and falls over
-the moment the user's login session ends.
+Three motivations, in roughly the order they came up:
 
-batchq is that wrapper, persisted. A `batchq server` process holds the
-full backlog in a SQLite database; the SLURM runner submits to SLURM at
-a configurable rate, keeping the SLURM queue full but never over the
-per-user cap.
+**A simple parallel queue on a single server.** Sometimes you just want
+to run a bunch of jobs in parallel on one machine without standing up
+SLURM. SLURM is a lot of operational weight to take on for a single
+host, and most people who reach for it on a single server end up
+running one node anyway. batchq fills that gap: install a binary, set
+`max_procs` and `max_mem` to whatever the host can take, point a
+runner at the queue. No `slurmctld`, no `slurmd`, no munge, no
+database server.
+
+**A test queue for [cgpipe](https://github.com/mbreese/cgpipe).**
+cgpipe is a make-style tool for HPC pipelines — it figures out which
+jobs need to run and submits them to a scheduler. During pipeline
+development you usually don't want to test against a real cluster
+queue (slow, contended, requires real cluster access). batchq is a
+lightweight target for cgpipe to submit into locally: same submission
+shape, same dependency semantics as the SLURM backend, but runs on
+your laptop. When the pipeline works against batchq, it'll work
+against SLURM.
+
+**A throttled front-end for shared SLURM clusters.** SLURM itself will
+happily hold tens of thousands of jobs — there is no built-in per-user
+cap — but admins of shared clusters routinely set a per-user `MaxJobs`
+policy because one user with a huge backlog can slow the scheduler
+down for everyone else. So on a shared cluster, submitting a
+ten-thousand-job pipeline directly is usually not allowed by the local
+policy. The usual workaround is a wrapper script that throttles
+submissions, but that wrapper has no durable memory, no concept of
+dependencies between jobs, and falls over the moment the user's login
+session ends. batchq is that wrapper, persisted: the SLURM runner
+submits at a configurable rate, keeping SLURM busy but staying under
+whatever per-user cap the cluster admins have set.
 
 The same machinery also runs jobs locally on a workstation, so the same
 submission scripts work everywhere — switching between a laptop and a
