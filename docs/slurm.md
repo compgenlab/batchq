@@ -22,6 +22,33 @@ their terminal status. This is a permanent deployment invariant: the
 batchq server and the SLURM head node may live on different clusters,
 and reconciliation never moves server-side.
 
+## What the SLURM runner does
+
+The SLURM runner has two jobs on every invocation, and both matter:
+
+1. **Submit.** Take batchq jobs that are in `QUEUED`, generate an
+   sbatch script, hand them off to SLURM with `sbatch`, and move them
+   into `PROXYQUEUED`. This is the obvious half — the throttled
+   submission side of "feed SLURM a huge backlog politely."
+
+2. **Reconcile.** For every batchq job currently in `PROXYQUEUED`,
+   poll `squeue` / `sacct` for the SLURM-side state and report any
+   terminal outcome (SUCCESS, FAILED, CANCELED, exit code, end time,
+   `afterok` dependents) back to the batchq server.
+
+The reconciliation half is the one that's easy to overlook, and it's
+the only way batchq ever learns that a SLURM job finished. The batchq
+server has no other channel into SLURM — if nothing is calling
+`squeue` / `sacct` on its behalf, every `PROXYQUEUED` job stays
+`PROXYQUEUED` forever, even after it has long since finished on the
+cluster.
+
+This is the real reason cron is the right shape for the SLURM runner.
+Even on a day when you have nothing new to submit, you still need
+something firing the runner periodically so that the reconciliation
+step happens and the queue keeps moving. See
+[Three ways to drive it](#three-ways-to-drive-it) below.
+
 ## When to use it
 
 Use the SLURM runner when:
@@ -205,9 +232,12 @@ ones to SLURM, and exits. You get your prompt back when it's done.
 This shape is right for ad-hoc work: pushing a small batch into SLURM
 by hand, watching what a single reconciliation pass actually does
 before automating it, debugging a misconfigured job, or just kicking
-the runner once after a manual `batchq release`. Nothing wrong with
-running it this way day-to-day either, if the batchq backlog only ever
-grows when you push it; you just have to remember to do it.
+the runner once after a manual `batchq release`. You can also run it
+this way day-to-day if you don't mind being the one keeping things
+moving — but remember that the runner does both submission *and*
+reconciliation in one pass, so a `PROXYQUEUED` job that finishes on
+the cluster won't show up as `SUCCESS` in batchq until the next time
+you run the command.
 
 ### From cron (recommended on shared clusters)
 
@@ -215,6 +245,12 @@ The shape you want for steady-state work on a shared HPC cluster: a
 single-pass invocation, wrapped in a lockfile, fired by cron every few
 minutes. No permanent process, no SSH session to keep alive, no
 `tmux` to detach.
+
+This is the right shape for the SLURM runner specifically because of
+the reconciliation half of the runner's work — even when there's
+nothing new to submit, you still need somebody firing the runner so
+that already-`PROXYQUEUED` jobs get their status updated as they
+finish on the cluster. Cron does that for you for free.
 
 ```sh
 #!/bin/bash
