@@ -59,6 +59,8 @@ func httpStatus(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, service.ErrInvalidState):
 		return http.StatusConflict
+	case errors.Is(err, service.ErrForbidden):
+		return http.StatusForbidden
 	default:
 		return http.StatusInternalServerError
 	}

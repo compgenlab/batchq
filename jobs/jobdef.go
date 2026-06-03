@@ -2,7 +2,6 @@ package jobs
 
 import (
 	"fmt"
-	"os/user"
 	"strconv"
 	"strings"
 	"time"
@@ -98,19 +97,16 @@ type JobRunningDetail struct {
 	Value string
 }
 
+// NewJobDef builds an in-memory job with just a name and script
+// source. The submitting identity (uid, gid, supplementary groups)
+// is intentionally not captured here — the server derives it from
+// the connection's peer credentials at submit time. Anything the
+// client put on the wire is overridden, so capturing it client-side
+// is at best wasted work and at worst misleading.
 func NewJobDef(name string, src string) *JobDef {
 	jobdef := &JobDef{JobId: "", Status: UNKNOWN, Name: name}
 	jobdef.Details = make([]JobDefDetail, 0)
-
-	// username := support.GetCurrentUsername()
-	if u, err := user.Current(); err == nil {
-		jobdef.
-			AddDetail("uid", u.Uid).
-			AddDetail("gid", u.Gid)
-	}
-
 	jobdef.AddDetail("script", src)
-
 	return jobdef
 }
 
