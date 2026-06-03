@@ -128,6 +128,7 @@ func New(svc *service.Service, opts Options) (*Server, error) {
 		Handler:      mux,
 		ReadTimeout:  opts.ReadTimeout,
 		WriteTimeout: opts.WriteTimeout,
+		ConnContext:  connContextWithPeerCreds,
 	}
 	s.lastActivityNanos.Store(time.Now().UnixNano())
 	return s, nil

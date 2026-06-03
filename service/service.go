@@ -13,6 +13,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,12 +50,25 @@ func New(s storage.Storage) *Service {
 // --- Submission --------------------------------------------------------
 
 // SubmitJob persists a new job, assigning a UUID. Returns the persisted DTO.
+//
+// When the request arrived over a unix socket and the server captured
+// peer credentials, this method overrides the uid/gid/groups details
+// on the incoming request with the kernel-attested values resolved
+// through NSS — the client cannot influence what identity the runner
+// will use. When peer creds are absent (remote clients, tests with no
+// ConnContext), the client-supplied uid/gid are preserved for
+// backward compatibility; bearer-token-derived identity will fill
+// that gap in a later change.
 func (s *Service) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api.JobDTO, error) {
 	if req == nil {
 		return nil, ErrBadRequest
 	}
 	if _, ok := req.Details["script"]; !ok {
 		return nil, fmt.Errorf("%w: missing details.script", ErrBadRequest)
+	}
+
+	if peer, ok := support.PeerCredsFromContext(ctx); ok {
+		applyPeerIdentity(req, peer)
 	}
 
 	job := &jobs.JobDef{
@@ -76,6 +91,63 @@ func (s *Service) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*ap
 		return nil, err
 	}
 	return api.JobFromDef(job), nil
+}
+
+// applyPeerIdentity overwrites the uid/gid/groups details on req with
+// the kernel-attested values from peer plus the user's supplementary
+// groups looked up via NSS. If the NSS lookup fails, the peer's
+// uid/gid are still written (no spoofing possible) but the groups
+// detail is left as whatever the client sent, falling back to "no
+// supplementary groups" if the client sent none.
+func applyPeerIdentity(req *api.SubmitJobRequest, peer support.PeerCreds) {
+	if req.Details == nil {
+		req.Details = map[string]string{}
+	}
+	req.Details["uid"] = strconv.FormatUint(uint64(peer.Uid), 10)
+	req.Details["gid"] = strconv.FormatUint(uint64(peer.Gid), 10)
+
+	ident, err := support.LookupUserByUid(peer.Uid)
+	if err != nil {
+		// NSS resolved partial info (uid known, groups failed): keep
+		// the primary identity overrides we already wrote and leave
+		// groups detail alone. If NSS doesn't know the uid at all
+		// (ErrUserNotFound), same story — uid/gid are still
+		// kernel-attested, supp groups just won't be set.
+		if !errors.Is(err, support.ErrUserNotFound) {
+			log.Printf("service: NSS lookup for uid %d: %v", peer.Uid, err)
+		}
+		if ident.Username != "" && ident.Gid != 0 {
+			req.Details["gid"] = strconv.FormatUint(uint64(ident.Gid), 10)
+		}
+		return
+	}
+	// Full lookup succeeded; trust NSS's primary gid over the peer's
+	// (the peer's gid is the user's gid at connect time, which equals
+	// the NSS primary on a normal login but can be overridden by
+	// newgrp/setgid binaries; NSS is canonical).
+	req.Details["gid"] = strconv.FormatUint(uint64(ident.Gid), 10)
+	if len(ident.Groups) > 0 {
+		req.Details["groups"] = joinUint32(ident.Groups, ",")
+	} else {
+		delete(req.Details, "groups")
+	}
+}
+
+// joinUint32 formats a slice of uint32 as a sep-separated string,
+// without allocating a separate []string. Used for the "groups"
+// detail wire format.
+func joinUint32(vals []uint32, sep string) string {
+	if len(vals) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, v := range vals {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(strconv.FormatUint(uint64(v), 10))
+	}
+	return b.String()
 }
 
 // --- Reads -------------------------------------------------------------
@@ -212,7 +284,15 @@ func toDTOs(in []*jobs.JobDef) []*api.JobDTO {
 
 // --- User actions ------------------------------------------------------
 
+// ErrForbidden is returned by user-action methods when the caller is
+// authenticated (via peer creds) but does not own the target job and
+// is not root.
+var ErrForbidden = errors.New("service: forbidden")
+
 func (s *Service) CancelJob(ctx context.Context, jobID, reason string) error {
+	if err := s.authorizeJobAction(ctx, jobID); err != nil {
+		return err
+	}
 	if reason == "" {
 		reason = "user request"
 	}
@@ -220,16 +300,62 @@ func (s *Service) CancelJob(ctx context.Context, jobID, reason string) error {
 }
 
 func (s *Service) HoldJob(ctx context.Context, jobID string) error {
+	if err := s.authorizeJobAction(ctx, jobID); err != nil {
+		return err
+	}
 	return s.store.HoldJob(ctx, jobID)
 }
 
 func (s *Service) ReleaseJob(ctx context.Context, jobID string) error {
+	if err := s.authorizeJobAction(ctx, jobID); err != nil {
+		return err
+	}
 	if err := s.store.ReleaseJob(ctx, jobID); err != nil {
 		return err
 	}
 	// A just-released job may now be eligible to QUEUE; trigger a pass.
 	_, _ = s.ResolveDependencies(ctx)
 	return nil
+}
+
+// authorizeJobAction enforces the per-job operator check: a caller
+// with kernel-attested peer credentials (i.e. a unix-socket client)
+// can only act on jobs whose stored uid matches their own. Root
+// (uid 0) is an admin and can act on any job. Requests without peer
+// credentials (in-process tests, remote/proxy clients arriving via
+// HTTP through a future TCP listener) are allowed through; remote
+// authz will move under the bearer-token mechanism in a later change.
+func (s *Service) authorizeJobAction(ctx context.Context, jobID string) error {
+	peer, ok := support.PeerCredsFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if peer.Uid == 0 {
+		return nil
+	}
+	job, err := s.store.GetJob(ctx, jobID)
+	if err != nil {
+		return err
+	}
+	for _, d := range job.Details {
+		if d.Key != "uid" {
+			continue
+		}
+		ownerUid, perr := strconv.ParseUint(strings.TrimSpace(d.Value), 10, 32)
+		if perr != nil {
+			// A job with an unparseable uid detail is older or
+			// corrupt; fail-closed for safety — an operator can
+			// always use root to intervene.
+			return fmt.Errorf("%w: job %s has unparseable uid detail", ErrForbidden, jobID)
+		}
+		if uint32(ownerUid) == peer.Uid {
+			return nil
+		}
+		return fmt.Errorf("%w: job %s belongs to uid %d", ErrForbidden, jobID, ownerUid)
+	}
+	// No uid detail at all (older pre-identity job): same fail-closed
+	// posture. Root remains the escape hatch.
+	return fmt.Errorf("%w: job %s has no uid detail", ErrForbidden, jobID)
 }
 
 func (s *Service) AdjustJobPriority(ctx context.Context, jobID string, delta int) error {

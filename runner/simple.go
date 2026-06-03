@@ -480,11 +480,35 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 			r.failClaimedJob(job.JobID, 1, "missing or invalid GID in job details")
 			return false
 		}
+		// Parse the optional "groups" detail (comma-separated GIDs)
+		// into Credential.Groups so the kernel calls setgroups(2)
+		// with the user's full supplementary set instead of clearing
+		// it. Older submitters won't have set this; in that case we
+		// leave Groups nil and the kernel drops supplementary groups
+		// (the pre-supp-groups behavior). A malformed entry is
+		// logged and treated as "no supplementary groups" rather
+		// than failing the job, since this is a non-critical
+		// upgrade.
+		var supGroups []uint32
+		if raw := strings.TrimSpace(job.Details["groups"]); raw != "" {
+			parts := strings.Split(raw, ",")
+			supGroups = make([]uint32, 0, len(parts))
+			for _, p := range parts {
+				g, perr := strconv.ParseUint(strings.TrimSpace(p), 10, 32)
+				if perr != nil {
+					r.logf("Job %s: malformed groups detail %q: %v\n", job.JobID, raw, perr)
+					supGroups = nil
+					break
+				}
+				supGroups = append(supGroups, uint32(g))
+			}
+		}
 		cmd.SysProcAttr = &syscall.SysProcAttr{
 			Setpgid: true,
 			Credential: &syscall.Credential{
-				Uid: uint32(uid),
-				Gid: uint32(gid),
+				Uid:    uint32(uid),
+				Gid:    uint32(gid),
+				Groups: supGroups,
 			},
 		}
 

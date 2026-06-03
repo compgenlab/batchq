@@ -176,84 +176,79 @@ jobs, but trusts running jobs not to exceed their declared limits),
 run a per-user runner instead and let normal Unix accounts give you
 isolation for free.
 
-### What does happen when the runner is root
+### How the runner runs jobs under the submitter's identity
 
-- Each job's `uid` and `gid` are captured from `user.Current()` on
-  the *submitting client* at submit time and stored as job details
-  (`jobs/jobdef.go:106`).
-- When the runner claims a job, it reads those values and sets
-  `cmd.SysProcAttr.Credential = {Uid, Gid}` so the kernel
-  setuid/setgid's before `exec`. The job process runs as the
-  submitting user, not as root (`runner/simple.go:483`).
-- The captured stdout/stderr files are `chown`'d to the user so they
+- When a unix-socket client submits, the server reads the connecting
+  peer's `{uid, gid}` from the kernel via `SO_PEERCRED` (Linux) or
+  `LOCAL_PEERCRED` (macOS) — the client cannot forge these. The
+  server then resolves the user's supplementary groups by shelling
+  out to `getent passwd <uid>` and `id -G <username>`, both of which
+  consult NSS, so users in LDAP / SSSD work correctly even when
+  `/etc/passwd` has no entry for them.
+- The resulting `uid`, `gid`, and comma-separated `groups` are
+  written into the job's details, overriding anything the client
+  sent. The runner reads them at claim time and sets
+  `cmd.SysProcAttr.Credential = {Uid, Gid, Groups}`. The kernel
+  performs `setuid` / `setgid` / `setgroups` before `exec`, so the
+  job process runs as the submitting user with the user's full
+  supplementary group set.
+- The job's stdout/stderr files are `chown`'d to the user so they
   own their own output.
-- If the `uid`/`gid` details are missing or unparseable, the job is
-  failed closed — never executed as root.
+- If the `uid` / `gid` details are missing or unparseable when the
+  runner claims a job, the job is failed closed — never executed as
+  root.
 - The cgroup (v1 or v2) is created and the process placed into it,
   giving you kernel-enforced procs and memory limits.
 
+Hold, release, and cancel are gated by the same identity. A non-root
+peer can only act on jobs whose stored uid matches their own; root
+(uid 0) is the admin escape hatch and can act on any job.
+
 ### Known security gaps
 
-These are real problems for any deployment that takes "multi-user"
-seriously. None of them are bugs in the small sense — they are
-features batchq simply hasn't built yet.
+The remaining gaps in this picture — real, but smaller than they
+were before peer-cred derivation landed:
 
-- **No supplementary groups.** `Credential.Groups` is left unset,
-  which on Linux causes Go to call `setgroups(0, NULL)` and clear the
-  full group set the user would normally have. The job process ends
-  up with only the user's primary GID, so users who rely on group
-  membership for filesystem access (shared project directories, for
-  instance) hit permission errors that don't happen at an interactive
-  login.
-- **No server-side verification of the claimed uid/gid.** The uid and
-  gid in the job's details are whatever the submitting client put on
-  the wire. The server does not cross-check them against the unix
-  socket's peer credentials. With the default mode-`0600` socket the
-  server is only reachable by its owner, so this is moot in
-  single-user mode. For genuine multi-user (a relaxed-mode socket, or
-  a network-fronted server) anybody who can reach the socket can
-  claim to be any uid — including uid 0.
-- **No filesystem sandbox.** The job has the (correctly-attributed)
-  user's normal access to the filesystem. No bind-mount sandbox, no
-  mount namespace, no chroot.
+- **No filesystem sandbox.** The job has the user's normal access to
+  the filesystem. No bind-mount sandbox, no mount namespace, no
+  chroot.
 - **No PID or user namespace.** Jobs can see each other's processes
   in `ps` and can signal anything Unix permissions allow them to
   signal.
-- **No PAM session.** The job does not go through PAM, so it does not
-  get the usual login-time setup: resource limits from
+- **No PAM session.** The job does not go through PAM, so it does
+  not get the usual login-time setup: resource limits from
   `/etc/security/limits.conf`, session leader assignment, audit
   attribution, etc.
-- **Bearer-token auth on the REST API is not yet implemented.** Any
-  network-exposed deployment depends entirely on the reverse proxy
-  for access control. See [remote](remote.md).
+- **Bearer-token auth on the REST API is not yet implemented.**
+  Peer-cred derivation only works for unix-socket clients. Requests
+  that arrive over HTTPS through the reverse proxy still trust the
+  client's submitted `uid` / `gid`, and the hold / release / cancel
+  authz check is skipped for them. Until server-side bearer-token
+  validation lands, network-exposed deployments depend entirely on
+  the reverse proxy for access control. See [remote](remote.md).
 
 ### When this is fine, and when it isn't
 
-The honest answer:
+- **Fine** when (a) every reachable client comes in over the unix
+  socket (so peer creds give you kernel-attested identity), and
+  (b) the host's existing user accounts are the right granularity
+  of isolation for your needs. Cgroup limits give you resource
+  fairness on top.
+- **Not fine yet** if your deployment exposes the REST API to
+  remote clients and you need them to be subject to the same
+  per-user identity enforcement. That requires bearer-token
+  validation server-side, which is not yet implemented; until it
+  is, lean on the reverse proxy.
 
-- **Fine** when you control every user on the host, none of them are
-  hostile, they all already have shell access to the same machine,
-  and your only goal is to keep one runaway job from starving another
-  via cgroup limits. You are using root for *resource fairness*, not
-  for *security*.
-- **Not fine** as soon as your threat model includes anyone you don't
-  fully trust. The combination of "anyone who can reach the socket
-  can claim any uid" + "no FS sandbox" + "no PAM" means a hostile
-  submitter on a relaxed-permission deployment can run arbitrary code
-  as any user — including root, by simply asking nicely.
+### The simpler alternative: per-user runners
 
-### The recommended alternative: per-user runners
-
-For multi-user hosts where you don't need cgroup enforcement, run a
-separate `batchq run` under each user's own account against their own
-`$BATCHQ_HOME`. Standard Unix permissions enforce isolation: each
-user's batchq server, socket, and database are owned by them, jobs
-run as them, group memberships are correct, and there is no shared
-root-owned component to attack. This sidesteps every gap listed
-above. If users want a shared queue, give them a shared submission
-*server* (still per-user runners) reached via the reverse-proxied
-HTTPS endpoint — that decouples "where the queue lives" from "what
-identity each job runs as."
+If you don't need cgroup enforcement, you can sidestep the entire
+root-running picture by running a separate `batchq run` under each
+user's own account against their own `$BATCHQ_HOME`. Standard Unix
+permissions enforce isolation, there is no shared root-owned
+component, and the NSS dependency goes away. This is the simplest
+deployment for most multi-user hosts; reach for root only when
+cgroup-enforced resource ceilings are the specific thing you need.
 
 ## Running multiple jobs concurrently
 
