@@ -102,24 +102,27 @@ Every job moves through one of these paths from submission to a terminal
 state:
 
 ```
-                   ┌─────────────────────────┐
-                   │                         │
-            ┌──► USERHOLD ──► QUEUED ──► RUNNING ──► SUCCESS
-            │                  ▲             │
-   submit ──┼──► WAITING ──────┘             ├──► FAILED
-            │                                │
-            └──► QUEUED ──► PROXYQUEUED ─────┴──► CANCELED
-                            (SLURM)
+   submit ──┬──► USERHOLD ──┐
+            │               ▼                              ┌──► RUNNING ─────┐
+            └────────────► WAITING ──► QUEUED ─────────────┤                 ├──► SUCCESS
+                                                           └──► PROXYQUEUED ─┤    FAILED
+                                                                (SLURM)      │    CANCELED
+                                                                             ▼
+                                                                          terminal
 ```
 
 - `USERHOLD` — submitted with `--hold`. Stays held until you run
-  `batchq release`.
-- `WAITING` — has an unmet `afterok` dependency. Becomes `QUEUED` as
-  soon as the last parent finishes successfully.
-- `QUEUED` — eligible to run. The runner will pick this up.
-- `RUNNING` — executing locally under the simple runner.
-- `PROXYQUEUED` — the SLURM runner has handed this job off to SLURM and
-  is polling `squeue` / `sacct` for its outcome.
+  `batchq release <id>`, which moves it into `WAITING`.
+- `WAITING` — sitting on dependency resolution. Becomes `QUEUED` as
+  soon as every `afterok` parent has succeeded; a job with no
+  dependencies passes through this state immediately.
+- `QUEUED` — eligible to run. The next runner that calls claim picks
+  this up.
+- `RUNNING` — claimed by a runner. Local execution under the simple
+  runner stays in this state until completion; the SLURM runner
+  transitions immediately to `PROXYQUEUED` after `sbatch` returns.
+- `PROXYQUEUED` — handed off to SLURM. The SLURM runner is polling
+  `squeue` / `sacct` for the outcome.
 - `CANCELED`, `SUCCESS`, `FAILED` — terminal. The job stays in the
   database until `batchq cleanup` removes it.
 
