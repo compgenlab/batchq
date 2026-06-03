@@ -119,9 +119,9 @@ The runner loops as follows:
 4. **Repeat.**
 
 With `--forever`, this loop runs indefinitely. Without `--forever`, it
-runs one reconciliation + submission pass and exits — useful in a
-cron-driven setup if you really do not want a runner process sitting
-around.
+runs one reconciliation + submission pass and exits — which is the
+shape you want for a cron-driven setup (see [Running it from cron](#running-it-from-cron-recommended)
+below).
 
 ## What gets translated to SLURM
 
@@ -186,19 +186,86 @@ Two knobs control the submission rate:
   job does **not** mark the batchq job FAILED — the runner records the
   reason and tries again later. (See commit `fae265f`.)
 
+## Running it from cron (recommended)
+
+The reconciliation loop is designed to work in single-pass mode, so on
+a shared cluster the cleanest way to keep the SLURM runner going is to
+drive it from `cron` rather than leave a long-running process in
+`tmux`. A single-pass invocation submits whatever it can up to its
+caps, reports any newly-finished jobs back to the batchq server, and
+exits — there is no `--forever` and no process to babysit.
+
+A lockfile is the only thing you have to add on top, so that a still-
+running invocation doesn't get a second copy of itself when cron fires
+again:
+
+```sh
+#!/bin/bash
+LOCK=$HOME/jobs/batchq_slurm_runner.lock
+LOG=$HOME/jobs/batchq_slurm_runner.log
+
+if [ ! -e "$LOCK" ]; then
+    echo $$ > "$LOCK"
+    {
+        echo "--"
+        date
+        batchq run --slurm \
+            --max-jobs 50 \
+            --slurm-account MYACCT \
+            --slurm-max-jobs 475
+    } &>> "$LOG"
+    rm "$LOCK"
+fi
+```
+
+Drop that into `~/jobs/batchq_slurm_runner.sh` and add it to your
+crontab. Every five minutes is a reasonable cadence — SLURM job state
+doesn't change fast enough to need finer granularity, and the lockfile
+shrugs off the occasional run that takes longer than the interval:
+
+```cron
+*/5 * * * * ~/jobs/batchq_slurm_runner.sh
+```
+
+The pattern in this example:
+
+- **`--max-jobs 50`** caps the number of jobs this one invocation
+  moves from `QUEUED` → `PROXYQUEUED`. Even with a huge batchq
+  backlog and plenty of SLURM headroom, no single cron tick pushes
+  more than fifty new jobs into SLURM.
+- **`--slurm-max-jobs 475`** is the ceiling on this user's total
+  live SLURM jobs (anything visible to `squeue` for the user). Before
+  submitting, the runner checks the live count and stops if it is at
+  the cap; set this to whatever leaves room under your cluster's
+  per-user policy.
+- **Lockfile.** If the previous run is still in flight (a slow
+  `squeue` or `sacct`, or batchq itself spawning a server), the new
+  cron tick exits immediately instead of starting a second runner.
+- **Append-only log.** Every tick prints a `--` separator and a
+  timestamp, so the log is greppable when you need to know what the
+  runner was doing at 03:14.
+
+The lockfile is just a flag file, not a real lock — it's racy in
+principle, but cron at minute granularity gives you plenty of time
+between checks, and the worst case is a leftover lock after a crash
+(which is easy to spot and delete).
+
 ## Operating tips
 
-- **Run it under `nohup` or `tmux`.** `batchq run --slurm --forever`
-  is fine to leave running for days. If you must keep it shorter,
-  drop `--forever` and run it from cron every minute or two — the
-  reconciliation loop is designed to work either way.
 - **One runner per user.** There is no point in running two SLURM
   runners for the same user — they would compete for the same SLURM
   queue budget. Two for different users is fine.
+- **Cron vs. `--forever`.** Cron + lockfile is the recommended pattern
+  on shared clusters (no permanent process, survives logout). If you
+  prefer a long-running process — on your own hardware, or anywhere
+  long-lived user processes are acceptable — `batchq run --slurm
+  --forever` under `tmux` or `nohup` works equally well; the same
+  reconciliation loop runs either way.
 - **Watch the rate.** Submitting too fast can be unfriendly to the
   SLURM scheduler. A handful of submissions per second is a reasonable
   default; if your sysadmins ask you to slow down, lower
-  `max_slurm_jobs` so the runner waits more often between submissions.
+  `max_slurm_jobs` so the runner waits more often between submissions,
+  or lower `--max-jobs` so each cron tick submits fewer.
 
 ## Where to go next
 
