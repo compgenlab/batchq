@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/mbreese/batchq/api"
+	"github.com/mbreese/batchq/internal/testsupport"
 	"github.com/mbreese/batchq/server"
 	"github.com/mbreese/batchq/service"
 	"github.com/mbreese/batchq/storage"
@@ -20,7 +21,7 @@ import (
 
 func newUnixPair(t *testing.T) (*Client, *server.Server, context.CancelFunc) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "batchq.sock")
 	dbPath := filepath.Join(dir, "batchq.db")
 

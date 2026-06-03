@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mbreese/batchq/internal/testsupport"
 	"github.com/mbreese/batchq/server"
 	"github.com/mbreese/batchq/service"
 	"github.com/mbreese/batchq/storage"
@@ -60,7 +61,7 @@ func spawnInProcess(t *testing.T) (func(string) error, *atomic.Int32) {
 }
 
 func TestAutospawnHappyPathServerAlreadyUp(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "ready.sock")
 	dbPath := filepath.Join(dir, "ready.db")
 
@@ -105,7 +106,7 @@ func TestAutospawnHappyPathServerAlreadyUp(t *testing.T) {
 }
 
 func TestAutospawnSpawnsWhenNoServer(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "spawned.sock")
 
 	spawn, spawnCount := spawnInProcess(t)
@@ -125,7 +126,7 @@ func TestAutospawnSpawnsWhenNoServer(t *testing.T) {
 }
 
 func TestAutospawnRemovesStaleSocket(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "stale.sock")
 
 	// Create a regular file at the socket path. A net.Dial against this
@@ -149,7 +150,7 @@ func TestAutospawnRemovesStaleSocket(t *testing.T) {
 }
 
 func TestAutospawnDisabledReturnsConnectError(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "nobody.sock")
 
 	_, err := DialAndConnect(context.Background(),
@@ -164,7 +165,7 @@ func TestAutospawnDisabledReturnsConnectError(t *testing.T) {
 }
 
 func TestAutospawnContextCancelStopsPolling(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "never.sock")
 
 	// SpawnFunc that "succeeds" but never starts a server, so the

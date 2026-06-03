@@ -8,13 +8,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mbreese/batchq/internal/testsupport"
 	"github.com/mbreese/batchq/server"
 	"github.com/mbreese/batchq/service"
 	"github.com/mbreese/batchq/storage"
 )
 
 func TestOwnershipMonitor_HealthyServerStaysUp(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "batchq.sock")
 	dbPath := filepath.Join(dir, "batchq.db")
 
@@ -52,7 +53,7 @@ func TestOwnershipMonitor_HealthyServerStaysUp(t *testing.T) {
 // shutting down. The fix is HeaderInternalOwner; this test would fail
 // without it.
 func TestOwnershipMonitor_DoesNotPreventIdleShutdown(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "batchq.sock")
 	dbPath := filepath.Join(dir, "batchq.db")
 
@@ -89,7 +90,7 @@ func TestOwnershipMonitor_DoesNotPreventIdleShutdown(t *testing.T) {
 }
 
 func TestOwnershipMonitor_OrphanShutsDown(t *testing.T) {
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "batchq.sock")
 	dbPath := filepath.Join(dir, "batchq.db")
 

@@ -16,6 +16,7 @@ import (
 	"unsafe"
 
 	"github.com/mbreese/batchq/client"
+	"github.com/mbreese/batchq/internal/testsupport"
 	"github.com/mbreese/batchq/server"
 	"github.com/mbreese/batchq/service"
 	"github.com/mbreese/batchq/storage"
@@ -27,7 +28,7 @@ import (
 // the socket so dialClient() will reach this server.
 func startCompatServer(t *testing.T) *client.Client {
 	t.Helper()
-	dir := t.TempDir()
+	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "compat.sock")
 	dbPath := filepath.Join(dir, "compat.db")
 
