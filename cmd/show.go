@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -67,19 +68,29 @@ var queueCmd = &cobra.Command{
 		defer cancel()
 		var dtos []*api.JobDTO
 		var err error
-		if queueRunID != "" || queueProduces != "" || queueConsumes != "" {
+		if queueRunID != "" || queueOutput != "" || queueInput != "" {
 			dtos, err = c.ListJobs(ctx, client.ListJobsOptions{
 				ShowAll:      jobShowAll,
-				SortByStatus: true,
+				SortByStatus: !queueSortTime,
 				RunID:        queueRunID,
-				Produces:     queueProduces,
-				Consumes:     queueConsumes,
+				Output:       queueOutput,
+				Input:        queueInput,
 			})
 		} else {
-			dtos, err = c.GetQueueJobs(ctx, jobShowAll, true)
+			dtos, err = c.GetQueueJobs(ctx, jobShowAll, !queueSortTime)
 		}
 		if err != nil {
 			log.Fatalln(err)
+		}
+		if queueSortTime {
+			sort.SliceStable(dtos, func(i, j int) bool {
+				ti := timeOrZero(dtos[i].SubmitTime)
+				tj := timeOrZero(dtos[j].SubmitTime)
+				if queueSortReverse {
+					return ti.Before(tj)
+				}
+				return ti.After(tj)
+			})
 		}
 		printQueueTable(dtos)
 	},
@@ -98,11 +109,12 @@ func printQueueTable(dtos []*api.JobDTO) {
 	fmt.Printf("|%-5.5s", "procs")
 	fmt.Printf("| %-8.8s ", "mem")
 	fmt.Printf("| %-11.11s ", "walltime")
+	fmt.Printf("| %-6.6s ", "submit")
 	fmt.Println("|")
 	if Config.Batchq.Multiuser {
-		fmt.Println("|--------------------------------------|----------|----------------------|--------------|-----|----------|-------------|")
+		fmt.Println("|--------------------------------------|----------|----------------------|--------------|-----|----------|-------------|--------|")
 	} else {
-		fmt.Println("|--------------------------------------|----------|----------------------|-----|----------|-------------|")
+		fmt.Println("|--------------------------------------|----------|----------------------|-----|----------|-------------|--------|")
 	}
 
 	for _, dto := range dtos {
@@ -118,24 +130,31 @@ func printQueueTable(dtos []*api.JobDTO) {
 		}
 		fmt.Printf("| %-3.3s ", job.GetDetail("procs", ""))
 		fmt.Printf("| %-8.8s ", jobs.PrintMemoryString(job.GetDetail("mem", "")))
+
+		var walltimeStr string
 		switch job.Status {
 		case jobs.CANCELED:
-			fmt.Printf("| %-11.11s ", "")
+			walltimeStr = ""
+		case jobs.SUCCESS, jobs.FAILED:
+			walltimeStr = jobs.WalltimeToString(int(job.EndTime.Sub(job.StartTime).Seconds()))
+		case jobs.RUNNING:
+			walltimeStr = jobs.WalltimeToString(int(time.Now().UTC().Sub(job.StartTime).Seconds()))
+		default:
+			walltimeStr = jobs.WalltimeStringToString(job.GetDetail("walltime", ""))
+		}
+		fmt.Printf("| %-11.11s ", walltimeStr)
+		fmt.Printf("| %-6.6s ", relativeAge(dto.SubmitTime))
+
+		switch job.Status {
+		case jobs.CANCELED:
 			fmt.Printf("| %-20.20s\n", job.Notes)
 		case jobs.SUCCESS:
-			elapsed := job.EndTime.Sub(job.StartTime)
-			fmt.Printf("| %-11.11s ", jobs.WalltimeToString(int(elapsed.Seconds())))
 			fmt.Println("|")
 		case jobs.FAILED:
-			elapsed := job.EndTime.Sub(job.StartTime)
-			fmt.Printf("| %-11.11s ", jobs.WalltimeToString(int(elapsed.Seconds())))
 			fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
 		case jobs.RUNNING:
-			elapsed := time.Now().UTC().Sub(job.StartTime)
-			fmt.Printf("| %-11.11s ", jobs.WalltimeToString(int(elapsed.Seconds())))
 			fmt.Printf("| %-20.20s\n", fmt.Sprintf("pid:%s", job.GetRunningDetail("pid", "")))
 		case jobs.PROXYQUEUED:
-			fmt.Printf("| %-11.11s ", jobs.WalltimeStringToString(job.GetDetail("walltime", "")))
 			fmt.Print("|")
 			if job.GetRunningDetail("slurm_job_id", "") != "" {
 				fmt.Printf(" %s", fmt.Sprintf("slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), job.GetRunningDetail("slurm_job_id", "")))
@@ -150,7 +169,6 @@ func printQueueTable(dtos []*api.JobDTO) {
 			}
 			fmt.Println("")
 		default:
-			fmt.Printf("| %-11.11s ", jobs.WalltimeStringToString(job.GetDetail("walltime", "")))
 			fmt.Print("|")
 			if len(job.AfterOk) > 0 {
 				depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
@@ -162,6 +180,35 @@ func printQueueTable(dtos []*api.JobDTO) {
 			}
 			fmt.Println("")
 		}
+	}
+}
+
+func timeOrZero(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+func relativeAge(t *time.Time) string {
+	if t == nil || t.IsZero() {
+		return ""
+	}
+	d := time.Since(*t)
+	if d < 0 {
+		d = 0
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	case d < 7*24*time.Hour:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	default:
+		return fmt.Sprintf("%dw", int(d.Hours()/(24*7)))
 	}
 }
 
@@ -232,14 +279,18 @@ var summaryCmd = &cobra.Command{
 
 var jobShowAll bool
 var queueRunID string
-var queueProduces string
-var queueConsumes string
+var queueOutput string
+var queueInput string
+var queueSortTime bool
+var queueSortReverse bool
 
 func init() {
 	queueCmd.Flags().BoolVar(&jobShowAll, "all", false, "Show all jobs (including completed)")
 	queueCmd.Flags().StringVar(&queueRunID, "run-id", "", "Only show jobs in this workflow run")
-	queueCmd.Flags().StringVar(&queueProduces, "produces", "", "Only show jobs that list this file as an output")
-	queueCmd.Flags().StringVar(&queueConsumes, "consumes", "", "Only show jobs that list this file as an input")
+	queueCmd.Flags().StringVar(&queueOutput, "output", "", "Only show jobs that list this file as an output")
+	queueCmd.Flags().StringVar(&queueInput, "input", "", "Only show jobs that list this file as an input")
+	queueCmd.Flags().BoolVarP(&queueSortTime, "time", "t", false, "Sort by submit time (newest first)")
+	queueCmd.Flags().BoolVarP(&queueSortReverse, "reverse", "r", false, "Reverse sort order (use with -t)")
 	summaryCmd.Flags().BoolVar(&jobShowAll, "all", false, "Show all jobs (including completed)")
 
 	rootCmd.AddCommand(detailsCmd)

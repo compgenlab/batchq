@@ -256,9 +256,9 @@ type ListJobsOptions struct {
 	Offset       int
 
 	// Optional filters.
-	RunID    string // jobs whose "run_id" detail equals this
-	Produces string // jobs that list this path in output_files
-	Consumes string // jobs that list this path in input_files
+	RunID  string // jobs whose "run_id" detail equals this
+	Output string // jobs that list this path in output_files
+	Input  string // jobs that list this path in input_files
 }
 
 func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
@@ -284,11 +284,11 @@ func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Job
 	if opts.RunID != "" {
 		q.Set("run_id", opts.RunID)
 	}
-	if opts.Produces != "" {
-		q.Set("produces", opts.Produces)
+	if opts.Output != "" {
+		q.Set("output", opts.Output)
 	}
-	if opts.Consumes != "" {
-		q.Set("consumes", opts.Consumes)
+	if opts.Input != "" {
+		q.Set("input", opts.Input)
 	}
 	path := api.Prefix + api.RouteJobs
 	if encoded := q.Encode(); encoded != "" {

@@ -298,17 +298,17 @@ func TestListJobsFiltersByRunIDAndFiles(t *testing.T) {
 		t.Fatalf("run-A: got %d jobs, want 2", len(got))
 	}
 
-	// Produces filter — two jobs produce "shared".
-	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Produces: "shared"})
+	// Output filter — two jobs produce "shared".
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Output: "shared"})
 	if err != nil {
-		t.Fatalf("ListJobs produces: %v", err)
+		t.Fatalf("ListJobs output: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("produces shared: got %d, want 2", len(got))
+		t.Fatalf("output shared: got %d, want 2", len(got))
 	}
 
-	// Combine RunID AND Produces — intersection of {a, b} ∩ {a, c} = {a}.
-	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, RunID: "run-A", Produces: "shared"})
+	// Combine RunID AND Output — intersection of {a, b} ∩ {a, c} = {a}.
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, RunID: "run-A", Output: "shared"})
 	if err != nil {
 		t.Fatalf("ListJobs combined: %v", err)
 	}
@@ -316,13 +316,13 @@ func TestListJobsFiltersByRunIDAndFiles(t *testing.T) {
 		t.Fatalf("combined: got %v", names(got))
 	}
 
-	// Consumes filter — one job consumes "shared".
-	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Consumes: "shared"})
+	// Input filter — one job consumes "shared".
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Input: "shared"})
 	if err != nil {
-		t.Fatalf("ListJobs consumes: %v", err)
+		t.Fatalf("ListJobs input: %v", err)
 	}
 	if len(got) != 1 || got[0].Name != "b" {
-		t.Fatalf("consumes shared: got %v", names(got))
+		t.Fatalf("input shared: got %v", names(got))
 	}
 }
 

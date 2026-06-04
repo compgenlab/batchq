@@ -167,11 +167,11 @@ type ListJobsOptions struct {
 	Statuses     []jobs.StatusCode
 	Query        string
 
-	// RunID, Produces, and Consumes are optional intersect-filters
+	// RunID, Output, and Input are optional intersect-filters
 	// applied after the base listing. Empty values are ignored.
-	RunID    string
-	Produces string
-	Consumes string
+	RunID  string
+	Output string
+	Input  string
 }
 
 func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
@@ -191,7 +191,7 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 		return nil, err
 	}
 
-	if opts.RunID != "" || opts.Produces != "" || opts.Consumes != "" {
+	if opts.RunID != "" || opts.Output != "" || opts.Input != "" {
 		var allow map[string]struct{}
 		if opts.RunID != "" {
 			ids, err := s.store.FindJobsByDetail(ctx, "run_id", opts.RunID)
@@ -200,15 +200,15 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 			}
 			allow = intersect(allow, ids)
 		}
-		if opts.Produces != "" {
-			ids, err := s.store.FindJobsByOutputPath(ctx, opts.Produces)
+		if opts.Output != "" {
+			ids, err := s.store.FindJobsByOutputPath(ctx, opts.Output)
 			if err != nil {
 				return nil, err
 			}
 			allow = intersect(allow, ids)
 		}
-		if opts.Consumes != "" {
-			ids, err := s.store.FindJobsByInputPath(ctx, opts.Consumes)
+		if opts.Input != "" {
+			ids, err := s.store.FindJobsByInputPath(ctx, opts.Input)
 			if err != nil {
 				return nil, err
 			}

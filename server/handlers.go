@@ -105,8 +105,8 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		SortByStatus: r.URL.Query().Get("sort_by_status") == "true",
 		Query:        r.URL.Query().Get("q"),
 		RunID:        r.URL.Query().Get("run_id"),
-		Produces:     r.URL.Query().Get("produces"),
-		Consumes:     r.URL.Query().Get("consumes"),
+		Output:       r.URL.Query().Get("output"),
+		Input:        r.URL.Query().Get("input"),
 	}
 	if raw := r.URL.Query()["status"]; len(raw) > 0 {
 		// status may appear once with comma-separated values or multiple times.
