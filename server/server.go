@@ -69,6 +69,12 @@ type Options struct {
 	// triggers Shutdown — catches the case where another server has
 	// taken over the path. Defaults to 30s. Zero disables.
 	OwnershipCheckInterval time.Duration
+
+	// AuthToken, if non-empty, requires every API request (except the
+	// health check) to carry `Authorization: Bearer <AuthToken>`. Empty
+	// (the default) disables in-band auth — the unix socket's filesystem
+	// permissions are then the only access control.
+	AuthToken string
 }
 
 // Server is a long-lived HTTP server over the batchq REST API.
@@ -198,11 +204,15 @@ func (s *Server) SocketPath() string {
 
 // listen parses Options.Listen and binds the right kind of listener.
 //
-// Only unix:// is supported today. Direct TCP exposure of the REST API
-// (with or without TLS) is intentionally not implemented: operators who
-// need network access put a reverse proxy (nginx, Caddy, ...) in front
-// of a unix socket. When native TCP+TLS support lands later it will use
-// the https:// scheme here.
+// Two schemes are supported:
+//   - unix:///path/to/sock — the default; access is gated by the socket's
+//     filesystem permissions and kernel peer credentials.
+//   - tcp://host:port — a plain-HTTP TCP port, for containerized /
+//     orchestrated deployments (Docker, k8s) where a host-path socket is
+//     awkward. batchq still never terminates TLS — front a TCP port with a
+//     reverse proxy for network exposure. TCP carries no peer credentials,
+//     so a TCP-bound server should set [server] token (see cmd/server.go,
+//     which warns when it isn't).
 func (s *Server) listen() (net.Listener, error) {
 	u, err := url.Parse(s.opts.Listen)
 	if err != nil {
@@ -211,9 +221,29 @@ func (s *Server) listen() (net.Listener, error) {
 	switch u.Scheme {
 	case "unix":
 		return s.listenUnix(u.Path)
+	case "tcp":
+		return s.listenTCP(u.Host)
 	default:
-		return nil, fmt.Errorf("server: unsupported listen scheme %q (only unix:// is supported)", u.Scheme)
+		return nil, fmt.Errorf("server: unsupported listen scheme %q (want unix:// or tcp://)", u.Scheme)
 	}
+}
+
+// listenTCP binds a plain-HTTP TCP listener at host:port. Unlike the unix
+// socket there is no election token or stale-file recovery: a port already
+// in use means another server owns it, so EADDRINUSE maps straight to
+// ErrAlreadyRunning.
+func (s *Server) listenTCP(hostport string) (net.Listener, error) {
+	if hostport == "" {
+		return nil, errors.New("server: tcp:// URL has empty host:port")
+	}
+	ln, err := net.Listen("tcp", hostport)
+	if err != nil {
+		if isAddrInUse(err) {
+			return nil, ErrAlreadyRunning
+		}
+		return nil, fmt.Errorf("server: listen tcp: %w", err)
+	}
+	return ln, nil
 }
 
 // listenUnix binds the unix socket at path, using the socket itself as
@@ -348,7 +378,9 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("POST "+p+api.RouteShutdown, s.handleShutdown)
 
-	return s.withVersionHeader(s.withActivity(mux))
+	// withAuth sits outside withActivity so unauthenticated requests
+	// neither reset the idle timer nor count as in-flight.
+	return s.withVersionHeader(s.withAuth(s.withActivity(mux)))
 }
 
 // withVersionHeader stamps every response with the API version header so

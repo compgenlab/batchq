@@ -363,9 +363,35 @@ func TestHTTPSBaseHonorsPathPrefix(t *testing.T) {
 }
 
 func TestClientRejectsUnsupportedSchemes(t *testing.T) {
-	for _, u := range []string{"http://example.com", "tcp://example.com:8080", "ftp://x"} {
+	for _, u := range []string{"ftp://x", "ws://example.com", "gopher://x"} {
 		if _, err := DialWithOptions(Options{URL: u}); err == nil {
 			t.Errorf("DialWithOptions(%q): expected error", u)
 		}
+	}
+}
+
+func TestTCPBaseIsPlainHTTP(t *testing.T) {
+	cases := []struct {
+		url  string
+		want string
+	}{
+		{"tcp://127.0.0.1:8080", "http://127.0.0.1:8080"},
+		{"tcp://server:8080/svc", "http://server:8080/svc"},
+		{"http://example.com:9000", "http://example.com:9000"},
+		{"http://example.com:9000/mount/", "http://example.com:9000/mount"},
+	}
+	for _, tc := range cases {
+		c, err := DialWithOptions(Options{URL: tc.url})
+		if err != nil {
+			t.Errorf("DialWithOptions(%q): %v", tc.url, err)
+			continue
+		}
+		if c.base != tc.want {
+			t.Errorf("URL %q: base = %q, want %q", tc.url, c.base, tc.want)
+		}
+		if c.SocketPath() != "" {
+			t.Errorf("URL %q: SocketPath = %q, want empty (not a unix socket)", tc.url, c.SocketPath())
+		}
+		c.Close()
 	}
 }

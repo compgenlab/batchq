@@ -65,6 +65,16 @@ type ServerConfig struct {
 	DB          string   `toml:"db"`
 	IdleTimeout Duration `toml:"idle_timeout"`
 	SqliteWAL   bool     `toml:"sqlite_wal"`
+
+	// Token, if non-empty, turns on shared-token auth: every API request
+	// (except the health check) must carry `Authorization: Bearer <token>`
+	// matching this value. Left empty (the default), the server enforces
+	// nothing in-band and relies on unix-socket filesystem permissions.
+	// This is a single shared secret — deliberately a "secure-enough"
+	// floor for a self-hosted single-user server, not per-user auth.
+	// Prefer the BATCHQ_SERVER_TOKEN env var so the secret stays out of a
+	// checked-in config file.
+	Token string `toml:"token"`
 }
 
 type WebConfig struct {
@@ -157,18 +167,22 @@ func (c *Config) Clone() *Config {
 // EnvOverrides is the set of config knobs that may be overridden by an
 // environment variable. We deliberately keep this list short — env vars
 // are useful for secrets and for CI / container deployments, not as a
-// general substitute for the config file. Today only BATCHQ_TOKEN is
-// wired up, so operators can keep the bearer token out of argv (where
-// `ps` would expose it) and out of a checked-in config.
+// general substitute for the config file. The two wired up today are
+// both secrets, so operators can keep them out of argv (where `ps` would
+// expose them) and out of a checked-in config:
+//   - BATCHQ_TOKEN        — the client's bearer token ([batchq] token)
+//   - BATCHQ_SERVER_TOKEN — the server's required shared token ([server] token)
 type EnvOverrides struct {
-	Token string // BATCHQ_TOKEN
+	Token       string // BATCHQ_TOKEN
+	ServerToken string // BATCHQ_SERVER_TOKEN
 }
 
 // ReadEnvOverrides snapshots the env vars that Config consumes. Calling
 // it twice in one process is fine — there's no caching.
 func ReadEnvOverrides() EnvOverrides {
 	return EnvOverrides{
-		Token: os.Getenv("BATCHQ_TOKEN"),
+		Token:       os.Getenv("BATCHQ_TOKEN"),
+		ServerToken: os.Getenv("BATCHQ_SERVER_TOKEN"),
 	}
 }
 
@@ -179,6 +193,9 @@ func ReadEnvOverrides() EnvOverrides {
 func (c *Config) ApplyEnv(e EnvOverrides) {
 	if e.Token != "" {
 		c.Batchq.Token = e.Token
+	}
+	if e.ServerToken != "" {
+		c.Server.Token = e.ServerToken
 	}
 }
 
