@@ -84,7 +84,8 @@ The atomic claim endpoint (`POST /api/v1/runners/{id}/claim`) transitions QUEUED
 - Subcommand shape: `batchq submit [flags] [script-path | -- inline command…]`, with stdin fallback when no positional arg / `-` is given.
 - All current flags: `--name`, `-p/--procs`, `-m/--mem`, `-t/--walltime`, `--wd`, `--stdout`, `--stderr`, `--deps`, `--hold`, `--env`, `--slurm`.
 - Optional metadata flags (additive in Phase 12): `--run-id <id>`, `--input <path>` (repeatable), `--output <path>` (repeatable). `#BATCHQ -run-id / -input / -output` directives mirror these.
-- SBATCH header parsing under `--slurm`: `-c/--cpus-per-task`, `--mem`, `-t/--time`, `-J`, `-D`, `-o/-e` with `%j`→`%JOBID`, `--export=ALL`, `-d afterok:…`.
+- Generic required resources: `--resource <name[=value]>` (repeatable), mirrored by `#BATCHQ -resource`. Stored as `job_details` keys under the `resource.` prefix (`jobs.ResourcePrefix`). Count-vs-label is inferred from the value: an integer value (`gpu=2`, `gpu:a100=2`) is a countable requirement matched with `>=`; a non-integer value (`cluster=xyz`) is a label matched by set membership; a bare `name` is a feature flag. `procs`/`mem`/`walltime` are reserved names (rejected — use `-p/-m/-t`). Runners advertise what they have via `[simple_runner]`/`[slurm_runner] resources` config or `batchq run --resource`; the storage-side `jobFitsResources` (in the atomic claim) does the matching. A runner advertising nothing only claims jobs that require nothing. The claim response distinguishes `MoreEligible` (a job fit the runner's limits but it lost the claim race — retry) from `Blocked` (queued jobs don't fit the runner's limits/resources); a non-`--forever` runner that is idle (no running jobs, so its offered limits equal full capacity) stops instead of polling forever for `Blocked` jobs it can never satisfy.
+- SBATCH header parsing under `--slurm`: `-c/--cpus-per-task`, `--mem`, `-t/--time`, `-J`, `-D`, `-o/-e` with `%j`→`%JOBID`, `--export=ALL`, `-d afterok:…`, `--gres=name[:type][:count]` → `resource.name[:type]=count`, `-C/--constraint=feat&feat` → bare `resource.feat` flags (simple AND forms only).
 - Job ID format: UUID strings with hyphens.
 - stdout, stderr, and exit codes match v1.
 
@@ -110,8 +111,8 @@ Sections:
 - `[server]` — `listen`, `db` (local sqlite3 / postgres URL), `idle_timeout`, `sqlite_wal`. Ignored when `[batchq] remote` is set.
 - `[web]` — `socket`, `listen`.
 - `[job_defaults]` — submit-time defaults: `name`, `procs`, `mem`, `walltime`, `wd`, `stdout`, `stderr`, `hold`, `env`.
-- `[simple_runner]` — `max_procs`, `max_mem`, `max_walltime`, `shell`, `use_cgroup_v1`, `use_cgroup_v2`.
-- `[slurm_runner]` — `user`, `account`, `partition`, `max_jobs` (per-invocation submit cap; `--max-jobs` flag), `max_slurm_jobs` (cap on this user's live SLURM-queue jobs; `--slurm-max-jobs` flag).
+- `[simple_runner]` — `max_procs`, `max_mem`, `max_walltime`, `shell`, `use_cgroup_v1`, `use_cgroup_v2`, plus `[simple_runner.resources]` (a `name = "value"` subtable advertising generic resources; counts are integer strings, labels are plain/comma-set strings). Counts are consumed by running jobs (the runner advertises pool-minus-running each claim); labels are advertised as-is.
+- `[slurm_runner]` — `user`, `account`, `partition`, `max_jobs` (per-invocation submit cap; `--max-jobs` flag), `max_slurm_jobs` (cap on this user's live SLURM-queue jobs; `--slurm-max-jobs` flag), plus `[slurm_runner.resources]` (typically cluster/feature labels so resource-tagged jobs route to the right cluster; procs/mem/walltime stay SLURM-enforced).
 
 ### Local vs remote
 

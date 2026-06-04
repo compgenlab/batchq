@@ -193,14 +193,20 @@ type ClaimJobRequest struct {
 	MaxProcs       int    `json:"max_procs,omitempty"`
 	MaxMemoryMB    int    `json:"max_memory_mb,omitempty"`
 	MaxWalltimeSec int    `json:"max_walltime_sec,omitempty"`
+	// Resources is the set of generic resources the runner advertises, keyed by
+	// resource name (counts as integer strings, labels as comma-separated sets).
+	// Omitted/nil means the runner advertises no generic resources.
+	Resources map[string]string `json:"resources,omitempty"`
 }
 
-// ClaimJobResponse is the body of a successful claim. If Job is nil, no
-// job was claimed; MoreEligible indicates whether QUEUED jobs remain that
-// did not fit the limits.
+// ClaimJobResponse is the body of a successful claim. If Job is nil, no job
+// was claimed; MoreEligible signals a lost claim race (retry may succeed) and
+// Blocked signals that queued jobs remain which did not fit this runner's
+// limits/resources.
 type ClaimJobResponse struct {
 	Job          *JobDTO `json:"job,omitempty"`
 	MoreEligible bool    `json:"more_eligible"`
+	Blocked      bool    `json:"blocked,omitempty"`
 }
 
 // ProxyJobRequest is the body of POST /runners/{runner_id}/jobs/{id}/proxy.

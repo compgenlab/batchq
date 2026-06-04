@@ -110,6 +110,12 @@ func NewJobDef(name string, src string) *JobDef {
 	return jobdef
 }
 
+// ResourcePrefix namespaces generic required-resource details (e.g.
+// "resource.gpu", "resource.cluster") within the flat job_details key/value
+// store. The runner-advertised resources a job is matched against live on the
+// claim request, not in the job; see storage.jobFitsResources.
+const ResourcePrefix = "resource."
+
 func (job *JobDef) GetDetail(key string, defval string) string {
 	for _, detail := range job.Details {
 		if detail.Key == key {
@@ -148,6 +154,22 @@ func (job *JobDef) SetRunID(id string) *JobDef {
 		job.AddDetail("run_id", id)
 	}
 	return job
+}
+
+// Resources returns the job's required generic resources as a name->value map,
+// with the ResourcePrefix stripped from each key (e.g. "gpu" -> "2",
+// "cluster" -> "xyz_cluster"). Empty if the job requires no generic resources.
+func (job *JobDef) Resources() map[string]string {
+	var res map[string]string
+	for _, detail := range job.Details {
+		if strings.HasPrefix(detail.Key, ResourcePrefix) {
+			if res == nil {
+				res = map[string]string{}
+			}
+			res[strings.TrimPrefix(detail.Key, ResourcePrefix)] = detail.Value
+		}
+	}
+	return res
 }
 
 // AddInputFile records an input-file path. No-op once the job has been

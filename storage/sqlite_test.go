@@ -234,8 +234,115 @@ func TestClaimNextJobLimits(t *testing.T) {
 	if claim.Job == nil || claim.Job.JobId != "small" {
 		t.Fatalf("expected small, got %+v", claim.Job)
 	}
+	// "big" doesn't fit -> Blocked, not MoreEligible (which now means a race).
+	if !claim.Blocked {
+		t.Fatalf("expected Blocked=true (big remains)")
+	}
+	if claim.MoreEligible {
+		t.Fatalf("expected MoreEligible=false (no claim race)")
+	}
+}
+
+func TestClaimNextJobResources(t *testing.T) {
+	claims := func(t *testing.T, jobRes, advertised map[string]string) bool {
+		t.Helper()
+		s := newTestStore(t)
+		details := map[string]string{}
+		for k, v := range jobRes {
+			details[jobs.ResourcePrefix+k] = v
+		}
+		mustInsert(t, s, mkJob("j", details))
+		claim, err := s.ClaimNextJob(ctxT(t), "r", "simple", Limits{Resources: advertised})
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		return claim.Job != nil
+	}
+
+	cases := []struct {
+		name      string
+		jobRes    map[string]string
+		advert    map[string]string
+		wantClaim bool
+	}{
+		{"countable fits", map[string]string{"gpu": "2"}, map[string]string{"gpu": "4"}, true},
+		{"countable short", map[string]string{"gpu": "8"}, map[string]string{"gpu": "4"}, false},
+		{"countable absent", map[string]string{"gpu": "1"}, nil, false},
+		{"typed exact fits", map[string]string{"gpu:a100": "2"}, map[string]string{"gpu:a100": "2"}, true},
+		{"typed wrong type", map[string]string{"gpu:a100": "1"}, map[string]string{"gpu:v100": "4"}, false},
+		{"untyped aggregates typed", map[string]string{"gpu": "3"}, map[string]string{"gpu:a100": "2", "gpu:v100": "2"}, true},
+		{"typed does not aggregate untyped", map[string]string{"gpu:a100": "2"}, map[string]string{"gpu": "4"}, false},
+		{"label equal", map[string]string{"cluster": "xyz"}, map[string]string{"cluster": "xyz"}, true},
+		{"label mismatch", map[string]string{"cluster": "xyz"}, map[string]string{"cluster": "abc"}, false},
+		{"feature subset", map[string]string{"features": "avx512,avx2"}, map[string]string{"features": "avx512,avx2,sse4"}, true},
+		{"feature missing one", map[string]string{"features": "avx512,avx999"}, map[string]string{"features": "avx512,avx2"}, false},
+		{"bare flag present", map[string]string{"fastio": ""}, map[string]string{"fastio": "true"}, true},
+		{"bare flag absent", map[string]string{"fastio": ""}, nil, false},
+		{"no requirement, no advert", nil, nil, true},
+		{"no requirement, advert present", nil, map[string]string{"gpu": "4"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := claims(t, tc.jobRes, tc.advert); got != tc.wantClaim {
+				t.Fatalf("claim=%v, want %v", got, tc.wantClaim)
+			}
+		})
+	}
+}
+
+// A runner that advertises nothing must skip a resource-tagged job but still
+// claim a resource-free one later in the queue (the cardinal rule).
+func TestClaimNextJobResourcesSkipsTagged(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	mustInsert(t, s, mkJob("a-gpu", map[string]string{jobs.ResourcePrefix + "gpu": "1"}))
+	mustInsert(t, s, mkJob("b-free", nil))
+
+	claim, _ := s.ClaimNextJob(ctx, "r", "simple", Limits{})
+	if claim.Job == nil || claim.Job.JobId != "b-free" {
+		t.Fatalf("expected b-free, got %+v", claim.Job)
+	}
+	// The gpu job can't run here -> Blocked, not MoreEligible. A runner at full
+	// capacity uses Blocked to stop rather than poll for it forever.
+	if !claim.Blocked {
+		t.Fatalf("expected Blocked=true (gpu job remains)")
+	}
+	if claim.MoreEligible {
+		t.Fatalf("expected MoreEligible=false (no claim race)")
+	}
+}
+
+// A job that fits the runner's limits but is already locked in job_running
+// (another runner won the race) yields MoreEligible (retry), not Blocked.
+func TestClaimNextJobRace(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	mustInsert(t, s, mkJob("contested", nil))
+
+	// Simulate a competing runner that already locked the row: insert the
+	// job_running lock directly while the job is still QUEUED, so our claim's
+	// INSERT hits the unique-violation (race) path.
+	sq := s.(*sqliteStorage)
+	if _, err := sq.db.ExecContext(ctx,
+		`INSERT INTO job_running (job_id, job_runner, kind) VALUES (?, ?, ?)`,
+		"contested", "other-runner", "simple"); err != nil {
+		t.Fatalf("pre-lock: %v", err)
+	}
+
+	claim, err := s.ClaimNextJob(ctx, "r1", "simple", Limits{})
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if claim.Job != nil {
+		t.Fatalf("expected no claim, got %+v", claim.Job)
+	}
 	if !claim.MoreEligible {
-		t.Fatalf("expected MoreEligible=true (big remains)")
+		t.Fatalf("expected MoreEligible=true (lost race)")
+	}
+	if claim.Blocked {
+		t.Fatalf("expected Blocked=false (job fit our limits)")
 	}
 }
 

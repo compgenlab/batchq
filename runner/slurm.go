@@ -25,6 +25,7 @@ type slurmRunner struct {
 	account     string
 	username    string
 	partition   string
+	resources   map[string]string
 }
 
 type SlurmJobState struct {
@@ -108,6 +109,14 @@ func (r *slurmRunner) SetSlurmPartition(partition string) *slurmRunner {
 	return r
 }
 
+// SetResources advertises generic resources (typically cluster/feature labels)
+// so resource-tagged jobs can be routed to this SLURM cluster. Defaults to
+// nil, in which case the runner claims only jobs that require no resources.
+func (r *slurmRunner) SetResources(resources map[string]string) *slurmRunner {
+	r.resources = resources
+	return r
+}
+
 func (r *slurmRunner) Start() bool {
 	submittedOne := false
 	r.availJobs = r.maxJobs
@@ -141,7 +150,7 @@ func (r *slurmRunner) Start() bool {
 		// procs, mem, and walltime aren't enforced on the slurm runner side;
 		// SLURM enforces them. We let the server return any QUEUED job.
 		claimCtx, claimCancel := context.WithTimeout(ctx, 30*time.Second)
-		resp, err := r.client.ClaimNextJob(claimCtx, r.runnerId, "slurm", -1, -1, -1)
+		resp, err := r.client.ClaimNextJob(claimCtx, r.runnerId, "slurm", -1, -1, -1, r.resources)
 		claimCancel()
 		if err != nil {
 			fmt.Printf("Error claiming job: %v\n", err)
@@ -149,9 +158,15 @@ func (r *slurmRunner) Start() bool {
 		}
 		if resp.Job == nil {
 			if !resp.MoreEligible {
+				// No claimable job. Any Blocked jobs require resources this
+				// SLURM runner doesn't advertise — it will never satisfy them,
+				// so stop rather than spin.
+				if resp.Blocked {
+					fmt.Println("Remaining queued jobs need resources this runner doesn't advertise; nothing to submit.")
+				}
 				break
 			}
-			// More eligible but couldn't claim now (transient); back off briefly.
+			// Lost a claim race; back off briefly and retry.
 			time.Sleep(1 * time.Second)
 			continue
 		}

@@ -188,6 +188,11 @@ var submitCmd = &cobra.Command{
 								log.Fatal("Missing value for -output")
 							}
 							jobOutputs = append(jobOutputs, v)
+						case "resource":
+							if v == "" {
+								log.Fatal("Missing value for -resource")
+							}
+							jobResources = append(jobResources, v)
 						default:
 						}
 					}
@@ -260,6 +265,18 @@ var submitCmd = &cobra.Command{
 							} else {
 								log.Fatal("Bad value for --export. Only --export=ALL is supported by batchq!")
 							}
+						case "gres":
+							// --gres=name[:type][:count][,...] -> resource.name[:type]=count
+							if v == "" {
+								log.Fatal("Missing value for --gres")
+							}
+							jobResources = append(jobResources, slurmGresToResources(v)...)
+						case "C", "constraint":
+							// --constraint=feat[&feat...] -> resource.feat (label flags)
+							if v == "" {
+								log.Fatal("Missing value for --constraint")
+							}
+							jobResources = append(jobResources, slurmConstraintFeatures(v)...)
 						case "H", "hold":
 							jobHold = true
 						case "d", "dependency":
@@ -297,6 +314,20 @@ var submitCmd = &cobra.Command{
 		}
 		if jobStderr != "" {
 			details["stderr"] = jobStderr
+		}
+
+		// generic required resources (--resource name=value / #BATCHQ -resource ...)
+		for _, entry := range jobResources {
+			name, val, _ := strings.Cut(entry, "=")
+			name = strings.TrimSpace(name)
+			if name == "" || strings.ContainsAny(name, " \t") {
+				log.Fatalf("Bad --resource name: %q", entry)
+			}
+			switch name {
+			case "procs", "mem", "walltime":
+				log.Fatalf("--resource %q is reserved; use -p/-m/-t instead", name)
+			}
+			details[jobs.ResourcePrefix+name] = strings.TrimSpace(val)
 		}
 
 		// if the job name isn't set, look for a default option
@@ -405,6 +436,50 @@ var submitCmd = &cobra.Command{
 	},
 }
 
+// slurmGresToResources translates a SLURM --gres value into batchq --resource
+// entries. Each comma-separated gres is "name[:type][:count]" (count defaults
+// to 1); the name[:type] becomes the resource name and the count its value, so
+// "gpu:a100:2,mps:50" -> ["gpu:a100=2", "mps=50"].
+func slurmGresToResources(v string) []string {
+	var out []string
+	for _, g := range strings.Split(v, ",") {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		parts := strings.Split(g, ":")
+		count := "1"
+		if n := len(parts); n >= 2 {
+			if _, err := strconv.Atoi(parts[n-1]); err == nil {
+				count = parts[n-1]
+				parts = parts[:n-1]
+			}
+		}
+		name := strings.Join(parts, ":")
+		if name == "" {
+			continue
+		}
+		out = append(out, name+"="+count)
+	}
+	return out
+}
+
+// slurmConstraintFeatures translates a SLURM --constraint value into bare
+// --resource feature flags. Only the simple AND forms ("a&b", "a,b", "[a&b]")
+// are handled; OR groups ("|"), counts ("*N"), and parentheses are skipped.
+func slurmConstraintFeatures(v string) []string {
+	v = strings.Trim(strings.TrimSpace(v), "[]")
+	var out []string
+	for _, f := range strings.FieldsFunc(v, func(r rune) bool { return r == '&' || r == ',' }) {
+		f = strings.TrimSpace(f)
+		if f == "" || strings.ContainsAny(f, "|*()") {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
 func isDirectory(path string) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -430,6 +505,7 @@ var jobHold bool
 var jobRunID string
 var jobInputs []string
 var jobOutputs []string
+var jobResources []string
 
 var verbose bool
 var slurmMode bool
@@ -452,6 +528,7 @@ func init() {
 	submitCmd.Flags().StringVar(&jobRunID, "run-id", "", "Workflow run ID (groups related jobs)")
 	submitCmd.Flags().StringArrayVar(&jobInputs, "input", nil, "Input file path (repeatable)")
 	submitCmd.Flags().StringArrayVar(&jobOutputs, "output", nil, "Output file path (repeatable)")
+	submitCmd.Flags().StringArrayVar(&jobResources, "resource", nil, "Required resource (name=value or name, repeatable)")
 
 	rootCmd.AddCommand(submitCmd)
 }
