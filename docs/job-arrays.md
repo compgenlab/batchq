@@ -220,6 +220,8 @@ the translation table.
 
 ## Where to go next
 
+- [Managing jobs and the queue](managing-jobs.md) — the `hold` / `release`
+  / `cancel` / `status` commands these array operations build on.
 - [Submitting jobs](submitting-jobs.md) — every `submit` flag, including
   the `#BATCHQ` and `#SBATCH` directive forms `--array` mirrors.
 - [Generic resources](resources.md) — requesting GPUs and other resources

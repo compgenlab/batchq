@@ -223,8 +223,14 @@ batchq details <job-id>               # everything we know
 batchq status <job-id>                # just the status code
 ```
 
+For the full set of inspection and management commands — including
+`summary`, re-prioritizing with `top`/`nice`, `cancel`, and `cleanup` —
+see [Managing jobs and the queue](managing-jobs.md).
+
 ## Where to go next
 
+- [Managing jobs and the queue](managing-jobs.md) — inspect, re-prioritize,
+  hold, cancel, and clean up submitted jobs.
 - [Job arrays](job-arrays.md) — submit and manage a range of indexed
   tasks with one command.
 - [Generic resources](resources.md) — request GPUs and other resources

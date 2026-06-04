@@ -33,6 +33,9 @@ These pages cover how batchq is put together and how to deploy and use it.
 
 - [Submitting jobs](submitting-jobs.md) — the `submit` command in depth:
   flags, dependencies, workflow tagging, and SBATCH header parsing.
+- [Managing jobs and the queue](managing-jobs.md) — inspect, re-prioritize,
+  hold, cancel, and clean up jobs (`queue`, `summary`, `search`, `status`,
+  `details`, `top`, `nice`, `hold`, `release`, `cancel`, `cleanup`, `stop`).
 - [Job arrays](job-arrays.md) — submit a range of indexed tasks with one
   command and manage them as a batch (hold / release / cancel).
 - [Generic resources](resources.md) — request GPUs, licenses, and other

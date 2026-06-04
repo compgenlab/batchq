@@ -114,6 +114,17 @@ batchq queue --output /data/out.bam   # which job(s) produced this file
 batchq queue --input /data/in.fq      # which job(s) need this file
 ```
 
+Manage jobs once they're queued (full reference in
+[docs/managing-jobs.md](docs/managing-jobs.md)):
+
+```sh
+batchq summary                  # counts per status
+batchq top <job-id>             # raise / lower scheduling priority
+batchq hold <job-id>            # hold, release, cancel
+batchq cancel <job-id>
+batchq cleanup --all --older-than 30d   # prune old terminal jobs
+```
+
 ### Submitting SLURM scripts
 
 If you already have an SBATCH script, pass `--slurm` to parse its headers:
