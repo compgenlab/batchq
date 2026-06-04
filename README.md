@@ -84,13 +84,21 @@ automatically when the unix socket isn't reachable. Pass
 batchq submit ./myjob.sh
 batchq submit --name align --procs 8 --mem 16GB --walltime 1-00:00:00 ./align.sh
 echo "echo hello" | batchq submit
+batchq submit --resource gpu=2 ./train.sh        # require 2 GPUs
+batchq submit --array 0-99 ./process.sh          # 100 indexed tasks
 ```
 
 Useful flags:
 - `--name NAME` name the job
 - `-p/--procs N`, `-m/--mem MEM`, `-t/--walltime D-HH:MM:SS`
+- `--resource name[=value]` require a generic resource — a count
+  (`gpu=2`), label (`cluster=biocluster`), or feature flag (repeatable).
+  See [docs/resources.md](docs/resources.md).
+- `--array SPEC` submit a job array (`0-99`, `1-10:2`, `1,3,5`, `0-99%4`);
+  prints one array id you can hold/release/cancel as a batch. See
+  [docs/job-arrays.md](docs/job-arrays.md).
 - `--wd DIR` working directory
-- `--stdout FILE`, `--stderr FILE` (supports `%JOBID`)
+- `--stdout FILE`, `--stderr FILE` (supports `%JOBID`; `%A`/`%a` in arrays)
 - `--deps <job-id>,<job-id>` run after other jobs succeed
 - `--hold` submit held
 - `--env` capture current environment and replay at run time
@@ -117,7 +125,9 @@ Supported SBATCH directives:
 - `-c/--cpus-per-task`, `--mem`, `-t/--time`, `-J/--job-name`, `-D/--chdir`
 - `-o/--output`, `-e/--error` (`%j` is remapped to `%JOBID`)
 - `--export=ALL` to capture environment
-- `-d afterok:<job-ids>` for dependencies
+- `-d afterok:<job-ids>` / `-d aftercorr:<array-id>` for dependencies
+- `--array=<spec>` job arrays
+- `--gres=name[:type][:count]` and `-C/--constraint=feat` → `--resource`
 
 ## Running jobs
 

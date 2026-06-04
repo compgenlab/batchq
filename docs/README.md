@@ -33,6 +33,10 @@ These pages cover how batchq is put together and how to deploy and use it.
 
 - [Submitting jobs](submitting-jobs.md) — the `submit` command in depth:
   flags, dependencies, workflow tagging, and SBATCH header parsing.
+- [Job arrays](job-arrays.md) — submit a range of indexed tasks with one
+  command and manage them as a batch (hold / release / cancel).
+- [Generic resources](resources.md) — request GPUs, licenses, and other
+  named resources with `--resource`, and advertise them on runners.
 - [Running jobs locally](running-jobs.md) — the simple runner: resource
   ceilings, cgroup enforcement, foreground vs. `--forever` modes.
 - [The web UI](web.md) — what `batchq web` shows and how to reach it from

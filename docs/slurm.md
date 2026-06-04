@@ -183,6 +183,24 @@ Notes:
 - **Environment.** If the batchq job was submitted with `--env` (or
   `#BATCHQ -env`, or an `--export=ALL` SBATCH header), the captured
   environment is passed to sbatch.
+- **Resources.** Generic `--resource` requirements that came from a
+  `--gres`/`-C` SBATCH header are matched against what the SLURM runner
+  advertises (typically a cluster label) before the job is claimed —
+  they decide *which* runner submits the job, not the `sbatch` flags.
+  procs/mem/walltime are what `sbatch` actually enforces. See
+  [Generic resources](resources.md).
+
+### Job arrays
+
+A batchq job array is handed to SLURM as a **single** array submission,
+not one `sbatch` per task. The runner claims a batch of the array's tasks
+(bounded by `max_jobs` / `max_slurm_jobs` so a large array is drip-fed),
+submits them as one `sbatch --array=<indices>%N`, and records each task's
+SLURM array id and task index. Reconciliation is symmetric: a single
+`sacct -j <arrayid>` reports the state of every task. A whole-array
+`batchq cancel <array-id>` issues `scancel <slurm_array_id>`; cancelling
+one task issues `scancel <slurm_array_id>_<index>`. The `%N` throttle
+becomes sbatch's native `%N`. See [Job arrays](job-arrays.md).
 
 ## Throttling
 
@@ -344,6 +362,10 @@ In every other case, prefer cron.
 - [Submitting jobs](submitting-jobs.md) — every flag the SLURM runner
   picks up at submission time, including the `#SBATCH` parsing
   shortcut.
+- [Job arrays](job-arrays.md) — how `--array` is proxied as one
+  `sbatch --array` and reconciled with one `sacct`.
+- [Generic resources](resources.md) — `--gres`/`-C` mapping and how
+  cluster labels route jobs to a SLURM runner.
 - [Configuration](configuration.md) — every `[slurm_runner]` knob.
 - [Remote access](remote.md) — if your CLI users are on a different
   machine than the SLURM submit host, point them at a reverse-proxied

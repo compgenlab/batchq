@@ -56,6 +56,18 @@ A job that requests more than the runner's `max_procs` / `max_mem` /
 `max_walltime` ceiling stays in `QUEUED` and is skipped over by that
 runner.
 
+For anything beyond procs/mem/walltime — GPUs, licenses, a specific
+cluster or node feature — use `--resource`:
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--resource name[=value]` | (none, repeatable) | A generic resource the job requires. A count (`gpu=2`), a typed count (`gpu:a100=2`), a label (`cluster=biocluster`), or a bare feature flag (`fastio`). A runner only claims the job if it advertises enough to satisfy every requirement. |
+
+`procs`, `mem`, and `walltime` are reserved names — pass those via
+`-p`/`-m`/`-t`, not `--resource`. See [Generic resources](resources.md)
+for the full model (counts vs. labels, runner advertisement, SLURM
+`--gres`/`-C` mapping).
+
 ### Working directory and output
 
 | Flag | Default | Meaning |
@@ -106,6 +118,17 @@ exist, that the job reads or writes them, or that producer/consumer
 relationships are consistent. They are a way to ask "which job
 produced this file?" after the fact.
 
+### Job arrays
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--array SPEC` | (none) | Submit the script as an array of indexed tasks. `0-99`, `1-10:2`, `1,3,5`, or a `%N` throttle suffix (`0-99%4`). Prints a single **array id** instead of a job id. |
+
+One `submit --array` expands into N task-jobs you can then hold, release,
+or cancel as a batch (`batchq cancel <array-id>`), with `%A`/`%a`
+placeholders for per-task output paths. See [Job arrays](job-arrays.md)
+for the full feature.
+
 ## Submitting SBATCH scripts
 
 If you already have an SBATCH script (e.g. you are running batchq in
@@ -128,7 +151,11 @@ Supported `#SBATCH` directives:
 | `-o`, `--output` | `--stdout` (with `%j` → `%JOBID`) |
 | `-e`, `--error` | `--stderr` (with `%j` → `%JOBID`) |
 | `--export=ALL` | `--env` |
-| `-d afterok:id[:id…]` | `--deps` |
+| `-d afterok:id[:id…]` | `--deps` (afterok) |
+| `-d aftercorr:id` | element-wise array dependency |
+| `--array=spec` | `--array` |
+| `--gres=name[:type][:count]` | `--resource name[:type]=count` |
+| `-C`, `--constraint=feat[&feat…]` | `--resource feat` (feature flags) |
 
 Explicit `batchq submit` flags still win — `--slurm` parsing only fills
 in values you did not pass on the command line.
@@ -141,6 +168,9 @@ flags. The submit-time metadata flags have parallels:
 - `#BATCHQ -run-id RUN`
 - `#BATCHQ -input /path`
 - `#BATCHQ -output /path`
+- `#BATCHQ -resource name[=value]`
+- `#BATCHQ -array SPEC`
+- `#BATCHQ -aftercorr ARRAY_ID`
 
 These are parsed at submission time and merged with command-line
 flags, with command-line flags winning.
@@ -195,6 +225,10 @@ batchq show status <job-id>                # just the status code
 
 ## Where to go next
 
+- [Job arrays](job-arrays.md) — submit and manage a range of indexed
+  tasks with one command.
+- [Generic resources](resources.md) — request GPUs and other resources
+  with `--resource`.
 - [Running jobs](running-jobs.md) — how submitted jobs actually execute
   under the simple runner.
 - [SLURM](slurm.md) — how the SLURM runner picks up submitted jobs and
