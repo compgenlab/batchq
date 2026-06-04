@@ -110,8 +110,8 @@ cancelled with reason "parent failed" or "parent canceled".
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--input PATH` | (none, repeatable) | Tag the job with an input file path. Look up later with `batchq show queue --consumes PATH`. |
-| `--output PATH` | (none, repeatable) | Tag the job with an output file path. Look up later with `batchq show queue --produces PATH`. |
+| `--input PATH` | (none, repeatable) | Tag the job with an input file path. Look up later with `batchq queue --input PATH`. |
+| `--output PATH` | (none, repeatable) | Tag the job with an output file path. Look up later with `batchq queue --output PATH`. |
 
 These tags are metadata only — batchq does not check that the files
 exist, that the job reads or writes them, or that producer/consumer
@@ -213,14 +213,14 @@ batchq release "$HOLD_ID"
 ## Finding jobs you submitted
 
 ```sh
-batchq show queue                          # active jobs
-batchq show queue --all                    # including completed
-batchq show queue --run-id run-2025-Q1     # one workflow run
-batchq show queue --produces /data/x.bam   # who produced this file
-batchq show queue --consumes /data/y.fq    # who needs this file
-batchq search sample42                     # name / id / script search
-batchq show details <job-id>               # everything we know
-batchq show status <job-id>                # just the status code
+batchq queue                          # active jobs
+batchq queue --all                    # including completed
+batchq queue --run-id run-2025-Q1     # one workflow run
+batchq queue --output /data/x.bam     # who produced this file
+batchq queue --input /data/y.fq       # who needs this file
+batchq search sample42                # name / id / script search
+batchq details <job-id>               # everything we know
+batchq status <job-id>                # just the status code
 ```
 
 ## Where to go next

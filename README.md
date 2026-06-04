@@ -21,7 +21,7 @@ reachable, so `batchq submit ./script.sh` Just Works.
 ```sh
 batchq submit ./script.sh        # submit (auto-spawns server if needed)
 batchq run                       # run jobs with the simple runner
-batchq show queue                # list queued/running jobs
+batchq queue                     # list queued/running jobs
 ```
 
 Defaults:
@@ -109,9 +109,9 @@ Useful flags:
 Find jobs by these tags:
 
 ```sh
-batchq show queue --run-id run-2025-Q1     # all jobs in this workflow run
-batchq show queue --produces /data/out.bam # which job(s) produced this file
-batchq show queue --consumes /data/in.fq   # which job(s) need this file
+batchq queue --run-id run-2025-Q1     # all jobs in this workflow run
+batchq queue --output /data/out.bam   # which job(s) produced this file
+batchq queue --input /data/in.fq      # which job(s) need this file
 ```
 
 ### Submitting SLURM scripts

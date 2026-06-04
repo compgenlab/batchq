@@ -61,7 +61,7 @@ it survives a node reboot, it is backed up by your storage tier) while
 all access to it happens through one process. Locking inside that one
 process is fine, and overlapping client requests from different shells,
 different cron jobs, or a runner submitting in parallel with a user
-typing `batchq show` are all funneled through the same in-process lock.
+typing `batchq queue` are all funneled through the same in-process lock.
 This is the case even when the server lives only for the duration of
 those overlapping requests.
 
@@ -189,7 +189,7 @@ A typical submission and execution looks like this:
 4. The runner executes the job, captures stdout and stderr, and reports
    the outcome back via `POST /api/v1/jobs/{id}/status` and friends. The
    server writes the terminal state and resolves any waiting dependents.
-5. **`batchq show queue`** GETs `/api/v1/queue/jobs` and pretty-prints
+5. **`batchq queue`** GETs `/api/v1/queue/jobs` and pretty-prints
    the result.
 
 For SLURM the runner step is different: the runner submits to SLURM via

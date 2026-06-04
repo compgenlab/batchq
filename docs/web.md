@@ -4,7 +4,7 @@
 client of the batchq server like everything else — it does not have
 its own copy of the database, and it does not modify jobs. The whole
 thing is a thin renderer on top of the same REST API the CLI uses, so
-what you see in the browser is exactly what `batchq show` would show
+what you see in the browser is exactly what `batchq queue` would show
 you.
 
 ## Starting it
