@@ -191,6 +191,43 @@ func TestWebJobDetailRenders(t *testing.T) {
 	}
 }
 
+func TestWebArrayView(t *testing.T) {
+	c, _ := startBackendForWeb(t)
+	ctx := context.Background()
+
+	resp, err := c.SubmitArray(ctx, &api.SubmitArrayRequest{
+		SubmitJobRequest: api.SubmitJobRequest{
+			Name:    "arrjob",
+			Details: map[string]string{"script": "#!/bin/sh\nexit 0\n", "uid": "1000", "gid": "1000"},
+		},
+		ArrayIndices: []int{0, 1, 2},
+	})
+	if err != nil {
+		t.Fatalf("SubmitArray: %v", err)
+	}
+
+	httpc := startWebForTest(t, c)
+
+	// Queue filtered by array_id lists every task + carries the array link.
+	qbody := get(t, httpc, "/jobs?array_id="+resp.ArrayID)
+	if !strings.Contains(qbody, "array_id="+resp.ArrayID) {
+		t.Fatalf("queue array view missing array_id link")
+	}
+	for _, id := range resp.JobIDs {
+		if !strings.Contains(qbody, id) {
+			t.Fatalf("queue array view missing task %s", id)
+		}
+	}
+
+	// A task's job page shows the Array tab + per-task summary.
+	jbody := get(t, httpc, "/jobs/"+resp.JobIDs[0])
+	for _, want := range []string{`data-tab="array"`, "Job array", resp.ArrayID} {
+		if !strings.Contains(jbody, want) {
+			t.Fatalf("job page missing array element %q", want)
+		}
+	}
+}
+
 func TestWebSearchFindsJob(t *testing.T) {
 	c, _ := startBackendForWeb(t)
 	ctx := context.Background()

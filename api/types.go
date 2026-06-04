@@ -147,11 +147,36 @@ type SubmitJobRequest struct {
 	Details     map[string]string `json:"details,omitempty"`
 	InputFiles  []string          `json:"input_files,omitempty"`
 	OutputFiles []string          `json:"output_files,omitempty"`
+	// ArrayDeps carries dependency specs that may target a whole array, each
+	// "afterok:<id>" (wait for all of the array's tasks — or a single job) or
+	// "aftercorr:<id>" (element-wise: task i waits for the dep array's task i;
+	// only valid for an array submit, requires matching index sets). The server
+	// resolves these into per-task afterok edges. <id> may be a job id or an
+	// array id.
+	ArrayDeps []string `json:"array_deps,omitempty"`
 }
 
 // SubmitJobResponse returns the canonical job ID and the persisted job.
 type SubmitJobResponse struct {
 	Job *JobDTO `json:"job"`
+}
+
+// SubmitArrayRequest is the body for POST /jobs/array. It carries one job
+// template (the embedded SubmitJobRequest) plus the array's task indices and
+// concurrency throttle; the server expands it into one task-job per index, all
+// sharing a generated array_id.
+type SubmitArrayRequest struct {
+	SubmitJobRequest
+	ArrayIndices  []int `json:"array_indices"`
+	ArrayThrottle int   `json:"array_throttle,omitempty"`
+}
+
+// SubmitArrayResponse returns the generated array id and the persisted task
+// jobs (in array-index order).
+type SubmitArrayResponse struct {
+	ArrayID string    `json:"array_id"`
+	JobIDs  []string  `json:"job_ids"`
+	Jobs    []*JobDTO `json:"jobs,omitempty"`
 }
 
 // ListJobsResponse is the body of GET /jobs and friends.
@@ -207,6 +232,45 @@ type ClaimJobResponse struct {
 	Job          *JobDTO `json:"job,omitempty"`
 	MoreEligible bool    `json:"more_eligible"`
 	Blocked      bool    `json:"blocked,omitempty"`
+}
+
+// ClaimArrayRequest is the body of POST /runners/{runner_id}/claim-array. Like
+// ClaimJobRequest plus MaxTasks, the cap on how many tasks of one array may be
+// claimed in this batch (<=0 = unbounded). Used by the SLURM runner to honor
+// its live-queue budget.
+type ClaimArrayRequest struct {
+	Kind           string            `json:"kind"`
+	MaxProcs       int               `json:"max_procs,omitempty"`
+	MaxMemoryMB    int               `json:"max_memory_mb,omitempty"`
+	MaxWalltimeSec int               `json:"max_walltime_sec,omitempty"`
+	Resources      map[string]string `json:"resources,omitempty"`
+	MaxTasks       int               `json:"max_tasks,omitempty"`
+}
+
+// ArrayTaskDTO is one claimed array task (its job id and array index).
+type ArrayTaskDTO struct {
+	JobID string `json:"job_id"`
+	Index int    `json:"index"`
+}
+
+// ClaimArrayResponse is the body of a successful array claim. Exactly one of
+// {Job} or {ArrayID+Tasks} is populated: Job for a plain (non-array) job,
+// ArrayID+Throttle+Tasks for an array batch (Job then carries a representative
+// task so the runner can build one sbatch script). MoreEligible/Blocked mirror
+// ClaimJobResponse.
+type ClaimArrayResponse struct {
+	Job          *JobDTO        `json:"job,omitempty"`
+	ArrayID      string         `json:"array_id,omitempty"`
+	Throttle     int            `json:"throttle,omitempty"`
+	Tasks        []ArrayTaskDTO `json:"tasks,omitempty"`
+	MoreEligible bool           `json:"more_eligible"`
+	Blocked      bool           `json:"blocked,omitempty"`
+}
+
+// ArrayActionResponse is the body of an array-level cancel/hold/release; Count
+// is the number of tasks affected.
+type ArrayActionResponse struct {
+	Count int `json:"count"`
 }
 
 // ProxyJobRequest is the body of POST /runners/{runner_id}/jobs/{id}/proxy.

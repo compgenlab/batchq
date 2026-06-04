@@ -99,12 +99,27 @@ func (s *Server) handleSubmitJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, api.SubmitJobResponse{Job: dto})
 }
 
+func (s *Server) handleSubmitArray(w http.ResponseWriter, r *http.Request) {
+	var req api.SubmitArrayRequest
+	if err := s.decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	resp, err := s.svc.SubmitArray(r.Context(), &req)
+	if err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, resp)
+}
+
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	opts := service.ListJobsOptions{
 		ShowAll:      r.URL.Query().Get("all") == "true",
 		SortByStatus: r.URL.Query().Get("sort_by_status") == "true",
 		Query:        r.URL.Query().Get("q"),
 		RunID:        r.URL.Query().Get("run_id"),
+		ArrayID:      r.URL.Query().Get("array_id"),
 		Output:       r.URL.Query().Get("output"),
 		Input:        r.URL.Query().Get("input"),
 	}
@@ -207,6 +222,53 @@ func (s *Server) handleReleaseJob(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleCancelArray(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "array_id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req api.CancelJobRequest
+	if err := s.decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	n, err := s.svc.CancelArray(r.Context(), id, req.Reason)
+	if err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ArrayActionResponse{Count: n})
+}
+
+func (s *Server) handleHoldArray(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "array_id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	n, err := s.svc.HoldArray(r.Context(), id)
+	if err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ArrayActionResponse{Count: n})
+}
+
+func (s *Server) handleReleaseArray(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "array_id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	n, err := s.svc.ReleaseArray(r.Context(), id)
+	if err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ArrayActionResponse{Count: n})
+}
+
 func (s *Server) handlePriority(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "id")
 	if err != nil {
@@ -294,6 +356,42 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 		MoreEligible: result.MoreEligible,
 		Blocked:      result.Blocked,
 	})
+}
+
+func (s *Server) handleClaimArray(w http.ResponseWriter, r *http.Request) {
+	runnerID, err := pathID(r, "runner_id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req api.ClaimArrayRequest
+	if err := s.decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	result, err := s.svc.ClaimNextArrayBatch(r.Context(), runnerID, req.Kind, storage.Limits{
+		MaxProcs:       req.MaxProcs,
+		MaxMemoryMB:    req.MaxMemoryMB,
+		MaxWalltimeSec: req.MaxWalltimeSec,
+		Resources:      req.Resources,
+	}, req.MaxTasks)
+	if err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	resp := api.ClaimArrayResponse{
+		ArrayID:      result.ArrayID,
+		Throttle:     result.Throttle,
+		MoreEligible: result.MoreEligible,
+		Blocked:      result.Blocked,
+	}
+	if result.Job != nil {
+		resp.Job = api.JobFromDef(result.Job)
+	}
+	for _, t := range result.Tasks {
+		resp.Tasks = append(resp.Tasks, api.ArrayTaskDTO{JobID: t.JobID, Index: t.Index})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleMarkProxied(w http.ResponseWriter, r *http.Request) {

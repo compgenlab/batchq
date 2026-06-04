@@ -71,12 +71,25 @@ func (s *Service) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*ap
 		applyPeerIdentity(req, peer)
 	}
 
+	afterOk := append([]string{}, req.AfterOk...)
+	if len(req.ArrayDeps) > 0 {
+		specs, err := parseDepSpecs(req.ArrayDeps)
+		if err != nil {
+			return nil, err
+		}
+		extra, err := s.expandSingleDeps(ctx, specs)
+		if err != nil {
+			return nil, err
+		}
+		afterOk = append(afterOk, extra...)
+	}
+
 	job := &jobs.JobDef{
 		JobId:       support.NewUUID(),
 		Name:        req.Name,
 		Notes:       req.Notes,
 		Priority:    req.Priority,
-		AfterOk:     req.AfterOk,
+		AfterOk:     afterOk,
 		InputFiles:  req.InputFiles,
 		OutputFiles: req.OutputFiles,
 	}
@@ -91,6 +104,221 @@ func (s *Service) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*ap
 		return nil, err
 	}
 	return api.JobFromDef(job), nil
+}
+
+type depSpec struct {
+	kind   string // "afterok" | "aftercorr"
+	target string // a job id or an array id
+}
+
+type arrayMember struct {
+	id    string
+	index int
+}
+
+// parseDepSpecs parses "kind:target" dependency entries.
+func parseDepSpecs(arrayDeps []string) ([]depSpec, error) {
+	var out []depSpec
+	for _, d := range arrayDeps {
+		i := strings.Index(d, ":")
+		if i < 0 {
+			return nil, fmt.Errorf("%w: malformed dependency %q", ErrBadRequest, d)
+		}
+		kind, target := d[:i], d[i+1:]
+		if target == "" || (kind != "afterok" && kind != "aftercorr") {
+			return nil, fmt.Errorf("%w: malformed dependency %q", ErrBadRequest, d)
+		}
+		out = append(out, depSpec{kind: kind, target: target})
+	}
+	return out, nil
+}
+
+// loadArrayMembers returns the member jobs of an array id, or nil if the id is
+// not an array (i.e. a plain job id).
+func (s *Service) loadArrayMembers(ctx context.Context, arrayID string) ([]arrayMember, error) {
+	ids, err := s.store.FindJobsByDetail(ctx, "array_id", arrayID)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	members := make([]arrayMember, 0, len(ids))
+	for _, id := range ids {
+		job, err := s.store.GetJob(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		idx, _ := strconv.Atoi(job.GetDetail("array_index", ""))
+		members = append(members, arrayMember{id: id, index: idx})
+	}
+	return members, nil
+}
+
+// expandSingleDeps resolves dependency specs for a single (non-array) dependent.
+// afterok on an array fans out to all its members; aftercorr is invalid.
+func (s *Service) expandSingleDeps(ctx context.Context, specs []depSpec) ([]string, error) {
+	var afterok []string
+	for _, sp := range specs {
+		if sp.kind == "aftercorr" {
+			return nil, fmt.Errorf("%w: aftercorr requires an array dependent", ErrBadRequest)
+		}
+		members, err := s.loadArrayMembers(ctx, sp.target)
+		if err != nil {
+			return nil, err
+		}
+		if members == nil {
+			afterok = append(afterok, sp.target)
+			continue
+		}
+		for _, m := range members {
+			afterok = append(afterok, m.id)
+		}
+	}
+	return afterok, nil
+}
+
+// expandArrayDepsForTasks resolves dependency specs into per-array-index afterok
+// edges. afterok fans out to every task; aftercorr pairs task i with the dep
+// array's task whose index equals i (requiring matching index sets).
+func (s *Service) expandArrayDepsForTasks(ctx context.Context, specs []depSpec, indices []int) (map[int][]string, error) {
+	cache := map[string][]arrayMember{}
+	loaded := map[string]bool{}
+	load := func(target string) ([]arrayMember, error) {
+		if loaded[target] {
+			return cache[target], nil
+		}
+		m, err := s.loadArrayMembers(ctx, target)
+		if err != nil {
+			return nil, err
+		}
+		cache[target] = m
+		loaded[target] = true
+		return m, nil
+	}
+
+	perTask := map[int][]string{}
+	for _, sp := range specs {
+		members, err := load(sp.target)
+		if err != nil {
+			return nil, err
+		}
+		switch sp.kind {
+		case "afterok":
+			var ids []string
+			if members == nil {
+				ids = []string{sp.target}
+			} else {
+				for _, m := range members {
+					ids = append(ids, m.id)
+				}
+			}
+			for _, idx := range indices {
+				perTask[idx] = append(perTask[idx], ids...)
+			}
+		case "aftercorr":
+			if members == nil {
+				return nil, fmt.Errorf("%w: aftercorr target %s is not an array", ErrBadRequest, sp.target)
+			}
+			if len(members) != len(indices) {
+				return nil, fmt.Errorf("%w: aftercorr size mismatch (dep array has %d tasks, this array has %d)", ErrBadRequest, len(members), len(indices))
+			}
+			byIndex := make(map[int]string, len(members))
+			for _, m := range members {
+				byIndex[m.index] = m.id
+			}
+			for _, idx := range indices {
+				dep, ok := byIndex[idx]
+				if !ok {
+					return nil, fmt.Errorf("%w: aftercorr index %d has no matching task in the dependency array", ErrBadRequest, idx)
+				}
+				perTask[idx] = append(perTask[idx], dep)
+			}
+		}
+	}
+	return perTask, nil
+}
+
+// SubmitArray expands one job template into N task-jobs (one per array index),
+// all sharing a generated array_id, and persists them atomically. Each task
+// carries array_id/array_index/array_size (and array_throttle when set) details
+// in addition to the shared template details/resources.
+func (s *Service) SubmitArray(ctx context.Context, req *api.SubmitArrayRequest) (*api.SubmitArrayResponse, error) {
+	if req == nil {
+		return nil, ErrBadRequest
+	}
+	if _, ok := req.Details["script"]; !ok {
+		return nil, fmt.Errorf("%w: missing details.script", ErrBadRequest)
+	}
+	if len(req.ArrayIndices) == 0 {
+		return nil, fmt.Errorf("%w: empty array", ErrBadRequest)
+	}
+
+	// Apply peer identity once to the shared template before fanning out.
+	if peer, ok := support.PeerCredsFromContext(ctx); ok {
+		applyPeerIdentity(&req.SubmitJobRequest, peer)
+	}
+
+	// Resolve array-aware dependencies into per-task afterok edges.
+	var perTaskDeps map[int][]string
+	if len(req.ArrayDeps) > 0 {
+		specs, err := parseDepSpecs(req.ArrayDeps)
+		if err != nil {
+			return nil, err
+		}
+		perTaskDeps, err = s.expandArrayDepsForTasks(ctx, specs, req.ArrayIndices)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	arrayID := support.NewUUID()
+	size := strconv.Itoa(len(req.ArrayIndices))
+	throttle := ""
+	if req.ArrayThrottle > 0 {
+		throttle = strconv.Itoa(req.ArrayThrottle)
+	}
+
+	tasks := make([]*jobs.JobDef, 0, len(req.ArrayIndices))
+	for _, idx := range req.ArrayIndices {
+		afterOk := append([]string{}, req.AfterOk...)
+		afterOk = append(afterOk, perTaskDeps[idx]...)
+		task := &jobs.JobDef{
+			JobId:       support.NewUUID(),
+			Name:        req.Name,
+			Notes:       req.Notes,
+			Priority:    req.Priority,
+			AfterOk:     afterOk,
+			InputFiles:  req.InputFiles,
+			OutputFiles: req.OutputFiles,
+		}
+		if req.Hold {
+			task.Status = jobs.USERHOLD
+		}
+		for k, v := range req.Details {
+			task.Details = append(task.Details, jobs.JobDefDetail{Key: k, Value: v})
+		}
+		task.Details = append(task.Details,
+			jobs.JobDefDetail{Key: "array_id", Value: arrayID},
+			jobs.JobDefDetail{Key: "array_index", Value: strconv.Itoa(idx)},
+			jobs.JobDefDetail{Key: "array_size", Value: size},
+		)
+		if throttle != "" {
+			task.Details = append(task.Details, jobs.JobDefDetail{Key: "array_throttle", Value: throttle})
+		}
+		tasks = append(tasks, task)
+	}
+
+	if err := s.store.InsertArray(ctx, arrayID, tasks); err != nil {
+		return nil, err
+	}
+
+	resp := &api.SubmitArrayResponse{ArrayID: arrayID}
+	for _, t := range tasks {
+		resp.JobIDs = append(resp.JobIDs, t.JobId)
+		resp.Jobs = append(resp.Jobs, api.JobFromDef(t))
+	}
+	return resp, nil
 }
 
 // applyPeerIdentity overwrites the uid/gid/groups details on req with
@@ -167,11 +395,12 @@ type ListJobsOptions struct {
 	Statuses     []jobs.StatusCode
 	Query        string
 
-	// RunID, Output, and Input are optional intersect-filters
+	// RunID, ArrayID, Output, and Input are optional intersect-filters
 	// applied after the base listing. Empty values are ignored.
-	RunID  string
-	Output string
-	Input  string
+	RunID   string
+	ArrayID string
+	Output  string
+	Input   string
 }
 
 func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
@@ -191,10 +420,17 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 		return nil, err
 	}
 
-	if opts.RunID != "" || opts.Output != "" || opts.Input != "" {
+	if opts.RunID != "" || opts.ArrayID != "" || opts.Output != "" || opts.Input != "" {
 		var allow map[string]struct{}
 		if opts.RunID != "" {
 			ids, err := s.store.FindJobsByDetail(ctx, "run_id", opts.RunID)
+			if err != nil {
+				return nil, err
+			}
+			allow = intersect(allow, ids)
+		}
+		if opts.ArrayID != "" {
+			ids, err := s.store.FindJobsByDetail(ctx, "array_id", opts.ArrayID)
 			if err != nil {
 				return nil, err
 			}
@@ -318,6 +554,49 @@ func (s *Service) ReleaseJob(ctx context.Context, jobID string) error {
 	return nil
 }
 
+func (s *Service) CancelArray(ctx context.Context, arrayID, reason string) (int, error) {
+	if err := s.authorizeArrayAction(ctx, arrayID); err != nil {
+		return 0, err
+	}
+	if reason == "" {
+		reason = "user request"
+	}
+	return s.store.CancelArray(ctx, arrayID, reason)
+}
+
+func (s *Service) HoldArray(ctx context.Context, arrayID string) (int, error) {
+	if err := s.authorizeArrayAction(ctx, arrayID); err != nil {
+		return 0, err
+	}
+	return s.store.HoldArray(ctx, arrayID)
+}
+
+func (s *Service) ReleaseArray(ctx context.Context, arrayID string) (int, error) {
+	if err := s.authorizeArrayAction(ctx, arrayID); err != nil {
+		return 0, err
+	}
+	n, err := s.store.ReleaseArray(ctx, arrayID)
+	if err != nil {
+		return 0, err
+	}
+	// Just-released tasks may now be eligible to QUEUE; trigger a pass.
+	_, _ = s.ResolveDependencies(ctx)
+	return n, nil
+}
+
+// authorizeArrayAction authorizes an array operation via its first member
+// (tasks of an array share an owner). Errors if the array has no tasks.
+func (s *Service) authorizeArrayAction(ctx context.Context, arrayID string) error {
+	ids, err := s.store.FindJobsByDetail(ctx, "array_id", arrayID)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return fmt.Errorf("%w: no such array %s", ErrBadRequest, arrayID)
+	}
+	return s.authorizeJobAction(ctx, ids[0])
+}
+
 // authorizeJobAction enforces the per-job operator check: a caller
 // with kernel-attested peer credentials (i.e. a unix-socket client)
 // can only act on jobs whose stored uid matches their own. Root
@@ -394,6 +673,19 @@ func (s *Service) ClaimNextJob(ctx context.Context, runnerID, kind string, limit
 	// candidates. Errors here are non-fatal — we still try the claim.
 	_, _ = s.ResolveDependencies(ctx)
 	return s.store.ClaimNextJob(ctx, runnerID, kind, limits)
+}
+
+// ClaimNextArrayBatch claims the next eligible plain job or array batch for a
+// batch-capable runner. See storage.ClaimNextArrayBatch.
+func (s *Service) ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, limits storage.Limits, maxTasks int) (storage.ArrayClaimResult, error) {
+	if runnerID == "" {
+		return storage.ArrayClaimResult{}, fmt.Errorf("%w: runner_id required", ErrBadRequest)
+	}
+	if kind == "" {
+		kind = "slurm"
+	}
+	_, _ = s.ResolveDependencies(ctx)
+	return s.store.ClaimNextArrayBatch(ctx, runnerID, kind, limits, maxTasks)
 }
 
 func (s *Service) MarkJobProxied(ctx context.Context, runnerID, jobID string, runningDetails map[string]string) error {

@@ -130,29 +130,38 @@ func (r *slurmRunner) Start() bool {
 	r.UpdateSlurmJobStatus(ctx)
 
 	for {
+		// How many tasks we may submit this pass: bounded by the live
+		// SLURM-queue budget (max_slurm_jobs minus current count) and the
+		// per-invocation cap. squeue counts array tasks individually, so the
+		// user count already reflects tasks. -1 means unbounded.
+		maxTasks := -1
 		if r.maxUserJobs > 0 {
 			fmt.Println("Getting updated user job count...")
-
 			count, err := SlurmGetUserJobCount(r.username)
 			if err != nil {
 				fmt.Printf("Error getting job count: %v\n", err)
 				return false
 			}
-			if count >= r.maxUserJobs {
-				fmt.Printf("User has %d jobs running. (Max: %d)\n", count, r.maxUserJobs)
+			budget := r.maxUserJobs - count
+			if budget <= 0 {
+				fmt.Printf("User has %d jobs in the SLURM queue. (Max: %d)\n", count, r.maxUserJobs)
 				break
 			}
+			maxTasks = budget
 		}
-
 		if r.availJobs == 0 {
 			fmt.Printf("No more jobs can be submitted. (Max: %d)\n", r.maxJobs)
 			break
 		}
+		if r.availJobs > 0 && (maxTasks < 0 || r.availJobs < maxTasks) {
+			maxTasks = r.availJobs
+		}
 
 		// procs, mem, and walltime aren't enforced on the slurm runner side;
-		// SLURM enforces them. We let the server return any QUEUED job.
+		// SLURM enforces them. An array candidate is claimed in a budget-bounded
+		// batch so it becomes one `sbatch --array`, drip-fed across passes.
 		claimCtx, claimCancel := context.WithTimeout(ctx, 30*time.Second)
-		resp, err := r.client.ClaimNextJob(claimCtx, r.runnerId, "slurm", -1, -1, -1, r.resources)
+		resp, err := r.client.ClaimNextArrayBatch(claimCtx, r.runnerId, "slurm", -1, -1, -1, r.resources, maxTasks)
 		claimCancel()
 		if err != nil {
 			fmt.Printf("Error claiming job: %v\n", err)
@@ -160,9 +169,8 @@ func (r *slurmRunner) Start() bool {
 		}
 		if resp.Job == nil {
 			if !resp.MoreEligible {
-				// No claimable job. Any Blocked jobs require resources this
-				// SLURM runner doesn't advertise — it will never satisfy them,
-				// so stop rather than spin.
+				// No claimable work. Any Blocked jobs need resources this runner
+				// doesn't advertise — it will never satisfy them, so stop.
 				if resp.Blocked {
 					fmt.Println("Remaining queued jobs need resources this runner doesn't advertise; nothing to submit.")
 				}
@@ -173,54 +181,13 @@ func (r *slurmRunner) Start() bool {
 			continue
 		}
 
-		jobdef := resp.Job
-		fmt.Printf("Trying to submit job %s to SLURM\n", jobdef.JobID)
-
-		if src, err := r.buildSBatchScript(ctx, jobdef); err != nil {
-			// we must have a dependency issue with this job
-			// or a dep failed.
-			fmt.Printf("Error trying to build sbatch script for job: %s\n  => %s\n", jobdef.JobID, err.Error())
-			cctx, ccancel := context.WithTimeout(ctx, 30*time.Second)
-			if cerr := r.client.CancelJob(cctx, jobdef.JobID, err.Error()); cerr != nil {
-				fmt.Printf("Error canceling SLURM job %s: %v\n", jobdef.JobID, cerr)
+		if resp.ArrayID != "" {
+			if r.submitArrayBatch(ctx, resp) {
+				submittedOne = true
 			}
-			ccancel()
 		} else {
-			var jobEnv []string
-			if val := jobdef.Details["env"]; val != "" {
-				jobEnv = strings.Split(val, "\n-|-\n")
-			}
-			if slurmJobId, err := SlurmSbatch(src, jobEnv); err == nil {
-				pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
-				perr := r.client.MarkJobProxied(pctx, r.runnerId, jobdef.JobID, map[string]string{
-					"slurm_job_id":      slurmJobId,
-					"slurm_submit_time": support.GetNowUTCString(),
-					"slurm_script":      src,
-				})
-				pcancel()
-				if perr == nil {
-					submittedOne = true
-					if r.availJobs > 0 {
-						r.availJobs--
-					}
-					fmt.Printf("Submitted job %s with SLURM job-id %s\n", jobdef.JobID, slurmJobId)
-				} else {
-					fmt.Printf("Error submitting SLURM job (proxy-queue update): %v\n", perr)
-				}
-			} else {
-				fmt.Printf("Error submitting SLURM job: %v\n", err)
-				// The failed submission never reaches the DB, so persist the
-				// generated script + error for troubleshooting.
-				if path, werr := saveFailedSlurmScript(jobdef.JobID, src, err); werr == nil {
-					fmt.Printf("  Wrote failed sbatch script to %s (and %s.err)\n", path, path)
-				} else {
-					fmt.Printf("  Could not save failed sbatch script: %v\n", werr)
-				}
-				cctx, ccancel := context.WithTimeout(ctx, 30*time.Second)
-				if cerr := r.client.CancelJob(cctx, jobdef.JobID, fmt.Sprintf("Error submitting to SLURM: %s", err.Error())); cerr != nil {
-					fmt.Printf("Error canceling SLURM job %s: %v\n", jobdef.JobID, cerr)
-				}
-				ccancel()
+			if r.submitSingleJob(ctx, resp.Job) {
+				submittedOne = true
 			}
 		}
 	}
@@ -234,6 +201,120 @@ func (r *slurmRunner) Start() bool {
 	return submittedOne
 }
 
+// submitSingleJob builds and sbatches one plain job, recording its slurm_job_id
+// on success. Returns whether the job was submitted.
+func (r *slurmRunner) submitSingleJob(ctx context.Context, jobdef *api.JobDTO) bool {
+	fmt.Printf("Trying to submit job %s to SLURM\n", jobdef.JobID)
+	src, err := r.buildSBatchScript(ctx, jobdef)
+	if err != nil {
+		fmt.Printf("Error building sbatch script for job %s: %v\n", jobdef.JobID, err)
+		r.cancelJob(ctx, jobdef.JobID, err.Error())
+		return false
+	}
+	slurmJobId, err := SlurmSbatch(src, jobEnvFor(jobdef))
+	if err != nil {
+		fmt.Printf("Error submitting SLURM job: %v\n", err)
+		// The failed submission never reaches the DB; persist the generated
+		// script + error for troubleshooting.
+		if path, werr := saveFailedSlurmScript(jobdef.JobID, src, err); werr == nil {
+			fmt.Printf("  Wrote failed sbatch script to %s (and %s.err)\n", path, path)
+		}
+		r.cancelJob(ctx, jobdef.JobID, fmt.Sprintf("Error submitting to SLURM: %s", err.Error()))
+		return false
+	}
+	pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
+	perr := r.client.MarkJobProxied(pctx, r.runnerId, jobdef.JobID, map[string]string{
+		"slurm_job_id":      slurmJobId,
+		"slurm_submit_time": support.GetNowUTCString(),
+		"slurm_script":      src,
+	})
+	pcancel()
+	if perr != nil {
+		fmt.Printf("Error submitting SLURM job (proxy-queue update): %v\n", perr)
+		return false
+	}
+	if r.availJobs > 0 {
+		r.availJobs--
+	}
+	fmt.Printf("Submitted job %s with SLURM job-id %s\n", jobdef.JobID, slurmJobId)
+	return true
+}
+
+// submitArrayBatch builds and sbatches one `--array` job for the whole claimed
+// batch, then records the shared slurm_array_id and each task's slurm_task_index
+// so reconciliation can map sacct's `<arrayid>_<index>` rows back. Returns
+// whether anything was submitted.
+func (r *slurmRunner) submitArrayBatch(ctx context.Context, resp *api.ClaimArrayResponse) bool {
+	indices := make([]int, len(resp.Tasks))
+	for i, t := range resp.Tasks {
+		indices[i] = t.Index
+	}
+	fmt.Printf("Trying to submit array %s (%d task(s)) to SLURM\n", resp.ArrayID, len(resp.Tasks))
+	src, err := r.buildArraySBatchScript(ctx, resp.Job, resp.ArrayID, indices, resp.Throttle)
+	if err != nil {
+		fmt.Printf("Error building array sbatch for %s: %v\n", resp.ArrayID, err)
+		for _, t := range resp.Tasks {
+			r.cancelJob(ctx, t.JobID, err.Error())
+		}
+		return false
+	}
+	slurmArrayId, err := SlurmSbatch(src, jobEnvFor(resp.Job))
+	if err != nil {
+		fmt.Printf("Error submitting SLURM array: %v\n", err)
+		if path, werr := saveFailedSlurmScript(resp.ArrayID, src, err); werr == nil {
+			fmt.Printf("  Wrote failed sbatch script to %s (and %s.err)\n", path, path)
+		}
+		for _, t := range resp.Tasks {
+			r.cancelJob(ctx, t.JobID, fmt.Sprintf("Error submitting array to SLURM: %s", err.Error()))
+		}
+		return false
+	}
+	submitTime := support.GetNowUTCString()
+	submitted := 0
+	for _, t := range resp.Tasks {
+		pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
+		// slurm_script is intentionally omitted per task (it is identical across
+		// the array; storing N copies would bloat job_running_details).
+		perr := r.client.MarkJobProxied(pctx, r.runnerId, t.JobID, map[string]string{
+			"slurm_array_id":    slurmArrayId,
+			"slurm_task_index":  strconv.Itoa(t.Index),
+			"slurm_submit_time": submitTime,
+		})
+		pcancel()
+		if perr != nil {
+			fmt.Printf("Error marking array task %s proxied: %v\n", t.JobID, perr)
+			continue
+		}
+		submitted++
+	}
+	if r.availJobs > 0 {
+		r.availJobs -= submitted
+		if r.availJobs < 0 {
+			r.availJobs = 0
+		}
+	}
+	fmt.Printf("Submitted array %s as SLURM array job-id %s (%d/%d task(s))\n", resp.ArrayID, slurmArrayId, submitted, len(resp.Tasks))
+	return submitted > 0
+}
+
+// jobEnvFor returns the captured environment for a job (split from the "env"
+// detail), or nil when the job didn't capture its environment.
+func jobEnvFor(jobdef *api.JobDTO) []string {
+	if val := jobdef.Details["env"]; val != "" {
+		return strings.Split(val, "\n-|-\n")
+	}
+	return nil
+}
+
+// cancelJob best-effort cancels a job with a reason, logging any error.
+func (r *slurmRunner) cancelJob(ctx context.Context, jobID, reason string) {
+	cctx, ccancel := context.WithTimeout(ctx, 30*time.Second)
+	if cerr := r.client.CancelJob(cctx, jobID, reason); cerr != nil {
+		fmt.Printf("Error canceling SLURM job %s: %v\n", jobID, cerr)
+	}
+	ccancel()
+}
+
 func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
 	proxied, err := r.client.ListJobs(listCtx, client.ListJobsOptions{
@@ -245,61 +326,116 @@ func (r *slurmRunner) UpdateSlurmJobStatus(ctx context.Context) {
 		return
 	}
 	fmt.Printf("Reconciling %d PROXYQUEUED job(s)\n", len(proxied))
-	for _, job := range proxied {
-		slurmJobIdStr := job.RunningDetails["slurm_job_id"]
-		if slurmJobIdStr == "" {
-			fmt.Printf("  %s: no slurm_job_id in running_details — skipping\n", job.JobID)
-			continue
-		}
-		slurmJobId, err := strconv.Atoi(slurmJobIdStr)
-		if err != nil {
-			fmt.Printf("  %s: bad slurm_job_id %q — skipping (%v)\n", job.JobID, slurmJobIdStr, err)
-			continue
-		}
-		slurmState, err := SlurmGetJobState(slurmJobId)
-		if err != nil {
-			fmt.Printf("Error getting SLURM job state for job %s (slurm id: %d): %v\n", job.JobID, slurmJobId, err)
-			continue
-		}
-		if slurmState == nil {
-			fmt.Printf("  %s: slurm id %d not found in sacct — skipping\n", job.JobID, slurmJobId)
-			continue
-		}
-		fmt.Printf("  %s: slurm id %d state=%s\n", job.JobID, slurmJobId, slurmState.State)
-		uctx, ucancel := context.WithTimeout(ctx, 30*time.Second)
-		if uerr := r.client.UpdateRunningDetails(uctx, r.runnerId, job.JobID, map[string]string{
-			"slurm_status":      slurmState.State,
-			"slurm_last_update": support.GetNowUTCString(),
-		}); uerr != nil {
-			fmt.Printf("Error updating running details for %s: %v\n", job.JobID, uerr)
-		}
-		ucancel()
 
-		var finalStatus string
-		switch slurmState.State {
-		case "PENDING", "RUNNING":
-			continue
-		case "COMPLETED":
-			finalStatus = jobs.SUCCESS.String()
-		case "CANCELED", "CANCELLED":
-			finalStatus = jobs.CANCELED.String()
-		case "FAILED", "TIMEOUT", "OUT_OF_MEMORY":
-			finalStatus = jobs.FAILED.String()
-		default:
+	// Group array tasks by their shared SLURM array id so each array is queried
+	// once; everything else reconciles individually by slurm_job_id.
+	arrays := map[string][]*api.JobDTO{}
+	for _, job := range proxied {
+		if aid := job.RunningDetails["slurm_array_id"]; aid != "" {
+			arrays[aid] = append(arrays[aid], job)
 			continue
 		}
-		// Only record the SLURM state as notes for non-success terminals; on
-		// success there's nothing useful to say beyond the status itself.
-		var endNotes string
-		if finalStatus != jobs.SUCCESS.String() {
-			endNotes = fmt.Sprintf("slurm reported state: %s", slurmState.State)
-		}
-		ectx, ecancel := context.WithTimeout(ctx, 30*time.Second)
-		if eerr := r.client.EndProxiedJob(ectx, r.runnerId, job.JobID, finalStatus, slurmState.StartAsTime(), slurmState.EndAsTime(), slurmState.ExitCodeInt(), endNotes); eerr != nil {
-			fmt.Printf("Error ending proxied job %s: %v\n", job.JobID, eerr)
-		}
-		ecancel()
+		r.reconcilePlain(ctx, job)
 	}
+	for aid, tasks := range arrays {
+		r.reconcileArray(ctx, aid, tasks)
+	}
+}
+
+// reconcilePlain reconciles a single (non-array) PROXYQUEUED job via its
+// slurm_job_id.
+func (r *slurmRunner) reconcilePlain(ctx context.Context, job *api.JobDTO) {
+	slurmJobIdStr := job.RunningDetails["slurm_job_id"]
+	if slurmJobIdStr == "" {
+		fmt.Printf("  %s: no slurm_job_id in running_details — skipping\n", job.JobID)
+		return
+	}
+	slurmJobId, err := strconv.Atoi(slurmJobIdStr)
+	if err != nil {
+		fmt.Printf("  %s: bad slurm_job_id %q — skipping (%v)\n", job.JobID, slurmJobIdStr, err)
+		return
+	}
+	slurmState, err := SlurmGetJobState(slurmJobId)
+	if err != nil {
+		fmt.Printf("Error getting SLURM job state for job %s (slurm id: %d): %v\n", job.JobID, slurmJobId, err)
+		return
+	}
+	if slurmState == nil {
+		fmt.Printf("  %s: slurm id %d not found in sacct — skipping\n", job.JobID, slurmJobId)
+		return
+	}
+	fmt.Printf("  %s: slurm id %d state=%s\n", job.JobID, slurmJobId, slurmState.State)
+	r.applySlurmState(ctx, job, slurmState)
+}
+
+// reconcileArray reconciles all PROXYQUEUED tasks of one SLURM array with a
+// single sacct query, mapping each `<arrayid>_<index>` row back to the task
+// whose slurm_task_index matches.
+func (r *slurmRunner) reconcileArray(ctx context.Context, arrayIdStr string, tasks []*api.JobDTO) {
+	arrayId, err := strconv.Atoi(arrayIdStr)
+	if err != nil {
+		fmt.Printf("  array %s: bad slurm_array_id — skipping %d task(s) (%v)\n", arrayIdStr, len(tasks), err)
+		return
+	}
+	states, err := SlurmGetArrayState(arrayId)
+	if err != nil {
+		fmt.Printf("Error getting SLURM array state for array %d: %v\n", arrayId, err)
+		return
+	}
+	for _, job := range tasks {
+		idxStr := job.RunningDetails["slurm_task_index"]
+		idx, err := strconv.Atoi(idxStr)
+		if err != nil {
+			fmt.Printf("  %s: bad slurm_task_index %q — skipping (%v)\n", job.JobID, idxStr, err)
+			continue
+		}
+		st, ok := states[idx]
+		if !ok {
+			// Not yet visible in sacct (still pending) — leave PROXYQUEUED.
+			continue
+		}
+		fmt.Printf("  %s: slurm %d_%d state=%s\n", job.JobID, arrayId, idx, st.State)
+		stCopy := st
+		r.applySlurmState(ctx, job, &stCopy)
+	}
+}
+
+// applySlurmState records the latest SLURM state on a job and, when SLURM has
+// reached a terminal state, transitions the batchq job to its final status.
+func (r *slurmRunner) applySlurmState(ctx context.Context, job *api.JobDTO, slurmState *SlurmJobState) {
+	uctx, ucancel := context.WithTimeout(ctx, 30*time.Second)
+	if uerr := r.client.UpdateRunningDetails(uctx, r.runnerId, job.JobID, map[string]string{
+		"slurm_status":      slurmState.State,
+		"slurm_last_update": support.GetNowUTCString(),
+	}); uerr != nil {
+		fmt.Printf("Error updating running details for %s: %v\n", job.JobID, uerr)
+	}
+	ucancel()
+
+	var finalStatus string
+	switch slurmState.State {
+	case "PENDING", "RUNNING":
+		return
+	case "COMPLETED":
+		finalStatus = jobs.SUCCESS.String()
+	case "CANCELED", "CANCELLED":
+		finalStatus = jobs.CANCELED.String()
+	case "FAILED", "TIMEOUT", "OUT_OF_MEMORY":
+		finalStatus = jobs.FAILED.String()
+	default:
+		return
+	}
+	// Only record the SLURM state as notes for non-success terminals; on
+	// success there's nothing useful to say beyond the status itself.
+	var endNotes string
+	if finalStatus != jobs.SUCCESS.String() {
+		endNotes = fmt.Sprintf("slurm reported state: %s", slurmState.State)
+	}
+	ectx, ecancel := context.WithTimeout(ctx, 30*time.Second)
+	if eerr := r.client.EndProxiedJob(ectx, r.runnerId, job.JobID, finalStatus, slurmState.StartAsTime(), slurmState.EndAsTime(), slurmState.ExitCodeInt(), endNotes); eerr != nil {
+		fmt.Printf("Error ending proxied job %s: %v\n", job.JobID, eerr)
+	}
+	ecancel()
 }
 
 func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO) (string, error) {
@@ -329,14 +465,83 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO)
 	// we should be starting with a shebang #!/bin/bash
 	src := spl[0] + "\n"
 
+	src += r.slurmResourceDirectives(jobdef)
+	if jobdef.Name != "" {
+		src += fmt.Sprintf("#SBATCH -J bq-%s.%s\n", jobdef.JobID, jobdef.Name)
+	}
+	if val := jobdef.Details["stdout"]; val != "" {
+		src += fmt.Sprintf("#SBATCH -o %s\n", val)
+	}
+	if val := jobdef.Details["stderr"]; val != "" {
+		src += fmt.Sprintf("#SBATCH -e %s\n", val)
+	}
+
+	dep, err := r.slurmAfterOkDirective(ctx, jobdef)
+	if err != nil {
+		return "", err
+	}
+	src += dep
+
+	src += "JOB_ID=$SLURM_JOB_ID\n"
+
+	src += strings.Join(spl[1:], "\n")
+
+	return src, nil
+}
+
+// buildArraySBatchScript builds a single sbatch script for a whole array batch:
+// one `#SBATCH --array=<indices>%throttle` line, -o/-e using the per-task
+// template (SLURM substitutes its own %A/%a), and the array deps. The task
+// index reaches the script via $SLURM_ARRAY_TASK_ID (exposed as
+// BATCHQ_ARRAY_TASK_ID).
+func (r *slurmRunner) buildArraySBatchScript(ctx context.Context, jobdef *api.JobDTO, arrayID string, indices []int, throttle int) (string, error) {
+	script := jobdef.Details["script"]
+	if script == "" {
+		return "", fmt.Errorf("array has no script body")
+	}
+	spl := strings.Split(script, "\n")
+	src := spl[0] + "\n"
+
+	src += r.slurmResourceDirectives(jobdef)
+	if jobdef.Name != "" {
+		src += fmt.Sprintf("#SBATCH -J bq-%s.%s\n", arrayID, jobdef.Name)
+	}
+	if throttle > 0 {
+		src += fmt.Sprintf("#SBATCH --array=%s%%%d\n", joinIntList(indices), throttle)
+	} else {
+		src += fmt.Sprintf("#SBATCH --array=%s\n", joinIntList(indices))
+	}
+	if val := jobdef.Details["stdout"]; val != "" {
+		src += fmt.Sprintf("#SBATCH -o %s\n", val)
+	}
+	if val := jobdef.Details["stderr"]; val != "" {
+		src += fmt.Sprintf("#SBATCH -e %s\n", val)
+	}
+
+	dep, err := r.slurmAfterOkDirective(ctx, jobdef)
+	if err != nil {
+		return "", err
+	}
+	src += dep
+
+	src += "JOB_ID=$SLURM_JOB_ID\n"
+	src += "BATCHQ_ARRAY_ID=" + arrayID + "\n"
+	src += "BATCHQ_ARRAY_TASK_ID=$SLURM_ARRAY_TASK_ID\n"
+
+	src += strings.Join(spl[1:], "\n")
+
+	return src, nil
+}
+
+// slurmResourceDirectives returns the #SBATCH lines shared by plain and array
+// jobs (account, partition, cpus, env, uid, gid, mem, walltime, wd).
+func (r *slurmRunner) slurmResourceDirectives(jobdef *api.JobDTO) string {
+	var src string
 	if r.account != "" {
 		src += fmt.Sprintf("#SBATCH -A %s\n", r.account)
 	}
 	if r.partition != "" {
 		src += fmt.Sprintf("#SBATCH -p %s\n", r.partition)
-	}
-	if jobdef.Name != "" {
-		src += fmt.Sprintf("#SBATCH -J bq-%s.%s\n", jobdef.JobID, jobdef.Name)
 	}
 	if val := jobdef.Details["procs"]; val != "" {
 		if procN, err := strconv.Atoi(val); err == nil && procN > 0 {
@@ -369,56 +574,61 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO)
 	if val := jobdef.Details["wd"]; val != "" {
 		src += fmt.Sprintf("#SBATCH -D %s\n", val)
 	}
-	if val := jobdef.Details["stdout"]; val != "" {
-		src += fmt.Sprintf("#SBATCH -o %s\n", val)
-	}
-	if val := jobdef.Details["stderr"]; val != "" {
-		src += fmt.Sprintf("#SBATCH -o %s\n", val)
-	}
+	return src
+}
 
-	if len(jobdef.AfterOk) > 0 {
-		// remap sbatch job-ids to slurm job-ids (running_detail: slurm_job_id)
-		var slurmAfterOkId []string
-		for _, depid := range jobdef.AfterOk {
-			dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
-			dep, err := r.client.GetJob(dctx, depid)
-			dcancel()
-			if err != nil {
-				return "", fmt.Errorf("fetching dep job %s: %v", depid, err)
-			}
-			switch dep.Status {
-			case jobs.CANCELED.String(), jobs.FAILED.String():
-				return "", fmt.Errorf("dependency of job failed (depid: %s)", dep.JobID)
-			case jobs.UNKNOWN.String(), jobs.USERHOLD.String(), jobs.WAITING.String():
-				return "", fmt.Errorf("not ready to process dep job yet (depid: %s)", dep.JobID)
-			case jobs.RUNNING.String(), jobs.PROXYQUEUED.String():
-				// Trust the recorded slurm_job_id. SLURM itself, together with
-				// --kill-on-invalid-dep=yes below, correctly handles a parent
-				// that is PENDING/RUNNING (wait), COMPLETED (satisfy now), or
-				// FAILED/CANCELLED (kill the child). Calling sacct/squeue here
-				// just to validate the parent's state opens a race window: if
-				// the parent was sbatch'd moments ago, its ID may not yet be
-				// visible to outside readers even though we hold the ID.
-				slurm_id := dep.RunningDetails["slurm_job_id"]
-				if slurm_id == "" {
-					return "", fmt.Errorf("missing slurm_job_id (depid: %s)", dep.JobID)
-				}
-				slurmAfterOkId = append(slurmAfterOkId, slurm_id)
-			case jobs.SUCCESS.String():
-				// we're all good... no need to add it.
-			}
+// slurmAfterOkDirective maps a job's batchq afterok deps to a SLURM
+// `-d afterok:` directive (plus --kill-on-invalid-dep). Returns "" when there
+// are no pending deps. Errors if a dep failed or isn't ready yet.
+func (r *slurmRunner) slurmAfterOkDirective(ctx context.Context, jobdef *api.JobDTO) (string, error) {
+	if len(jobdef.AfterOk) == 0 {
+		return "", nil
+	}
+	// remap sbatch job-ids to slurm job-ids (running_detail: slurm_job_id)
+	var slurmAfterOkId []string
+	for _, depid := range jobdef.AfterOk {
+		dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
+		dep, err := r.client.GetJob(dctx, depid)
+		dcancel()
+		if err != nil {
+			return "", fmt.Errorf("fetching dep job %s: %v", depid, err)
 		}
-		if len(slurmAfterOkId) > 0 {
-			src += "#SBATCH --kill-on-invalid-dep=yes\n"
-			src += fmt.Sprintf("#SBATCH -d afterok:%s\n", strings.Join(slurmAfterOkId, ":"))
+		switch dep.Status {
+		case jobs.CANCELED.String(), jobs.FAILED.String():
+			return "", fmt.Errorf("dependency of job failed (depid: %s)", dep.JobID)
+		case jobs.UNKNOWN.String(), jobs.USERHOLD.String(), jobs.WAITING.String():
+			return "", fmt.Errorf("not ready to process dep job yet (depid: %s)", dep.JobID)
+		case jobs.RUNNING.String(), jobs.PROXYQUEUED.String():
+			// Trust the recorded slurm_job_id. SLURM itself, together with
+			// --kill-on-invalid-dep=yes below, correctly handles a parent
+			// that is PENDING/RUNNING (wait), COMPLETED (satisfy now), or
+			// FAILED/CANCELLED (kill the child). Calling sacct/squeue here
+			// just to validate the parent's state opens a race window: if
+			// the parent was sbatch'd moments ago, its ID may not yet be
+			// visible to outside readers even though we hold the ID.
+			slurm_id := dep.RunningDetails["slurm_job_id"]
+			if slurm_id == "" {
+				return "", fmt.Errorf("missing slurm_job_id (depid: %s)", dep.JobID)
+			}
+			slurmAfterOkId = append(slurmAfterOkId, slurm_id)
+		case jobs.SUCCESS.String():
+			// we're all good... no need to add it.
 		}
 	}
+	if len(slurmAfterOkId) == 0 {
+		return "", nil
+	}
+	return "#SBATCH --kill-on-invalid-dep=yes\n" +
+		fmt.Sprintf("#SBATCH -d afterok:%s\n", strings.Join(slurmAfterOkId, ":")), nil
+}
 
-	src += "JOB_ID=$SLURM_JOB_ID\n"
-
-	src += strings.Join(spl[1:], "\n")
-
-	return src, nil
+// joinIntList renders a slice of ints as a comma-separated list.
+func joinIntList(xs []int) string {
+	parts := make([]string, len(xs))
+	for i, x := range xs {
+		parts[i] = strconv.Itoa(x)
+	}
+	return strings.Join(parts, ",")
 }
 
 /*
@@ -496,6 +706,63 @@ func SlurmGetJobState(jobId int) (*SlurmJobState, error) {
 		}
 	}
 	return nil, nil // job not found
+}
+
+// SlurmGetArrayState returns the per-task state of a SLURM array job keyed by
+// task index. It parses `sacct -j <arrayid>`'s `<arrayid>_<index>` rows,
+// skipping the `.batch`/`.extern` step rows and the compressed
+// `<arrayid>_[lo-hi]` pending-placeholder row.
+func SlurmGetArrayState(arrayId int) (map[int]SlurmJobState, error) {
+	if arrayId <= 0 {
+		return nil, fmt.Errorf("invalid SLURM array job-id")
+	}
+
+	cmd := exec.Command("sacct", "--format", "JobId,State,Start,End,ExitCode,NodeList", "--parsable", "-j", strconv.Itoa(arrayId))
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("running sacct: %v", err)
+	}
+	return parseSacctArrayOutput(out, arrayId), nil
+}
+
+// parseSacctArrayOutput parses `sacct --parsable` output for an array job into a
+// per-task-index state map. It keeps only the `<arrayid>_<index>` task rows,
+// skipping the header, the `.batch`/`.extern` step rows, and the compressed
+// `<arrayid>_[lo-hi]` pending-placeholder row.
+func parseSacctArrayOutput(out []byte, arrayId int) map[int]SlurmJobState {
+	states := map[int]SlurmJobState{}
+	prefix := strconv.Itoa(arrayId) + "_"
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		spl := strings.Split(line, "|")
+		if len(spl) < 6 {
+			continue
+		}
+		jobField := spl[0]
+		if !strings.HasPrefix(jobField, prefix) {
+			continue
+		}
+		idxPart := jobField[len(prefix):]
+		if strings.Contains(idxPart, ".") {
+			// step row: <arrayid>_<index>.batch / .extern
+			continue
+		}
+		idx, err := strconv.Atoi(idxPart)
+		if err != nil {
+			// compressed pending placeholder: <arrayid>_[lo-hi]
+			continue
+		}
+		states[idx] = SlurmJobState{
+			JobId:    jobField,
+			State:    strings.Split(spl[1], " ")[0],
+			Start:    spl[2],
+			End:      spl[3],
+			ExitCode: spl[4],
+			NodeList: spl[5],
+		}
+	}
+	return states
 }
 
 /*

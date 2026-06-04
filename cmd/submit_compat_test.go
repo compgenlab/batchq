@@ -15,6 +15,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/mbreese/batchq/api"
 	"github.com/mbreese/batchq/client"
 	"github.com/mbreese/batchq/internal/testsupport"
 	"github.com/mbreese/batchq/server"
@@ -144,6 +145,8 @@ func resetSubmitFlags() {
 	jobInputs = nil
 	jobOutputs = nil
 	jobResources = nil
+	jobArray = ""
+	jobAfterCorr = nil
 	verbose = false
 	slurmMode = false
 
@@ -328,6 +331,81 @@ func TestSubmitSlurmGresAndConstraint(t *testing.T) {
 	}
 	if _, ok := dto.Details["resource.avx2"]; !ok {
 		t.Fatalf("resource.avx2 missing")
+	}
+}
+
+// arrayMembers returns every job whose array_id detail matches arrayID.
+func arrayMembers(t *testing.T, c *client.Client, arrayID string) []*api.JobDTO {
+	t.Helper()
+	all, err := c.ListJobs(context.Background(), client.ListJobsOptions{ShowAll: true})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	var out []*api.JobDTO
+	for _, j := range all {
+		if j.Details["array_id"] == arrayID {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+func TestSubmitArrayCLI(t *testing.T) {
+	c := startCompatServer(t)
+
+	out := runSubmit(t, "--array", "0-2", "--", "echo", "hi")
+	// Contract: a single array-id line (matches `sbatch --parsable`), no spaces.
+	if strings.ContainsAny(out, " \t\n") || len(out) < 32 {
+		t.Fatalf("submit --array should print one array id, got %q", out)
+	}
+
+	members := arrayMembers(t, c, out)
+	if len(members) != 3 {
+		t.Fatalf("expected 3 array tasks, got %d", len(members))
+	}
+	seen := map[string]bool{}
+	for _, m := range members {
+		seen[m.Details["array_index"]] = true
+		if m.Details["array_size"] != "3" {
+			t.Fatalf("array_size = %q, want 3", m.Details["array_size"])
+		}
+		if !strings.Contains(m.Details["script"], "echo hi") {
+			t.Fatalf("task script missing command: %q", m.Details["script"])
+		}
+		if m.Status != "QUEUED" {
+			t.Fatalf("task status = %q, want QUEUED", m.Status)
+		}
+	}
+	for _, idx := range []string{"0", "1", "2"} {
+		if !seen[idx] {
+			t.Fatalf("missing array_index %s", idx)
+		}
+	}
+}
+
+func TestSubmitSlurmArrayHeader(t *testing.T) {
+	c := startCompatServer(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "arr.sh")
+	body := strings.Join([]string{
+		"#!/bin/sh",
+		"#SBATCH --array=0-9%4",
+		"echo go",
+	}, "\n") + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	out := runSubmit(t, "--slurm", script)
+	members := arrayMembers(t, c, out)
+	if len(members) != 10 {
+		t.Fatalf("expected 10 array tasks, got %d", len(members))
+	}
+	for _, m := range members {
+		if m.Details["array_throttle"] != "4" {
+			t.Fatalf("array_throttle = %q, want 4", m.Details["array_throttle"])
+		}
 	}
 }
 

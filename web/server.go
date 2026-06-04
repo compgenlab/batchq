@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -63,6 +64,7 @@ type queuePage struct {
 	Jobs            []*jobs.JobDef
 	Query           string
 	RunID           string
+	ArrayID         string
 	StatusOptions   []string
 	SelectedStatus  map[string]bool
 }
@@ -80,6 +82,7 @@ type jobPage struct {
 	ParentTree      *jobTreeNode
 	ChildTree       *jobTreeNode
 	RunForest       *runForest
+	ArrayGroup      *arrayGroup
 	Query           string
 	// SelectedStatus is unused on the job page itself, but exposed so
 	// the shared header search form (in base.html) can carry status
@@ -103,6 +106,28 @@ type runNode struct {
 	Job      *jobs.JobDef
 	Children []*runNode
 	Current  bool // true when this is the job whose detail page we're on
+}
+
+// arrayGroup is the per-task view of a job array, rendered on the job detail
+// page when the current job is an array task.
+type arrayGroup struct {
+	ArrayID      string
+	CurrentJobID string
+	Tasks        []*arrayTask // sorted by index
+	Total        int
+	Done         int
+	Counts       []arrayCount // per-status counts, in display order
+}
+
+type arrayTask struct {
+	Job     *jobs.JobDef
+	Index   int
+	Current bool
+}
+
+type arrayCount struct {
+	Status string
+	Count  int
 }
 
 func StartServer(opts Options) error {
@@ -266,6 +291,9 @@ func loadWebTemplates() (*template.Template, error) {
 			return strings.ToLower(status.String())
 		},
 		"lower": strings.ToLower,
+		// array helpers expose the array_id / array_index details to templates.
+		"arrayID":    func(j *jobs.JobDef) string { return j.GetDetail("array_id", "") },
+		"arrayIndex": func(j *jobs.JobDef) string { return j.GetDetail("array_index", "") },
 		// Display helpers for detail values stored as raw strings.
 		"memDisplay":      jobs.PrintMemoryString,
 		"walltimeDisplay": jobs.WalltimeStringToString,
@@ -324,17 +352,19 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 	statuses, selected := parseStatusFilter(r)
 	query := strings.TrimSpace(r.URL.Query().Get("q"))
 	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+	arrayID := strings.TrimSpace(r.URL.Query().Get("array_id"))
 
-	// With a query OR a run_id, the queue becomes a "find a specific
-	// set" view over all jobs (completed included). The plain queue
-	// path applies status filtering against active/all jobs.
+	// With a query, run_id, or array_id, the queue becomes a "find a
+	// specific set" view over all jobs (completed included). The plain
+	// queue path applies status filtering against active/all jobs.
 	var jobList []*jobs.JobDef
 	var err error
-	if query != "" || runID != "" {
+	if query != "" || runID != "" || arrayID != "" {
 		dtos, lerr := s.client.ListJobs(ctx, client.ListJobsOptions{
 			ShowAll:  true,
 			Query:    query,
 			RunID:    runID,
+			ArrayID:  arrayID,
 			Statuses: statusStrings(statuses),
 		})
 		if lerr != nil {
@@ -357,12 +387,15 @@ func (s *webServer) handleQueue(w http.ResponseWriter, r *http.Request) {
 		title = "batchq search · " + query
 	case runID != "":
 		title = "batchq · run " + runID
+	case arrayID != "":
+		title = "batchq · array " + arrayID
 	}
 	data := queuePage{
 		Title:           title,
 		ContentTemplate: "queue-content",
 		Query:           query,
 		RunID:           runID,
+		ArrayID:         arrayID,
 		Jobs:            jobList,
 		StatusOptions:   statusOptions(),
 		SelectedStatus:  selected,
@@ -438,6 +471,16 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// If the job is an array task, build the per-task array view.
+	var array *arrayGroup
+	if aid := job.GetDetail("array_id", ""); aid != "" {
+		array, err = s.buildArrayGroup(ctx, aid, job.JobId)
+		if err != nil {
+			s.serveError(w, r, "array group", err)
+			return
+		}
+	}
+
 	data := jobPage{
 		Title:           "batchq job " + job.JobId,
 		ContentTemplate: "job-content",
@@ -451,6 +494,7 @@ func (s *webServer) handleJob(w http.ResponseWriter, r *http.Request) {
 		ParentTree:      parentTree,
 		ChildTree:       childTree,
 		RunForest:       forest,
+		ArrayGroup:      array,
 		Query:           "",
 	}
 
@@ -723,6 +767,41 @@ func (s *webServer) buildRunForest(ctx context.Context, runID, currentJobID stri
 		Roots:        roots,
 		JobCount:     len(jobsByID),
 	}, nil
+}
+
+// buildArrayGroup gathers every task of an array (by array_id), sorted by index,
+// with a per-status rollup for the job detail page's "Array" tab.
+func (s *webServer) buildArrayGroup(ctx context.Context, arrayID, currentJobID string) (*arrayGroup, error) {
+	dtos, err := s.client.ListJobs(ctx, client.ListJobsOptions{ArrayID: arrayID, ShowAll: true})
+	if err != nil {
+		return nil, err
+	}
+	if len(dtos) == 0 {
+		return nil, nil
+	}
+
+	g := &arrayGroup{ArrayID: arrayID, CurrentJobID: currentJobID, Total: len(dtos)}
+	counts := map[string]int{}
+	for _, dto := range dtos {
+		j := dtoToJobDef(dto)
+		if j == nil {
+			continue
+		}
+		idx, _ := strconv.Atoi(j.GetDetail("array_index", ""))
+		g.Tasks = append(g.Tasks, &arrayTask{Job: j, Index: idx, Current: j.JobId == currentJobID})
+		counts[dto.Status]++
+		switch dto.Status {
+		case "SUCCESS", "FAILED", "CANCELED":
+			g.Done++
+		}
+	}
+	sort.Slice(g.Tasks, func(i, j int) bool { return g.Tasks[i].Index < g.Tasks[j].Index })
+	for _, st := range []string{"USERHOLD", "WAITING", "QUEUED", "PROXYQUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELED"} {
+		if counts[st] > 0 {
+			g.Counts = append(g.Counts, arrayCount{Status: st, Count: counts[st]})
+		}
+	}
+	return g, nil
 }
 
 func (s *webServer) jobsForFilter(ctx context.Context, statuses []jobs.StatusCode) ([]*jobs.JobDef, error) {

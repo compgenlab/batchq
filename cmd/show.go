@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -28,15 +28,17 @@ var detailsCmd = &cobra.Command{
 					continue
 				}
 				ctx, cancel := cmdContext()
-				dto, err := c.GetJob(ctx, jobid)
+				target, err := resolveTarget(ctx, c, jobid)
 				cancel()
 				if err != nil {
-					if errors.Is(err, client.ErrNotFound) {
-						continue
-					}
-					log.Fatalln(err)
+					fmt.Fprintln(os.Stderr, err)
+					continue
 				}
-				printJobDetails(dto)
+				if target.isArray {
+					printArraySummary(target.arrayID, target.members, true)
+				} else {
+					printJobDetails(target.dto)
+				}
 			}
 		}
 	},
@@ -68,11 +70,12 @@ var queueCmd = &cobra.Command{
 		defer cancel()
 		var dtos []*api.JobDTO
 		var err error
-		if queueRunID != "" || queueOutput != "" || queueInput != "" {
+		if queueRunID != "" || queueArrayID != "" || queueOutput != "" || queueInput != "" {
 			dtos, err = c.ListJobs(ctx, client.ListJobsOptions{
 				ShowAll:      jobShowAll,
 				SortByStatus: !queueSortTime,
 				RunID:        queueRunID,
+				ArrayID:      queueArrayID,
 				Output:       queueOutput,
 				Input:        queueInput,
 			})
@@ -238,15 +241,17 @@ var statusCmd = &cobra.Command{
 					continue
 				}
 				ctx, cancel := cmdContext()
-				dto, err := c.GetJob(ctx, jobid)
+				target, err := resolveTarget(ctx, c, jobid)
 				cancel()
 				if err != nil {
-					if errors.Is(err, client.ErrNotFound) {
-						continue
-					}
-					log.Fatalln(err)
+					fmt.Fprintln(os.Stderr, err)
+					continue
 				}
-				fmt.Printf("%s %s\n", dto.JobID, dto.Status)
+				if target.isArray {
+					printArraySummary(target.arrayID, target.members, false)
+				} else {
+					fmt.Printf("%s %s\n", target.dto.JobID, target.dto.Status)
+				}
 			}
 		}
 	},
@@ -279,6 +284,7 @@ var summaryCmd = &cobra.Command{
 
 var jobShowAll bool
 var queueRunID string
+var queueArrayID string
 var queueOutput string
 var queueInput string
 var queueSortTime bool
@@ -287,6 +293,7 @@ var queueSortReverse bool
 func init() {
 	queueCmd.Flags().BoolVar(&jobShowAll, "all", false, "Show all jobs (including completed)")
 	queueCmd.Flags().StringVar(&queueRunID, "run-id", "", "Only show jobs in this workflow run")
+	queueCmd.Flags().StringVar(&queueArrayID, "array-id", "", "Only show tasks in this job array")
 	queueCmd.Flags().StringVar(&queueOutput, "output", "", "Only show jobs that list this file as an output")
 	queueCmd.Flags().StringVar(&queueInput, "input", "", "Only show jobs that list this file as an input")
 	queueCmd.Flags().BoolVarP(&queueSortTime, "time", "t", false, "Sort by submit time (newest first)")
