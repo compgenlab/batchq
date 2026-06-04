@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -192,6 +193,7 @@ func simpleRunnerRows(raw *support.Config, d support.Defaults) []debugRow {
 		stringRow("max_walltime", "", raw.SimpleRunner.MaxWalltime, ""),
 		boolRow("use_cgroup_v1", raw.SimpleRunner.UseCgroupV1),
 		boolRow("use_cgroup_v2", raw.SimpleRunner.UseCgroupV2),
+		resourcesRow(raw.SimpleRunner.Resources),
 	}
 }
 
@@ -202,7 +204,25 @@ func slurmRunnerRows(raw *support.Config) []debugRow {
 		stringRow("partition", "", raw.SlurmRunner.Partition, ""),
 		intRow("max_jobs", raw.SlurmRunner.MaxJobs),
 		intRow("max_slurm_jobs", raw.SlurmRunner.MaxSlurmJobs),
+		resourcesRow(raw.SlurmRunner.Resources),
 	}
+}
+
+// resourcesRow renders an advertised-resources map as a sorted "k=v, k=v" list.
+func resourcesRow(res map[string]string) debugRow {
+	if len(res) == 0 {
+		return debugRow{"resources", "", "unset"}
+	}
+	names := make([]string, 0, len(res))
+	for k := range res {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, k := range names {
+		parts = append(parts, k+"="+res[k])
+	}
+	return debugRow{"resources", strings.Join(parts, ", "), "config"}
 }
 
 func firstNonEmpty(vals ...string) string {

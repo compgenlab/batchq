@@ -21,9 +21,17 @@ var ErrInvalidState = errors.New("invalid state for operation")
 // Limits constrains which queued jobs a runner is willing to claim. A value
 // of -1 means "no limit on this dimension".
 type Limits struct {
-	MaxProcs        int
-	MaxMemoryMB     int
-	MaxWalltimeSec  int
+	MaxProcs       int
+	MaxMemoryMB    int
+	MaxWalltimeSec int
+
+	// Resources is the set of generic resources the runner advertises, keyed
+	// by resource name (e.g. "gpu", "gpu:a100", "cluster", "features"). Values
+	// are either integer counts (countable resources, matched with >=) or
+	// comma-separated label sets (matched by subset membership). A nil/empty
+	// map means the runner advertises no generic resources, so it can only
+	// claim jobs that require none.
+	Resources map[string]string
 }
 
 // ClaimResult is the outcome of a ClaimNextJob call.
@@ -31,10 +39,17 @@ type ClaimResult struct {
 	// Job is the claimed job (already transitioned to RUNNING) or nil if
 	// nothing was claimed.
 	Job *jobs.JobDef
-	// MoreEligible is true if there are QUEUED jobs in the database that did
-	// not fit the supplied limits. The runner can use this to decide whether
-	// to keep polling soon vs sleep longer.
+	// MoreEligible is true if a queued job matched this runner's supplied
+	// limits but was claimed by another runner before this one could take it
+	// (a lost claim race). An immediate retry may succeed. Jobs that simply
+	// don't fit this runner's limits set Blocked instead, not MoreEligible.
 	MoreEligible bool
+	// Blocked is true if one or more queued jobs did not fit this runner's
+	// supplied limits/resources. For a runner below full capacity these may
+	// become claimable as its running jobs finish and free resources; for a
+	// runner already at full capacity they are unsatisfiable here, so a
+	// non-forever runner can stop instead of polling for them indefinitely.
+	Blocked bool
 }
 
 // ResolveResult summarizes a ResolveDependencies pass.

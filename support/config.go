@@ -91,6 +91,11 @@ type SimpleRunnerConfig struct {
 	UseCgroupV1 bool   `toml:"use_cgroup_v1"`
 	UseCgroupV2 bool   `toml:"use_cgroup_v2"`
 	Shell       string `toml:"shell"`
+
+	// Resources advertises generic resources this runner provides, e.g.
+	// [simple_runner.resources] with gpu = "4", cluster = "xyz_cluster".
+	// Counts are integer strings; labels are plain or comma-separated sets.
+	Resources map[string]string `toml:"resources"`
 }
 
 type SlurmRunnerConfig struct {
@@ -107,6 +112,11 @@ type SlurmRunnerConfig struct {
 	// queue at once. The runner polls `squeue` and pauses submitting when
 	// the live count reaches this limit. Zero / unset means unlimited.
 	MaxSlurmJobs int `toml:"max_slurm_jobs"`
+
+	// Resources advertises generic resources this SLURM runner provides
+	// (e.g. cluster = "xyz_cluster"), so resource-tagged jobs can be routed
+	// to the right cluster. procs/mem/walltime are still enforced by SLURM.
+	Resources map[string]string `toml:"resources"`
 }
 
 // LoadConfig parses a TOML config file from path. A missing file yields

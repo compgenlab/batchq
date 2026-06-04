@@ -369,14 +369,16 @@ func (c *Client) GetJobStatusCounts(ctx context.Context, showAll bool) (map[stri
 // --- Runner endpoints --------------------------------------------------
 
 // ClaimNextJob is the atomic claim primitive used by runners. The returned
-// response has Job=nil if nothing was claimed (the runner should sleep);
-// MoreEligible indicates whether jobs remain that didn't fit the limits.
-func (c *Client) ClaimNextJob(ctx context.Context, runnerID, kind string, maxProcs, maxMemMB, maxWalltimeSec int) (*api.ClaimJobResponse, error) {
+// response has Job=nil if nothing was claimed; MoreEligible then signals a lost
+// claim race (an immediate retry may land a job) and Blocked signals that
+// queued jobs remain which don't fit this runner's limits/resources.
+func (c *Client) ClaimNextJob(ctx context.Context, runnerID, kind string, maxProcs, maxMemMB, maxWalltimeSec int, resources map[string]string) (*api.ClaimJobResponse, error) {
 	req := api.ClaimJobRequest{
 		Kind:           kind,
 		MaxProcs:       maxProcs,
 		MaxMemoryMB:    maxMemMB,
 		MaxWalltimeSec: maxWalltimeSec,
+		Resources:      resources,
 	}
 	var resp api.ClaimJobResponse
 	if err := c.do(ctx, http.MethodPost,

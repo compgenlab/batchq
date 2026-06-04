@@ -179,7 +179,7 @@ func TestClientRunnerLifecycle(t *testing.T) {
 
 	dto, _ := c.SubmitJob(ctx, &api.SubmitJobRequest{Details: map[string]string{"script": "x"}})
 
-	resp, err := c.ClaimNextJob(ctx, "r-1", "simple", 0, 0, 0)
+	resp, err := c.ClaimNextJob(ctx, "r-1", "simple", 0, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestClientProxyLifecycle(t *testing.T) {
 
 	dto, _ := c.SubmitJob(ctx, &api.SubmitJobRequest{Details: map[string]string{"script": "x"}})
 
-	if _, err := c.ClaimNextJob(ctx, "r-2", "slurm", 0, 0, 0); err != nil {
+	if _, err := c.ClaimNextJob(ctx, "r-2", "slurm", 0, 0, 0, nil); err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
 	if err := c.MarkJobProxied(ctx, "r-2", dto.JobID, map[string]string{"slurm_job_id": "1234"}); err != nil {
@@ -248,7 +248,7 @@ func TestClientConcurrentClaim(t *testing.T) {
 		i := i
 		go func() {
 			defer wg.Done()
-			resp, err := c.ClaimNextJob(ctx, runnerID(i), "simple", 0, 0, 0)
+			resp, err := c.ClaimNextJob(ctx, runnerID(i), "simple", 0, 0, 0, nil)
 			if err != nil {
 				t.Errorf("Claim: %v", err)
 				return

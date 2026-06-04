@@ -855,14 +855,23 @@ func (s *sqliteStorage) ClaimNextJob(ctx context.Context, runnerID, kind string,
 		return ClaimResult{}, err
 	}
 
-	more := false
+	moreRace := false
+	blocked := false
 	for _, jobID := range queued {
 		fits, err := jobFitsLimits(ctx, tx, jobID, limits)
 		if err != nil {
 			return ClaimResult{}, err
 		}
+		if fits {
+			fits, err = jobFitsResources(ctx, tx, jobID, limits.Resources)
+			if err != nil {
+				return ClaimResult{}, err
+			}
+		}
 		if !fits {
-			more = true
+			// Doesn't fit this runner's limits/resources — may free up later
+			// (consumed capacity) or never (exceeds max). The runner decides.
+			blocked = true
 			continue
 		}
 		// Try to claim this job. INSERT into job_running uses the UNIQUE
@@ -873,6 +882,9 @@ func (s *sqliteStorage) ClaimNextJob(ctx context.Context, runnerID, kind string,
 			`INSERT INTO job_running (job_id, job_runner, kind) VALUES (?, ?, ?)`,
 			jobID, runnerID, kind); err != nil {
 			if isUniqueViolation(err) {
+				// Fit our limits but another runner grabbed it first — a retry
+				// may land a different one.
+				moreRace = true
 				continue
 			}
 			return ClaimResult{}, err
@@ -892,13 +904,13 @@ func (s *sqliteStorage) ClaimNextJob(ctx context.Context, runnerID, kind string,
 		if err := tx.Commit(); err != nil {
 			return ClaimResult{}, err
 		}
-		return ClaimResult{Job: job, MoreEligible: more}, nil
+		return ClaimResult{Job: job, MoreEligible: moreRace, Blocked: blocked}, nil
 	}
 
 	if err := tx.Commit(); err != nil {
 		return ClaimResult{}, err
 	}
-	return ClaimResult{MoreEligible: more}, nil
+	return ClaimResult{MoreEligible: moreRace, Blocked: blocked}, nil
 }
 
 // jobFitsLimits returns true iff the job at jobID has procs/mem/walltime
@@ -938,6 +950,115 @@ func jobFitsLimits(ctx context.Context, tx *sql.Tx, jobID string, limits Limits)
 		return false, nil
 	}
 	return true, nil
+}
+
+// jobFitsResources returns true iff the runner's advertised resources satisfy
+// every generic resource the job requires. Required resources are stored as
+// job_details rows under the jobs.ResourcePrefix ("resource.") prefix.
+//
+// For each required resource, the operator is inferred from the value:
+//   - Countable: the required value parses as a non-negative integer. The
+//     runner must advertise that name with a count >= the requirement. An
+//     untyped request (no ':' in the name, e.g. "gpu") is also satisfied by the
+//     sum of any advertised typed variants ("gpu:a100", "gpu:v100", ...), matching
+//     SLURM's "any type" gres semantics.
+//   - Label/set: otherwise. The runner must advertise the name, and the required
+//     value (comma-split into a set) must be a subset of the advertised value
+//     (also comma-split). Single-value equality and empty-value feature flags are
+//     the degenerate cases of subset.
+//
+// A runner that advertises nothing satisfies only jobs that require nothing.
+func jobFitsResources(ctx context.Context, tx *sql.Tx, jobID string, advertised map[string]string) (bool, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT key, value FROM job_details WHERE job_id = ? AND key LIKE ?`,
+		jobID, jobs.ResourcePrefix+"%")
+	if err != nil {
+		return false, err
+	}
+	required := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			rows.Close()
+			return false, err
+		}
+		required[strings.TrimPrefix(k, jobs.ResourcePrefix)] = v
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+
+	for name, need := range required {
+		if needN, ok := parseCount(need); ok {
+			// Countable requirement.
+			avail := 0
+			if a, ok := parseCount(advertised[name]); ok {
+				avail = a
+			}
+			if !strings.Contains(name, ":") {
+				// Untyped request: any advertised typed variant counts too.
+				typedPrefix := name + ":"
+				for an, av := range advertised {
+					if strings.HasPrefix(an, typedPrefix) {
+						if a, ok := parseCount(av); ok {
+							avail += a
+						}
+					}
+				}
+			}
+			if avail < needN {
+				return false, nil
+			}
+			continue
+		}
+		// Label/set requirement: advertised set must be a superset of needed set.
+		adv, ok := advertised[name]
+		if !ok {
+			return false, nil
+		}
+		if !labelSubset(need, adv) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// parseCount parses a non-negative integer resource count. It returns (0, false)
+// for empty or non-integer values so the caller can treat them as labels.
+func parseCount(s string) (int, bool) {
+	if s == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	return n, true
+}
+
+// labelSubset reports whether every comma-separated token in need is present in
+// adv. An empty need (a bare feature flag) is satisfied by the key's presence.
+func labelSubset(need, adv string) bool {
+	if need == "" {
+		return true
+	}
+	have := map[string]struct{}{}
+	for _, tok := range strings.Split(adv, ",") {
+		if t := strings.TrimSpace(tok); t != "" {
+			have[t] = struct{}{}
+		}
+	}
+	for _, tok := range strings.Split(need, ",") {
+		t := strings.TrimSpace(tok)
+		if t == "" {
+			continue
+		}
+		if _, ok := have[t]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // isUniqueViolation matches the SQLite "UNIQUE constraint failed" error

@@ -35,6 +35,7 @@ type simpleRunner struct {
 	availJobs      int
 	availProcs     int
 	availMem       int
+	resources      map[string]string
 	shellBin       string
 	runnerId       string
 	interrupt      context.CancelFunc
@@ -83,6 +84,64 @@ func (r *simpleRunner) SetMaxMemMB(mem int) *simpleRunner {
 func (r *simpleRunner) SetMaxWalltimeSec(walltime int) *simpleRunner {
 	r.maxWalltimeSec = walltime
 	return r
+}
+
+// SetResources advertises the generic resources this runner provides (gpu
+// counts, cluster/feature labels, ...). Countable resources are consumed by
+// running jobs; labels are advertised unchanged. See availableResources.
+func (r *simpleRunner) SetResources(resources map[string]string) *simpleRunner {
+	r.resources = resources
+	return r
+}
+
+// availableResources returns the advertised resource pool reduced by the
+// countable resources currently reserved by running jobs, so a runner that
+// advertises gpu=4 won't claim more gpu work than it can host concurrently.
+// Label resources are not consumed and are passed through unchanged. Countable
+// requirements are subtracted from the same-named pool key (a typed request
+// reduces only that typed advertisement; an untyped request reduces only the
+// untyped advertisement).
+func (r *simpleRunner) availableResources() map[string]string {
+	if len(r.resources) == 0 {
+		return nil
+	}
+	counts := map[string]int{}
+	labels := map[string]string{}
+	for name, val := range r.resources {
+		if n, err := strconv.Atoi(val); err == nil && n >= 0 {
+			counts[name] = n
+		} else {
+			labels[name] = val
+		}
+	}
+
+	r.lock.Lock()
+	for _, cur := range r.curJobs {
+		for k, v := range cur.job.Details {
+			if !strings.HasPrefix(k, jobs.ResourcePrefix) {
+				continue
+			}
+			name := strings.TrimPrefix(k, jobs.ResourcePrefix)
+			if need, err := strconv.Atoi(v); err == nil && need > 0 {
+				if _, ok := counts[name]; ok {
+					counts[name] -= need
+				}
+			}
+		}
+	}
+	r.lock.Unlock()
+
+	avail := map[string]string{}
+	for name, n := range counts {
+		if n < 0 {
+			n = 0
+		}
+		avail[name] = strconv.Itoa(n)
+	}
+	for name, val := range labels {
+		avail[name] = val
+	}
+	return avail
 }
 func (r *simpleRunner) SetMaxJobCount(maxJobs int) *simpleRunner {
 	r.maxJobs = maxJobs
@@ -301,7 +360,7 @@ func (r *simpleRunner) Start() bool {
 			if findJob {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
-				resp, err := r.client.ClaimNextJob(ctx, r.runnerId, "simple", r.availProcs, r.availMem, r.maxWalltimeSec)
+				resp, err := r.client.ClaimNextJob(ctx, r.runnerId, "simple", r.availProcs, r.availMem, r.maxWalltimeSec, r.availableResources())
 				cancel()
 				if err != nil {
 					r.logf("Error claiming job: %v\n", err)
@@ -319,13 +378,19 @@ func (r *simpleRunner) Start() bool {
 						r.availJobs--
 					}
 					continue
-				} else {
-					if len(r.curJobs) == 0 && !resp.MoreEligible && !r.foreverMode {
-						// we are done here
-						// no jobs running, none left in queue, and we aren't waiting...
-						keepRunning = false
+				} else if len(r.curJobs) == 0 && !resp.MoreEligible && !r.foreverMode {
+					// Nothing running and we claimed nothing. With no jobs
+					// running, the limits we just offered were our full
+					// capacity, so any Blocked jobs exceed what this runner can
+					// ever satisfy — stop instead of polling for them forever.
+					// (MoreEligible would mean a lost race worth retrying; use
+					// --forever to wait for brand-new work.)
+					if resp.Blocked {
+						r.logf("Remaining queued jobs need resources/limits this runner can't satisfy; nothing left to run. Exiting.")
+					} else {
 						r.logf("Done processing jobs")
 					}
+					keepRunning = false
 				}
 			}
 		}

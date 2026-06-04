@@ -62,7 +62,8 @@ var runCmd = &cobra.Command{
 				SetMaxJobCount(maxJobs).
 				SetSlurmUsername(slurmUser).
 				SetSlurmAccount(slurmAcct).
-				SetSlurmPartition(slurmPartition)
+				SetSlurmPartition(slurmPartition).
+				SetResources(mergeResources(Config.SlurmRunner.Resources, runResources))
 
 		case "simple":
 			if maxProcs < 0 && Config.SimpleRunner.MaxProcs > 0 {
@@ -94,7 +95,8 @@ var runCmd = &cobra.Command{
 				SetForever(forever).
 				SetShell(shell).
 				SetCgroupV2(useCgroupV2).
-				SetCgroupV1(useCgroupV1)
+				SetCgroupV1(useCgroupV1).
+				SetResources(mergeResources(Config.SimpleRunner.Resources, runResources))
 		}
 		if runr != nil {
 			runr.Start()
@@ -115,6 +117,30 @@ var slurmUser string
 var slurmAcct string
 var slurmPartition string
 var slurmMaxJobs int
+var runResources []string
+
+// mergeResources folds repeated --resource name=value flags over the config-file
+// resource map (flags override config per key). Returns nil if neither supplies
+// anything, so the runner advertises nothing. A bare "name" (no '=') advertises
+// the key with an empty value (a feature label).
+func mergeResources(base map[string]string, flags []string) map[string]string {
+	if len(base) == 0 && len(flags) == 0 {
+		return nil
+	}
+	merged := map[string]string{}
+	for k, v := range base {
+		merged[k] = v
+	}
+	for _, entry := range flags {
+		name, val, _ := strings.Cut(entry, "=")
+		name = strings.TrimSpace(name)
+		if name == "" {
+			log.Fatalf("Bad --resource value (empty name): %q", entry)
+		}
+		merged[name] = strings.TrimSpace(val)
+	}
+	return merged
+}
 
 func init() {
 	runCmd.Flags().IntVar(&maxProcs, "max-procs", -1, "Maximum processors to use")
@@ -129,6 +155,7 @@ func init() {
 	runCmd.Flags().StringVar(&slurmPartition, "slurm-partition", "", "Use this SLURM partition")
 	runCmd.Flags().IntVar(&slurmMaxJobs, "slurm-max-jobs", -1, "Max jobs allowed for this user account")
 	runCmd.Flags().StringVar(&slurmUser, "slurm-user", "", "SLURM user (used for calculating job-count)")
+	runCmd.Flags().StringArrayVar(&runResources, "resource", nil, "Advertise an available resource (name=value or name, repeatable)")
 
 	rootCmd.AddCommand(runCmd)
 }

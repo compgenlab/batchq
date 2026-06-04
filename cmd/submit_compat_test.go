@@ -143,6 +143,7 @@ func resetSubmitFlags() {
 	jobRunID = ""
 	jobInputs = nil
 	jobOutputs = nil
+	jobResources = nil
 	verbose = false
 	slurmMode = false
 
@@ -258,6 +259,75 @@ func TestSubmitBatchqHeaders(t *testing.T) {
 	// 30:00 → 30*60 = 1800 seconds.
 	if dto.Details["walltime"] != "1800" {
 		t.Fatalf("walltime: %q", dto.Details["walltime"])
+	}
+}
+
+func TestSubmitResourceFlagsAndDirectives(t *testing.T) {
+	c := startCompatServer(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "res.sh")
+	body := strings.Join([]string{
+		"#!/bin/sh",
+		"#BATCHQ -resource fastio",
+		"echo hi",
+	}, "\n") + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	out := runSubmit(t,
+		"--resource", "gpu=2",
+		"--resource", "cluster=xyz_cluster",
+		script,
+	)
+	dto, err := c.GetJob(context.Background(), out)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if dto.Details["resource.gpu"] != "2" {
+		t.Fatalf("resource.gpu: %q", dto.Details["resource.gpu"])
+	}
+	if dto.Details["resource.cluster"] != "xyz_cluster" {
+		t.Fatalf("resource.cluster: %q", dto.Details["resource.cluster"])
+	}
+	// Bare #BATCHQ -resource directive lands as a present, empty-valued flag.
+	if v, ok := dto.Details["resource.fastio"]; !ok || v != "" {
+		t.Fatalf("resource.fastio: got (%q, present=%v), want empty+present", v, ok)
+	}
+}
+
+func TestSubmitSlurmGresAndConstraint(t *testing.T) {
+	c := startCompatServer(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "gres.sh")
+	body := strings.Join([]string{
+		"#!/bin/sh",
+		"#SBATCH -J gresjob",
+		"#SBATCH --gres=gpu:a100:2",
+		"#SBATCH --constraint=avx512&avx2",
+		"echo go",
+	}, "\n") + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	out := runSubmit(t, "--slurm", script)
+	dto, err := c.GetJob(context.Background(), out)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	// --gres=gpu:a100:2 → resource.gpu:a100=2 (typed countable).
+	if dto.Details["resource.gpu:a100"] != "2" {
+		t.Fatalf("resource.gpu:a100: %q", dto.Details["resource.gpu:a100"])
+	}
+	// --constraint=avx512&avx2 → two bare feature flags.
+	if _, ok := dto.Details["resource.avx512"]; !ok {
+		t.Fatalf("resource.avx512 missing")
+	}
+	if _, ok := dto.Details["resource.avx2"]; !ok {
+		t.Fatalf("resource.avx2 missing")
 	}
 }
 

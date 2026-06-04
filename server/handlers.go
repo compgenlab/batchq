@@ -276,18 +276,23 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 		MaxProcs:       req.MaxProcs,
 		MaxMemoryMB:    req.MaxMemoryMB,
 		MaxWalltimeSec: req.MaxWalltimeSec,
+		Resources:      req.Resources,
 	})
 	if err != nil {
 		writeError(w, httpStatus(err), err)
 		return
 	}
 	if result.Job == nil {
-		writeJSON(w, http.StatusOK, api.ClaimJobResponse{MoreEligible: result.MoreEligible})
+		writeJSON(w, http.StatusOK, api.ClaimJobResponse{
+			MoreEligible: result.MoreEligible,
+			Blocked:      result.Blocked,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, api.ClaimJobResponse{
 		Job:          api.JobFromDef(result.Job),
 		MoreEligible: result.MoreEligible,
+		Blocked:      result.Blocked,
 	})
 }
 
