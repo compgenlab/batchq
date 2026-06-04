@@ -2,10 +2,11 @@
 
 batchq is a small job scheduler for queuing and running tasks. As of v2 it
 runs as a client/server pair over an HTTP REST API: a `batchq server`
-process owns the SQLite-backed queue, and `submit` / `run` / `show` /
+process owns the SQLite-backed queue, and `submit` / `run` / `queue` /
 `hold` / `cleanup` / `web` are all clients that talk to it over a unix
-domain socket. Network exposure (for runners or clients on other hosts)
-is the reverse proxy's job — batchq itself never binds a TCP port.
+domain socket (or, opt-in, a plain-HTTP TCP port for containers).
+Network exposure with TLS is the reverse proxy's job — batchq itself
+never terminates TLS.
 
 This split exists so the database file can safely live on a networked
 filesystem (NFS / Lustre) on an HPC cluster: only the server process

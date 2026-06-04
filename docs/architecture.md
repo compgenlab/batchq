@@ -69,19 +69,27 @@ A secondary benefit: clients become trivial. They speak HTTP REST, they
 do not need to know whether the server is local, remote, or in-process
 for a test. The same code path serves all three.
 
-## Unix sockets, not TCP
+## Unix sockets by default (opt-in TCP), never TLS
 
-The server only ever binds a unix domain socket. It never opens a TCP
-port. There are two reasons:
+By default the server binds a unix domain socket — and that's the
+recommended shape, for two reasons:
 
 - **Authentication.** Filesystem permissions on the socket (mode `0600`,
-  owned by the user running the server) are the access control
-  mechanism. This is the same model `ssh-agent` and `gpg-agent` use, and
-  it is dead simple to reason about.
+  owned by the user running the server) plus kernel peer credentials are
+  the access control mechanism. This is the same model `ssh-agent` and
+  `gpg-agent` use, and it is dead simple to reason about.
 - **Deployment.** Exposing the API to the network is a reverse proxy's
   job. nginx, Caddy, Traefik all forward HTTP to a unix socket without
   fuss; the proxy terminates TLS, applies network-level access
   controls, and forwards to batchq. See [remote access](remote.md).
+
+For containers and orchestrators, where a host-path socket is awkward,
+the server can instead bind a plain-HTTP **TCP port**
+(`[server] listen = "tcp://host:port"`). A TCP port has no filesystem
+ACL and no peer credentials, so it should be paired with a shared
+`[server] token` (the server warns if it isn't) and/or a proxy. What the
+server never does is terminate TLS — that stays the proxy's job in every
+topology.
 
 ## Single-instance election
 
@@ -203,5 +211,5 @@ specifics.
   defaults.
 - [SLURM](slurm.md) — how the SLURM runner fits into this picture, and
   why it is the only component that talks to SLURM.
-- [Remote access](remote.md) — exposing the unix-socket-only server to
-  remote clients.
+- [Remote access](remote.md) — exposing the server to remote clients
+  over a reverse proxy or a TCP port.

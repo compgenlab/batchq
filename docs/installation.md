@@ -9,8 +9,8 @@ for any target.
 
 - Go 1.23 or newer (only for building from source).
 - Linux or macOS. The two supported platforms today are `linux` and
-  `darwin` on `amd64` and `arm64`. Windows is not supported (the server
-  binds a unix socket).
+  `darwin` on `amd64` and `arm64`. Windows is not supported (batchq
+  relies on unix sockets and POSIX process semantics).
 - A filesystem that supports unix sockets at `$BATCHQ_HOME`. Most
   network filesystems are fine for the *data* file but the *socket* must
   live on something local — see [architecture](architecture.md) for the

@@ -1,13 +1,13 @@
 # Remote access
 
-batchq's server never binds a TCP port. It only ever listens on a unix
-domain socket. That is a deliberate choice — exposing the API to the
-network is a reverse proxy's job, and decoupling the two lets the
-proxy handle TLS, network ACLs, rate limiting, and access logging
-without batchq having to reinvent any of it.
+batchq's server never terminates TLS. It binds a unix domain socket by
+default, or a plain-HTTP TCP port (`tcp://host:port`) for containerized
+deployments — but TLS, network ACLs, rate limiting, and access logging
+are a reverse proxy's job, so batchq doesn't reinvent any of it.
 
-This page covers how to put a reverse proxy in front of batchq and how
-to configure remote clients to use it.
+This page covers how to put a reverse proxy in front of batchq, the
+shared-token gate, the TCP-port option for containers, and how to
+configure remote clients.
 
 ## When you need this
 
@@ -272,8 +272,8 @@ needs the token configured too.
 
 ## Where to go next
 
-- [Architecture](architecture.md) — the why behind unix-socket-only
-  and the autospawn model.
+- [Architecture](architecture.md) — the why behind the socket-first
+  transport and the autospawn model.
 - [SLURM](slurm.md) — the SLURM runner often pairs with a remote
   batchq server on the cluster login node.
 - [Web UI](web.md) — for browser access, SSH port-forwarding is often

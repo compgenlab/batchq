@@ -90,7 +90,7 @@ cluster = "biocluster"
 | `runner` | string | `"simple"` | Which runner `batchq run` uses by default. `"simple"` or `"slurm"`. The `--slurm` flag overrides. |
 | `remote` | string | (unset) | HTTPS URL of a remote batchq server. When set, clients dial this URL and no local server is started. See [remote](remote.md). |
 | `token` | string | (unset) | Bearer token for `remote`. Prefer `BATCHQ_TOKEN` env so the value stays out of `ps` and out of checked-in config. |
-| `multiuser` | bool | `false` | Turns on owner-displaying modes in `show` output. Set on shared deployments. |
+| `multiuser` | bool | `false` | Adds an owner/username column to `queue` and `status` output. Set on shared deployments. |
 | `autospawn_wait_timeout` | duration | `10s` | How long a CLI client waits for an autospawned local server to bind its socket. Bump on slow filesystems. |
 
 ## `[server]` — server runtime

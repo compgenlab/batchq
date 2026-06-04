@@ -220,13 +220,14 @@ were before peer-cred derivation landed:
   not get the usual login-time setup: resource limits from
   `/etc/security/limits.conf`, session leader assignment, audit
   attribution, etc.
-- **Bearer-token auth on the REST API is not yet implemented.**
-  Peer-cred derivation only works for unix-socket clients. Requests
-  that arrive over HTTPS through the reverse proxy still trust the
-  client's submitted `uid` / `gid`, and the hold / release / cancel
-  authz check is skipped for them. Until server-side bearer-token
-  validation lands, network-exposed deployments depend entirely on
-  the reverse proxy for access control. See [remote](remote.md).
+- **No per-user identity over the network.** Peer-cred derivation
+  only works for unix-socket clients. A server reached over a TCP
+  port or a reverse proxy can require a **shared token**
+  (`[server] token`), which keeps anonymous callers out — but it is
+  one secret shared by everyone, so requests arriving that way still
+  trust the client's submitted `uid` / `gid` and the per-user hold /
+  release / cancel authz check does not apply to them. Token-bound,
+  per-user identity is the managed server's job. See [remote](remote.md).
 
 ### When this is fine, and when it isn't
 
@@ -235,11 +236,11 @@ were before peer-cred derivation landed:
   (b) the host's existing user accounts are the right granularity
   of isolation for your needs. Cgroup limits give you resource
   fairness on top.
-- **Not fine yet** if your deployment exposes the REST API to
-  remote clients and you need them to be subject to the same
-  per-user identity enforcement. That requires bearer-token
-  validation server-side, which is not yet implemented; until it
-  is, lean on the reverse proxy.
+- **Not fine** if your deployment exposes the REST API to remote
+  clients and you need them subject to the same *per-user* identity
+  enforcement. The shared token authenticates "someone with the
+  secret," not a specific user — for real per-user auth, use the
+  managed server.
 
 ### The simpler alternative: per-user runners
 
