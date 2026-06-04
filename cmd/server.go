@@ -48,7 +48,7 @@ func init() {
 	d := support.NewDefaults()
 
 	serverCmd.Flags().StringVar(&serverListen, "listen", "",
-		"Listener URL (unix:///path/to/sock). Default: "+d.ServerListen)
+		"Listener URL (unix:///path/to/sock or tcp://host:port). Default: "+d.ServerListen)
 	serverCmd.Flags().StringVar(&serverDB, "db", "",
 		"Database URL: sqlite3:///path or postgres://... Default: "+d.Backend)
 	serverCmd.Flags().BoolVar(&serverWAL, "sqlite-wal", false,
@@ -97,10 +97,11 @@ func runServer(_ *cobra.Command, _ []string) error {
 		serverIdleTimeout = Config.Server.IdleTimeout.AsDuration()
 	}
 
-	// Sanity check the listen URL. Only unix:// is supported; network
-	// exposure goes through a reverse proxy.
-	if !strings.HasPrefix(serverListen, "unix://") {
-		return fmt.Errorf("--listen must be a unix:// URL (got %q); use a reverse proxy for network exposure", serverListen)
+	// Sanity check the listen URL. unix:// (default) or tcp://host:port
+	// (plain HTTP, for containerized deployments). batchq never terminates
+	// TLS — front a TCP port with a reverse proxy for network exposure.
+	if !strings.HasPrefix(serverListen, "unix://") && !strings.HasPrefix(serverListen, "tcp://") {
+		return fmt.Errorf("--listen must be a unix:// or tcp:// URL (got %q)", serverListen)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -128,6 +129,8 @@ func runServer(_ *cobra.Command, _ []string) error {
 	}
 	if Config.Server.Token != "" {
 		fmt.Fprintln(os.Stderr, "batchq server: shared-token auth enabled (Authorization: Bearer required)")
+	} else if strings.HasPrefix(serverListen, "tcp://") {
+		fmt.Fprintln(os.Stderr, "batchq server: WARNING listening on a TCP port without [server] token — the API is unauthenticated (TCP carries no peer credentials). Set a token or front it with an authenticating proxy.")
 	}
 	if err := srv.Serve(ctx); err != nil {
 		if errors.Is(err, server.ErrAlreadyRunning) {

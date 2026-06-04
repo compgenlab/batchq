@@ -108,6 +108,35 @@ batchq does not currently offer a knob to set the socket mode or group
 to put the socket on a directory the proxy user has access to and run
 the proxy as the same user.
 
+### Listening on a TCP port (containers)
+
+Sharing a unix socket between a batchq container and a proxy container
+is awkward. For Docker / Kubernetes / any orchestrator, point
+`[server] listen` (or `--listen`) at a TCP port instead:
+
+```toml
+[server]
+listen = "tcp://0.0.0.0:8080"
+token  = "a-long-random-secret"   # see below — strongly recommended
+```
+
+The proxy then forwards to `host:port` instead of a socket — in the
+nginx example below, `server 127.0.0.1:8080;` in place of the
+`unix:...` upstream.
+
+A TCP port is plain HTTP and, unlike the unix socket, carries **no
+kernel peer credentials** — so without a token the API is wide open to
+anything that can reach the port. Always pair a TCP listener with either
+`[server] token` (the server prints a startup warning if you don't) or a
+proxy that authenticates, and keep the port on a trusted/internal network
+(e.g. a Docker network, `127.0.0.1`, or a private subnet), never a public
+interface without a proxy in front. batchq still never terminates TLS.
+
+Inside a trusted network, other containers can talk to it directly
+without a proxy by setting their own `[server] listen` (or
+`BATCHQ_*`/config) to `tcp://<server-host>:8080` and the shared
+`[batchq] token`; the client sends the token over the TCP connection.
+
 ## nginx example
 
 ```nginx

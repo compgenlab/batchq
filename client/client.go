@@ -64,10 +64,12 @@ func (e *HTTPError) Is(target error) bool {
 type Options struct {
 	// URL of the server. One of:
 	//   unix:///path/to/sock  — local server over a unix domain socket
+	//   tcp://host:port       — server over a plain-HTTP TCP port (e.g. a
+	//                            containerized server reached over a
+	//                            trusted/Docker network)
 	//   https://host:port     — remote HTTPS REST API (typically a
 	//                            reverse proxy terminating TLS in front
 	//                            of a batchq server)
-	// Plain http:// is intentionally not supported.
 	URL string
 
 	// Token is the bearer token sent in the Authorization header. It is
@@ -133,6 +135,16 @@ func DialWithOptions(opts Options) (*Client, error) {
 				},
 			},
 		}
+	case "tcp", "http":
+		// Plain HTTP over a TCP port — a containerized server on a trusted
+		// network. The default transport dials host:port directly. A
+		// mount-point subpath is honored the same way as https.
+		base := "http://" + parsed.Host
+		if p := strings.TrimRight(parsed.Path, "/"); p != "" {
+			base += p
+		}
+		c.base = base
+		c.httpC = &http.Client{Timeout: opts.Timeout}
 	case "https":
 		// Include the URL path as a mount-point prefix so deployments
 		// behind a reverse proxy at /some/subpath work. Trailing slashes
@@ -144,7 +156,7 @@ func DialWithOptions(opts Options) (*Client, error) {
 		c.base = base
 		c.httpC = &http.Client{Timeout: opts.Timeout}
 	default:
-		return nil, fmt.Errorf("client: unsupported scheme %q (want unix:// or https://)", parsed.Scheme)
+		return nil, fmt.Errorf("client: unsupported scheme %q (want unix://, tcp://, or https://)", parsed.Scheme)
 	}
 	return c, nil
 }
