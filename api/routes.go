@@ -31,7 +31,11 @@ const (
 	RouteHealth = "/healthz"
 
 	RouteJobs           = "/jobs"
+	RouteJobsArray      = "/jobs/array"
 	RouteJobsByID       = "/jobs/{id}"
+	RouteArrayCancel    = "/arrays/{array_id}/cancel"
+	RouteArrayHold      = "/arrays/{array_id}/hold"
+	RouteArrayRelease   = "/arrays/{array_id}/release"
 	RouteJobDependents  = "/jobs/{id}/dependents"
 	RouteJobHold        = "/jobs/{id}/hold"
 	RouteJobRelease     = "/jobs/{id}/release"
@@ -42,6 +46,7 @@ const (
 	RouteQueueCounts = "/queue/counts"
 
 	RouteRunnerClaim         = "/runners/{runner_id}/claim"
+	RouteRunnerClaimArray    = "/runners/{runner_id}/claim-array"
 	RouteRunnerJobProxy      = "/runners/{runner_id}/jobs/{id}/proxy"
 	RouteRunnerJobRunning    = "/runners/{runner_id}/jobs/{id}/running"
 	RouteRunnerJobEnd        = "/runners/{runner_id}/jobs/{id}/end"

@@ -162,24 +162,43 @@ func (s *sqliteStorage) InsertJob(ctx context.Context, job *jobs.JobDef) error {
 	}
 
 	// Validate dependencies before any writes.
-	for _, depID := range job.AfterOk {
-		dep, err := s.GetJob(ctx, depID)
-		if err != nil {
-			return fmt.Errorf("storage: dep %s: %w", depID, err)
-		}
-		if dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
-			return fmt.Errorf("storage: dep %s is %s", depID, dep.Status)
-		}
+	if err := s.validateDeps(ctx, job.AfterOk); err != nil {
+		return err
 	}
 
-	// Compute initial status from dependencies (unless the caller asked for
-	// USERHOLD explicitly).
-	status := job.Status
-	if status != jobs.USERHOLD {
-		if len(job.AfterOk) == 0 {
-			status = jobs.QUEUED
-		} else {
-			status = jobs.WAITING
+	submitTime := nowString()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if err := insertJobTx(ctx, tx, job, submitTime); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// InsertArray persists every task of a job array in a single transaction so the
+// array appears atomically. The tasks already carry their array_id/array_index
+// details; they share submit_time. Dependencies are validated once up front.
+func (s *sqliteStorage) InsertArray(ctx context.Context, arrayID string, tasks []*jobs.JobDef) error {
+	if arrayID == "" {
+		return errors.New("storage: empty array id")
+	}
+	if len(tasks) == 0 {
+		return errors.New("storage: array has no tasks")
+	}
+	for _, task := range tasks {
+		if task == nil {
+			return errors.New("storage: nil array task")
+		}
+		if task.JobId == "" {
+			return errors.New("storage: array task missing id")
+		}
+		if err := s.validateDeps(ctx, task.AfterOk); err != nil {
+			return err
 		}
 	}
 
@@ -191,13 +210,63 @@ func (s *sqliteStorage) InsertJob(ctx context.Context, job *jobs.JobDef) error {
 	}
 	defer tx.Rollback()
 
+	for _, task := range tasks {
+		if err := insertJobTx(ctx, tx, task, submitTime); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// validateDeps rejects a submit whose afterok parents are missing or already
+// terminal-failed/canceled (a dependent could never run).
+func (s *sqliteStorage) validateDeps(ctx context.Context, afterOk []string) error {
+	for _, depID := range afterOk {
+		dep, err := s.GetJob(ctx, depID)
+		if err != nil {
+			return fmt.Errorf("storage: dep %s: %w", depID, err)
+		}
+		if dep.Status == jobs.CANCELED || dep.Status == jobs.FAILED {
+			return fmt.Errorf("storage: dep %s is %s", depID, dep.Status)
+		}
+	}
+	return nil
+}
+
+// jobPlaceholders expands the per-job output placeholders in a name or path:
+// %JOBID (job id), %A (array id), %a (array index). Array placeholders expand
+// to empty for non-array jobs. Patterns are checked %JOBID-first so the longer
+// token wins.
+func jobPlaceholders(job *jobs.JobDef) *strings.Replacer {
+	return strings.NewReplacer(
+		"%JOBID", job.JobId,
+		"%A", job.GetDetail("array_id", ""),
+		"%a", job.GetDetail("array_index", ""),
+	)
+}
+
+// insertJobTx writes a single job (jobs row, deps, details, inputs, outputs)
+// inside an existing transaction and reflects the resolved status/name/submit
+// time back into the struct. Shared by InsertJob and InsertArray so placeholder
+// substitution and status derivation live in one place.
+func insertJobTx(ctx context.Context, tx *sql.Tx, job *jobs.JobDef, submitTime string) error {
+	// Compute initial status from dependencies (unless the caller asked for
+	// USERHOLD explicitly).
+	status := job.Status
+	if status != jobs.USERHOLD {
+		if len(job.AfterOk) == 0 {
+			status = jobs.QUEUED
+		} else {
+			status = jobs.WAITING
+		}
+	}
+
+	repl := jobPlaceholders(job)
 	name := job.Name
 	if name == "" {
 		name = "batchq-%JOBID"
 	}
-	if strings.Contains(name, "%JOBID") {
-		name = strings.ReplaceAll(name, "%JOBID", job.JobId)
-	}
+	name = repl.Replace(name)
 
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO jobs (id, status, priority, name, notes, submit_time)
@@ -219,6 +288,9 @@ func (s *sqliteStorage) InsertJob(ctx context.Context, job *jobs.JobDef) error {
 	for _, d := range job.Details {
 		value := d.Value
 		if d.Key == "stdout" || d.Key == "stderr" {
+			// Only %JOBID is resolved here; %A/%a are deferred to run time so a
+			// SLURM array's single -o/-e pattern survives to sbatch (the simple
+			// runner substitutes them per task).
 			value = strings.ReplaceAll(value, "%JOBID", job.JobId)
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -244,10 +316,6 @@ func (s *sqliteStorage) InsertJob(ctx context.Context, job *jobs.JobDef) error {
 		); err != nil {
 			return fmt.Errorf("storage: insert output %s: %w", p, err)
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return err
 	}
 
 	// Reflect the persisted state back into the caller's struct.
@@ -640,7 +708,7 @@ func (s *sqliteStorage) GetQueueJobs(ctx context.Context, showAll, sortByStatus 
 		LEFT JOIN (
 			SELECT job_id, group_concat(key || '=' || value, char(10)) AS running
 			FROM job_running_details
-			WHERE key IN ('pid', 'slurm_status', 'slurm_job_id')
+			WHERE key IN ('pid', 'slurm_status', 'slurm_job_id', 'slurm_array_id', 'slurm_task_index')
 			GROUP BY job_id
 		) running ON running.job_id = j.id
 	`
@@ -868,9 +936,17 @@ func (s *sqliteStorage) ClaimNextJob(ctx context.Context, runnerID, kind string,
 				return ClaimResult{}, err
 			}
 		}
+		if fits {
+			// Respect a job array's per-array concurrency throttle (spec "%N").
+			fits, err = jobArrayThrottleOK(ctx, tx, jobID)
+			if err != nil {
+				return ClaimResult{}, err
+			}
+		}
 		if !fits {
-			// Doesn't fit this runner's limits/resources — may free up later
-			// (consumed capacity) or never (exceeds max). The runner decides.
+			// Doesn't fit this runner's limits/resources, or its array is at its
+			// concurrency throttle — may free up later (running tasks finish) or
+			// never (exceeds max). The runner decides.
 			blocked = true
 			continue
 		}
@@ -911,6 +987,210 @@ func (s *sqliteStorage) ClaimNextJob(ctx context.Context, runnerID, kind string,
 		return ClaimResult{}, err
 	}
 	return ClaimResult{MoreEligible: moreRace, Blocked: blocked}, nil
+}
+
+func (s *sqliteStorage) ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, limits Limits, maxTasks int) (ArrayClaimResult, error) {
+	if runnerID == "" {
+		return ArrayClaimResult{}, errors.New("storage: empty runnerID")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return ArrayClaimResult{}, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id FROM jobs WHERE status = ? ORDER BY priority DESC, submit_time, id`,
+		jobs.QUEUED)
+	if err != nil {
+		return ArrayClaimResult{}, err
+	}
+	var queued []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return ArrayClaimResult{}, err
+		}
+		queued = append(queued, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return ArrayClaimResult{}, err
+	}
+
+	moreRace := false
+	blocked := false
+	for _, jobID := range queued {
+		fits, err := jobFitsLimits(ctx, tx, jobID, limits)
+		if err != nil {
+			return ArrayClaimResult{}, err
+		}
+		if fits {
+			fits, err = jobFitsResources(ctx, tx, jobID, limits.Resources)
+			if err != nil {
+				return ArrayClaimResult{}, err
+			}
+		}
+		// No per-array throttle gate here: for SLURM the "%N" throttle is passed
+		// through to sbatch; the simple runner (ClaimNextJob) enforces it.
+		if !fits {
+			blocked = true
+			continue
+		}
+
+		arrayID, err := jobDetailTx(ctx, tx, jobID, "array_id")
+		if err != nil {
+			return ArrayClaimResult{}, err
+		}
+
+		if arrayID == "" {
+			// Plain job: claim just this one (single-job path).
+			claimed, err := claimJobTx(ctx, tx, jobID, runnerID, kind)
+			if err != nil {
+				return ArrayClaimResult{}, err
+			}
+			if !claimed {
+				moreRace = true
+				continue
+			}
+			job, err := s.txGetJob(ctx, tx, jobID)
+			if err != nil {
+				return ArrayClaimResult{}, err
+			}
+			if err := tx.Commit(); err != nil {
+				return ArrayClaimResult{}, err
+			}
+			return ArrayClaimResult{Job: job, MoreEligible: moreRace, Blocked: blocked}, nil
+		}
+
+		// Array candidate: claim up to maxTasks of its still-QUEUED tasks.
+		res, err := claimArrayTasksTx(ctx, tx, arrayID, runnerID, kind, maxTasks)
+		if err != nil {
+			return ArrayClaimResult{}, err
+		}
+		if len(res.Tasks) == 0 {
+			// Every task raced away; keep scanning for other work.
+			moreRace = true
+			continue
+		}
+		// Load one claimed task as the template so the caller can build a single
+		// sbatch script for the whole batch.
+		rep, err := s.txGetJob(ctx, tx, res.Tasks[0].JobID)
+		if err != nil {
+			return ArrayClaimResult{}, err
+		}
+		res.Job = rep
+		res.MoreEligible = res.MoreEligible || moreRace
+		res.Blocked = blocked
+		if err := tx.Commit(); err != nil {
+			return ArrayClaimResult{}, err
+		}
+		return res, nil
+	}
+
+	if err := tx.Commit(); err != nil {
+		return ArrayClaimResult{}, err
+	}
+	return ArrayClaimResult{MoreEligible: moreRace, Blocked: blocked}, nil
+}
+
+// claimArrayTasksTx claims up to maxTasks (<=0 = unbounded) of one array's
+// still-QUEUED tasks, in array-index order, inside an existing transaction.
+// Tasks that lose a claim race are skipped and flagged via MoreEligible.
+func claimArrayTasksTx(ctx context.Context, tx *sql.Tx, arrayID, runnerID, kind string, maxTasks int) (ArrayClaimResult, error) {
+	rows, err := tx.QueryContext(ctx,
+		`SELECT d2.job_id, d2.value
+		   FROM job_details d1
+		   JOIN job_details d2 ON d2.job_id = d1.job_id AND d2.key = 'array_index'
+		   JOIN jobs j ON j.id = d1.job_id
+		  WHERE d1.key = 'array_id' AND d1.value = ? AND j.status = ?
+		  ORDER BY CAST(d2.value AS INTEGER)`,
+		arrayID, jobs.QUEUED)
+	if err != nil {
+		return ArrayClaimResult{}, err
+	}
+	type cand struct {
+		id    string
+		index int
+	}
+	var cands []cand
+	for rows.Next() {
+		var id, idxStr string
+		if err := rows.Scan(&id, &idxStr); err != nil {
+			rows.Close()
+			return ArrayClaimResult{}, err
+		}
+		idx, _ := strconv.Atoi(idxStr)
+		cands = append(cands, cand{id: id, index: idx})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return ArrayClaimResult{}, err
+	}
+
+	res := ArrayClaimResult{ArrayID: arrayID}
+	if len(cands) > 0 {
+		ts, err := jobDetailTx(ctx, tx, cands[0].id, "array_throttle")
+		if err != nil {
+			return ArrayClaimResult{}, err
+		}
+		if ts != "" {
+			res.Throttle, _ = strconv.Atoi(ts)
+		}
+	}
+
+	for _, c := range cands {
+		if maxTasks > 0 && len(res.Tasks) >= maxTasks {
+			break
+		}
+		claimed, err := claimJobTx(ctx, tx, c.id, runnerID, kind)
+		if err != nil {
+			return ArrayClaimResult{}, err
+		}
+		if !claimed {
+			res.MoreEligible = true
+			continue
+		}
+		res.Tasks = append(res.Tasks, ArrayTask{JobID: c.id, Index: c.index})
+	}
+	return res, nil
+}
+
+// claimJobTx atomically claims one QUEUED job: insert the job_running lock and
+// flip status to RUNNING. Returns (false, nil) when another runner won the race
+// (UNIQUE violation on job_running).
+func claimJobTx(ctx context.Context, tx *sql.Tx, jobID, runnerID, kind string) (bool, error) {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO job_running (job_id, job_runner, kind) VALUES (?, ?, ?)`,
+		jobID, runnerID, kind); err != nil {
+		if isUniqueViolation(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE jobs SET status = ?, start_time = ?
+		 WHERE id = ? AND status = ?`,
+		jobs.RUNNING, nowString(), jobID, jobs.QUEUED); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// jobDetailTx reads a single job_details value inside a transaction, returning
+// "" when the key is absent.
+func jobDetailTx(ctx context.Context, tx *sql.Tx, jobID, key string) (string, error) {
+	var v string
+	err := tx.QueryRowContext(ctx,
+		`SELECT value FROM job_details WHERE job_id = ? AND key = ?`, jobID, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return v, nil
 }
 
 // jobFitsLimits returns true iff the job at jobID has procs/mem/walltime
@@ -1059,6 +1339,56 @@ func labelSubset(need, adv string) bool {
 		}
 	}
 	return true
+}
+
+// jobArrayThrottleOK reports whether claiming this job would respect its job
+// array's concurrency throttle (the array_throttle detail, from a spec "%N").
+// A job that is not an array task, or whose array has no positive throttle,
+// always passes; otherwise it passes only while fewer than N tasks of the same
+// array are RUNNING. This caps the simple runner's per-array concurrency (the
+// SLURM runner enforces %N natively via sbatch).
+func jobArrayThrottleOK(ctx context.Context, tx *sql.Tx, jobID string) (bool, error) {
+	var arrayID, throttleStr string
+	rows, err := tx.QueryContext(ctx,
+		`SELECT key, value FROM job_details
+		 WHERE job_id = ? AND key IN ('array_id', 'array_throttle')`, jobID)
+	if err != nil {
+		return false, err
+	}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			rows.Close()
+			return false, err
+		}
+		switch k {
+		case "array_id":
+			arrayID = v
+		case "array_throttle":
+			throttleStr = v
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	if arrayID == "" || throttleStr == "" {
+		return true, nil
+	}
+	throttle, err := strconv.Atoi(throttleStr)
+	if err != nil || throttle <= 0 {
+		return true, nil
+	}
+
+	var running int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM jobs j
+		   JOIN job_details d ON d.job_id = j.id
+		  WHERE d.key = 'array_id' AND d.value = ? AND j.status = ?`,
+		arrayID, jobs.RUNNING).Scan(&running); err != nil {
+		return false, err
+	}
+	return running < throttle, nil
 }
 
 // isUniqueViolation matches the SQLite "UNIQUE constraint failed" error
@@ -1384,6 +1714,66 @@ func (s *sqliteStorage) ReleaseJob(ctx context.Context, jobID string) error {
 		return ErrInvalidState
 	}
 	return nil
+}
+
+// HoldArray holds every task of an array that is in a holdable state
+// (QUEUED/WAITING/USERHOLD), in one statement. Returns the number held.
+func (s *sqliteStorage) HoldArray(ctx context.Context, arrayID string) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET status = ?
+		 WHERE id IN (SELECT job_id FROM job_details WHERE key = 'array_id' AND value = ?)
+		   AND status IN (?, ?, ?)`,
+		jobs.USERHOLD, arrayID, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// ReleaseArray releases every held task of an array (USERHOLD -> WAITING).
+// Returns the number released.
+func (s *sqliteStorage) ReleaseArray(ctx context.Context, arrayID string) (int, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE jobs SET status = ?
+		 WHERE id IN (SELECT job_id FROM job_details WHERE key = 'array_id' AND value = ?)
+		   AND status = ?`,
+		jobs.WAITING, arrayID, jobs.USERHOLD)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// CancelArray cancels every task of an array (and cascades to their dependents)
+// in one transaction. Returns the number of tasks. ErrJobNotFound if the array
+// has no members.
+func (s *sqliteStorage) CancelArray(ctx context.Context, arrayID, reason string) (int, error) {
+	ids, err := s.FindJobsByDetail(ctx, "array_id", arrayID)
+	if err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, ErrJobNotFound
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	for _, id := range ids {
+		if err := cancelOne(ctx, tx, id, reason); err != nil {
+			return 0, err
+		}
+		if err := cascadeCancel(ctx, tx, id, reason); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(ids), nil
 }
 
 func (s *sqliteStorage) AdjustJobPriority(ctx context.Context, jobID string, delta int) error {

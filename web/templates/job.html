@@ -51,6 +51,7 @@
     <button class="tab-btn" data-tab="script"       role="tab">Script</button>
     <button class="tab-btn" data-tab="runtime"      role="tab">Runtime</button>
     {{if .RunForest}}<button class="tab-btn" data-tab="run" role="tab">Run</button>{{end}}
+    {{if .ArrayGroup}}<button class="tab-btn" data-tab="array" role="tab">Array</button>{{end}}
     <button class="tab-btn" data-tab="raw"          role="tab">Raw</button>
   </div>
 
@@ -263,6 +264,38 @@
         {{else}}
           <p class="muted">No jobs found in this run.</p>
         {{end}}
+      </section>
+    </div>
+  {{end}}
+
+  <!-- === Job array ======================================================= -->
+  {{if .ArrayGroup}}
+    <div class="tab-panel" data-tab="array">
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="section">Job array · <span class="mono" style="font-size:0.7em;">{{.ArrayGroup.ArrayID}}</span></h2>
+          <span class="muted mono">{{.ArrayGroup.Done}}/{{.ArrayGroup.Total}} done</span>
+          <a class="btn ghost" href="/jobs?array_id={{.ArrayGroup.ArrayID}}" style="margin-left:auto;">Show in queue</a>
+        </div>
+        <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin:0.5rem 0;">
+          {{range .ArrayGroup.Counts}}
+            <span class="status {{lower .Status}}">{{.Status}} {{.Count}}</span>
+          {{end}}
+        </div>
+        <table class="list">
+          <thead><tr><th style="width:18%">Task</th><th style="width:18%">Status</th><th>Name</th></tr></thead>
+          <tbody>
+            {{range .ArrayGroup.Tasks}}
+              <tr {{if .Current}}class="current"{{end}}>
+                <td class="id">
+                  {{if .Current}}<strong>#{{.Index}}</strong>{{else}}<a href="/jobs/{{.Job.JobId}}">#{{.Index}}</a>{{end}}
+                </td>
+                <td><span class="status {{statusClass .Job.Status}}">{{.Job.Status}}</span></td>
+                <td class="name">{{.Job.Name}}</td>
+              </tr>
+            {{end}}
+          </tbody>
+        </table>
       </section>
     </div>
   {{end}}

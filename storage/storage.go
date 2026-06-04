@@ -52,6 +52,28 @@ type ClaimResult struct {
 	Blocked bool
 }
 
+// ArrayTask identifies one claimed task within a job array.
+type ArrayTask struct {
+	JobID string
+	Index int
+}
+
+// ArrayClaimResult is the outcome of ClaimNextArrayBatch.
+type ArrayClaimResult struct {
+	// Job is set when the next eligible candidate is a plain (non-array) job;
+	// the caller handles it via the single-job path. Mutually exclusive with
+	// ArrayID/Tasks.
+	Job *jobs.JobDef
+	// ArrayID, Throttle, and Tasks are set when an array batch was claimed.
+	ArrayID  string
+	Throttle int
+	Tasks    []ArrayTask
+	// MoreEligible and Blocked mirror ClaimResult: a lost claim race (retry) vs
+	// queued work that did not fit this runner's limits/resources.
+	MoreEligible bool
+	Blocked      bool
+}
+
 // ResolveResult summarizes a ResolveDependencies pass.
 type ResolveResult struct {
 	Promoted int // jobs moved WAITING -> QUEUED
@@ -69,6 +91,12 @@ type Storage interface {
 	// dependency list (QUEUED if no deps, WAITING otherwise, USERHOLD if the
 	// caller set it explicitly).
 	InsertJob(ctx context.Context, job *jobs.JobDef) error
+
+	// InsertArray persists all tasks of a job array in one transaction. Each
+	// task is a normal job already carrying its array_id/array_index details;
+	// they share a submit time. Initial status is derived per task as in
+	// InsertJob.
+	InsertArray(ctx context.Context, arrayID string, tasks []*jobs.JobDef) error
 
 	// GetJob loads one job (with details, running details, and deps) by ID.
 	// Returns ErrJobNotFound if the job does not exist.
@@ -112,6 +140,15 @@ type Storage interface {
 	// further QUEUED jobs (that did not fit the limits) remain.
 	ClaimNextJob(ctx context.Context, runnerID, kind string, limits Limits) (ClaimResult, error)
 
+	// ClaimNextArrayBatch claims the next eligible unit of work for a runner
+	// that can batch-submit (the SLURM runner). If the next QUEUED candidate is
+	// a plain job it is claimed and returned as Job (like ClaimNextJob). If it
+	// is an array task, up to maxTasks of that array's still-QUEUED tasks are
+	// claimed together and returned as ArrayID+Tasks. maxTasks <= 0 means
+	// unbounded. This lets one array become one `sbatch --array`, drip-fed
+	// across passes when maxTasks bounds it.
+	ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, limits Limits, maxTasks int) (ArrayClaimResult, error)
+
 	// MarkJobProxied transitions a RUNNING job (claimed by runnerID) to
 	// PROXYQUEUED and merges runningDetails. Used by the slurm runner after
 	// a successful sbatch.
@@ -143,6 +180,13 @@ type Storage interface {
 	// ReleaseJob moves a USERHOLD job back to WAITING (so dependency
 	// resolution can decide whether to promote it to QUEUED).
 	ReleaseJob(ctx context.Context, jobID string) error
+
+	// CancelArray/HoldArray/ReleaseArray apply the corresponding single-job
+	// operation to every task of an array (matched by the array_id detail) in
+	// one statement/transaction, returning the number of affected tasks.
+	CancelArray(ctx context.Context, arrayID, reason string) (int, error)
+	HoldArray(ctx context.Context, arrayID string) (int, error)
+	ReleaseArray(ctx context.Context, arrayID string) (int, error)
 
 	// AdjustJobPriority changes a job's priority by delta (positive or
 	// negative). Only valid for QUEUED/WAITING/USERHOLD jobs.

@@ -1,13 +1,11 @@
 package cmd
 
 import (
-	"errors"
+	"context"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 
-	"github.com/mbreese/batchq/client"
 	"github.com/spf13/cobra"
 )
 
@@ -22,21 +20,21 @@ var holdCmd = &cobra.Command{
 
 		c := mustDialClient()
 		defer c.Close()
-		jobIds, err := expandJobArgs(args)
-		if err != nil {
-			fmt.Printf("Bad job-id: %s\n", err.Error())
-			return
-		}
-		for _, jobid := range jobIds {
-			ctx, cancel := cmdContext()
-			err := c.HoldJob(ctx, jobid)
-			cancel()
-			if err == nil {
-				fmt.Printf("Job: %s held\n", jobid)
-			} else {
-				fmt.Printf("Error holding job: %s\n", jobid)
+		forEachTarget(c, args, func(ctx context.Context, t *jobTarget) {
+			if t.isArray {
+				if n, err := c.HoldArray(ctx, t.arrayID); err == nil {
+					fmt.Printf("Array: %s — held %d task(s)\n", t.arrayID, n)
+				} else {
+					fmt.Printf("Error holding array %s: %v\n", t.arrayID, err)
+				}
+				return
 			}
-		}
+			if err := c.HoldJob(ctx, t.jobID); err == nil {
+				fmt.Printf("Job: %s held\n", t.jobID)
+			} else {
+				fmt.Printf("Error holding job: %s\n", t.jobID)
+			}
+		})
 	},
 }
 
@@ -51,21 +49,21 @@ var releaseCmd = &cobra.Command{
 
 		c := mustDialClient()
 		defer c.Close()
-		jobIds, err := expandJobArgs(args)
-		if err != nil {
-			fmt.Printf("Bad job-id: %s\n", err.Error())
-			return
-		}
-		for _, jobid := range jobIds {
-			ctx, cancel := cmdContext()
-			err := c.ReleaseJob(ctx, jobid)
-			cancel()
-			if err == nil {
-				fmt.Printf("Job: %s released\n", jobid)
-			} else {
-				fmt.Printf("Error releasing job: %s\n", jobid)
+		forEachTarget(c, args, func(ctx context.Context, t *jobTarget) {
+			if t.isArray {
+				if n, err := c.ReleaseArray(ctx, t.arrayID); err == nil {
+					fmt.Printf("Array: %s — released %d task(s)\n", t.arrayID, n)
+				} else {
+					fmt.Printf("Error releasing array %s: %v\n", t.arrayID, err)
+				}
+				return
 			}
-		}
+			if err := c.ReleaseJob(ctx, t.jobID); err == nil {
+				fmt.Printf("Job: %s released\n", t.jobID)
+			} else {
+				fmt.Printf("Error releasing job: %s\n", t.jobID)
+			}
+		})
 	},
 }
 
@@ -80,41 +78,23 @@ var cancelCmd = &cobra.Command{
 
 		c := mustDialClient()
 		defer c.Close()
-		jobIds, err := expandJobArgs(args)
-		if err != nil {
-			fmt.Printf("Bad job-id: %s\n", err.Error())
-			return
-		}
-		for _, jobid := range jobIds {
-			ctx, cancel := cmdContext()
-			dto, err := c.GetJob(ctx, jobid)
-			cancel()
-			if err != nil {
-				if errors.Is(err, client.ErrNotFound) {
-					continue
+		forEachTarget(c, args, func(ctx context.Context, t *jobTarget) {
+			if t.isArray {
+				scancelArray(t.members)
+				if n, err := c.CancelArray(ctx, t.arrayID, cancelReason); err == nil {
+					fmt.Printf("Array: %s — canceled %d task(s)\n", t.arrayID, n)
+				} else {
+					fmt.Printf("Error canceling array %s: %v\n", t.arrayID, err)
 				}
-				fmt.Printf("Error fetching job: %s\n", jobid)
-				continue
+				return
 			}
-			if dto != nil {
-				if slurmID, ok := dto.RunningDetails["slurm_job_id"]; ok && slurmID != "" {
-					scancel := exec.Command("scancel", slurmID)
-					if err := scancel.Run(); err != nil {
-						fmt.Printf("Error canceling slurm job: %v\n", err)
-					} else {
-						fmt.Printf("Canceled slurm job: %s\n", slurmID)
-					}
-				}
-			}
-			cctx, ccancel := cmdContext()
-			err = c.CancelJob(cctx, jobid, cancelReason)
-			ccancel()
-			if err == nil {
-				fmt.Printf("Job: %s canceled\n", jobid)
+			scancelJob(t.dto)
+			if err := c.CancelJob(ctx, t.jobID, cancelReason); err == nil {
+				fmt.Printf("Job: %s canceled\n", t.jobID)
 			} else {
-				fmt.Printf("Error canceling job: %s\n", jobid)
+				fmt.Printf("Error canceling job: %s\n", t.jobID)
 			}
-		}
+		})
 	},
 }
 

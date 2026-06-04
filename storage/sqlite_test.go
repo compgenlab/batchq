@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -343,6 +344,249 @@ func TestClaimNextJobRace(t *testing.T) {
 	}
 	if claim.Blocked {
 		t.Fatalf("expected Blocked=false (job fit our limits)")
+	}
+}
+
+// mkArrayTask builds one array task-job carrying the array_id/array_index/
+// array_size (and optional array_throttle) details the service would add.
+func mkArrayTask(id, arrayID string, index, size, throttle int, extra map[string]string) *jobs.JobDef {
+	j := &jobs.JobDef{JobId: id}
+	j.Details = append(j.Details,
+		jobs.JobDefDetail{Key: "script", Value: "#!/bin/sh\necho hi"},
+		jobs.JobDefDetail{Key: "array_id", Value: arrayID},
+		jobs.JobDefDetail{Key: "array_index", Value: strconv.Itoa(index)},
+		jobs.JobDefDetail{Key: "array_size", Value: strconv.Itoa(size)},
+	)
+	if throttle > 0 {
+		j.Details = append(j.Details, jobs.JobDefDetail{Key: "array_throttle", Value: strconv.Itoa(throttle)})
+	}
+	for k, v := range extra {
+		j.Details = append(j.Details, jobs.JobDefDetail{Key: k, Value: v})
+	}
+	return j
+}
+
+func TestInsertArray(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	const arrayID = "arr-1"
+	var tasks []*jobs.JobDef
+	for _, idx := range []int{0, 1, 2} {
+		task := mkArrayTask("t-"+strconv.Itoa(idx), arrayID, idx, 3, 0,
+			map[string]string{"stdout": "out-%A_%a.log"})
+		task.Name = "samp-%a"
+		tasks = append(tasks, task)
+	}
+	if err := s.InsertArray(ctx, arrayID, tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+
+	members, err := s.FindJobsByDetail(ctx, "array_id", arrayID)
+	if err != nil {
+		t.Fatalf("FindJobsByDetail: %v", err)
+	}
+	if len(members) != 3 {
+		t.Fatalf("expected 3 array members, got %d", len(members))
+	}
+
+	for _, idx := range []int{0, 1, 2} {
+		job, err := s.GetJob(ctx, "t-"+strconv.Itoa(idx))
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if job.Status != jobs.QUEUED {
+			t.Fatalf("task %d status = %v, want QUEUED", idx, job.Status)
+		}
+		// %a/%A are substituted in the name at insert, but deferred (left as a
+		// template) in stdout/stderr so a SLURM array's single -o pattern works.
+		if want := "samp-" + strconv.Itoa(idx); job.Name != want {
+			t.Fatalf("task %d name = %q, want %q", idx, job.Name, want)
+		}
+		if got := job.GetDetail("stdout", ""); got != "out-%A_%a.log" {
+			t.Fatalf("task %d stdout = %q, want template unchanged", idx, got)
+		}
+		if got := job.GetDetail("array_size", ""); got != "3" {
+			t.Fatalf("task %d array_size = %q, want 3", idx, got)
+		}
+	}
+}
+
+// InsertArray must be atomic: a failure mid-array (here a duplicate task id)
+// rolls back every task.
+func TestInsertArrayAtomic(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	tasks := []*jobs.JobDef{
+		mkArrayTask("dup", "arr", 0, 2, 0, nil),
+		mkArrayTask("dup", "arr", 1, 2, 0, nil), // duplicate id → PK violation
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err == nil {
+		t.Fatal("expected error from duplicate task id")
+	}
+	members, _ := s.FindJobsByDetail(ctx, "array_id", "arr")
+	if len(members) != 0 {
+		t.Fatalf("expected full rollback, found %d members", len(members))
+	}
+}
+
+// A per-array throttle ("%N") caps how many tasks of one array run at once via
+// the claim gate.
+func TestClaimNextJobArrayThrottle(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	var tasks []*jobs.JobDef
+	for _, idx := range []int{0, 1, 2} {
+		tasks = append(tasks, mkArrayTask("a"+strconv.Itoa(idx), "arr", idx, 3, 1, nil))
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+
+	c1, _ := s.ClaimNextJob(ctx, "r1", "simple", Limits{})
+	if c1.Job == nil {
+		t.Fatal("expected first task to be claimed")
+	}
+	// One task is RUNNING and throttle=1, so no second task may be claimed.
+	c2, _ := s.ClaimNextJob(ctx, "r2", "simple", Limits{})
+	if c2.Job != nil {
+		t.Fatalf("throttle: expected no claim, got %s", c2.Job.JobId)
+	}
+	if !c2.Blocked {
+		t.Fatal("expected Blocked=true (array at throttle)")
+	}
+}
+
+// ClaimNextArrayBatch claims up to maxTasks of an array's QUEUED tasks per call
+// (in index order), leaving the rest QUEUED — the drip-feed the SLURM runner
+// relies on.
+func TestClaimNextArrayBatch(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	var tasks []*jobs.JobDef
+	for _, idx := range []int{0, 1, 2, 3, 4} {
+		tasks = append(tasks, mkArrayTask("t"+strconv.Itoa(idx), "arr", idx, 5, 3, nil))
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+
+	r1, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, 2)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r1.ArrayID != "arr" {
+		t.Fatalf("ArrayID = %q, want arr", r1.ArrayID)
+	}
+	if r1.Throttle != 3 {
+		t.Fatalf("Throttle = %d, want 3", r1.Throttle)
+	}
+	if r1.Job == nil {
+		t.Fatal("expected a representative Job for the batch")
+	}
+	if len(r1.Tasks) != 2 || r1.Tasks[0].Index != 0 || r1.Tasks[1].Index != 1 {
+		t.Fatalf("first batch tasks = %+v, want indices [0 1]", r1.Tasks)
+	}
+
+	r2, _ := s.ClaimNextArrayBatch(ctx, "slurm-2", "slurm", Limits{}, 2)
+	if len(r2.Tasks) != 2 || r2.Tasks[0].Index != 2 || r2.Tasks[1].Index != 3 {
+		t.Fatalf("second batch tasks = %+v, want indices [2 3]", r2.Tasks)
+	}
+
+	r3, _ := s.ClaimNextArrayBatch(ctx, "slurm-3", "slurm", Limits{}, 2)
+	if len(r3.Tasks) != 1 || r3.Tasks[0].Index != 4 {
+		t.Fatalf("third batch tasks = %+v, want index [4]", r3.Tasks)
+	}
+
+	r4, _ := s.ClaimNextArrayBatch(ctx, "slurm-4", "slurm", Limits{}, 2)
+	if r4.ArrayID != "" || r4.Job != nil || len(r4.Tasks) != 0 {
+		t.Fatalf("expected nothing left, got %+v", r4)
+	}
+}
+
+// A plain (non-array) job claimed via ClaimNextArrayBatch comes back as Job, not
+// an array batch.
+func TestClaimNextArrayBatchPlainJob(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	mustInsert(t, s, mkJob("plain", map[string]string{"procs": "1"}))
+	r, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, -1)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r.ArrayID != "" || len(r.Tasks) != 0 {
+		t.Fatalf("expected a plain job, got array %q with %d tasks", r.ArrayID, len(r.Tasks))
+	}
+	if r.Job == nil || r.Job.JobId != "plain" {
+		t.Fatalf("expected plain job, got %+v", r.Job)
+	}
+}
+
+// HoldArray/ReleaseArray/CancelArray apply to every task of an array.
+func TestArrayOps(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	var tasks []*jobs.JobDef
+	for _, idx := range []int{0, 1, 2} {
+		tasks = append(tasks, mkArrayTask("t"+strconv.Itoa(idx), "arr", idx, 3, 0, nil))
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+	ids := []string{"t0", "t1", "t2"}
+
+	if n, err := s.HoldArray(ctx, "arr"); err != nil || n != 3 {
+		t.Fatalf("HoldArray: n=%d err=%v", n, err)
+	}
+	for _, id := range ids {
+		if j, _ := s.GetJob(ctx, id); j.Status != jobs.USERHOLD {
+			t.Fatalf("%s = %v, want USERHOLD", id, j.Status)
+		}
+	}
+
+	if n, err := s.ReleaseArray(ctx, "arr"); err != nil || n != 3 {
+		t.Fatalf("ReleaseArray: n=%d err=%v", n, err)
+	}
+	for _, id := range ids {
+		if j, _ := s.GetJob(ctx, id); j.Status != jobs.WAITING {
+			t.Fatalf("%s = %v, want WAITING", id, j.Status)
+		}
+	}
+
+	if n, err := s.CancelArray(ctx, "arr", "test"); err != nil || n != 3 {
+		t.Fatalf("CancelArray: n=%d err=%v", n, err)
+	}
+	for _, id := range ids {
+		if j, _ := s.GetJob(ctx, id); j.Status != jobs.CANCELED {
+			t.Fatalf("%s = %v, want CANCELED", id, j.Status)
+		}
+	}
+}
+
+// Canceling an array cascades to jobs that depend on its tasks.
+func TestCancelArrayCascades(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	var tasks []*jobs.JobDef
+	for _, idx := range []int{0, 1} {
+		tasks = append(tasks, mkArrayTask("t"+strconv.Itoa(idx), "arr", idx, 2, 0, nil))
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+	mustInsert(t, s, mkJob("dep", nil, "t0")) // depends on task 0
+
+	if _, err := s.CancelArray(ctx, "arr", "test"); err != nil {
+		t.Fatalf("CancelArray: %v", err)
+	}
+	if j, _ := s.GetJob(ctx, "dep"); j.Status != jobs.CANCELED {
+		t.Fatalf("dependent = %v, want CANCELED (cascade)", j.Status)
 	}
 }
 

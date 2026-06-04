@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -10,6 +11,132 @@ import (
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/storage"
 )
+
+func submitArray(t *testing.T, svc *Service, ctx context.Context, indices []int, deps []string) *api.SubmitArrayResponse {
+	t.Helper()
+	resp, err := svc.SubmitArray(ctx, &api.SubmitArrayRequest{
+		SubmitJobRequest: api.SubmitJobRequest{
+			Details:   map[string]string{"script": "x"},
+			ArrayDeps: deps,
+		},
+		ArrayIndices: indices,
+	})
+	if err != nil {
+		t.Fatalf("SubmitArray: %v", err)
+	}
+	return resp
+}
+
+// aftercorr pairs each dependent task with the dep array's same-index task.
+func TestSubmitArrayAfterCorr(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	a := submitArray(t, svc, ctx, []int{0, 1, 2}, nil)
+	b := submitArray(t, svc, ctx, []int{0, 1, 2}, []string{"aftercorr:" + a.ArrayID})
+
+	aByIndex := map[int]string{}
+	for _, j := range a.Jobs {
+		idx, _ := strconv.Atoi(j.Details["array_index"])
+		aByIndex[idx] = j.JobID
+	}
+	for _, bj := range b.Jobs {
+		idx, _ := strconv.Atoi(bj.Details["array_index"])
+		job, err := svc.store.GetJob(ctx, bj.JobID)
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if len(job.AfterOk) != 1 || job.AfterOk[0] != aByIndex[idx] {
+			t.Fatalf("B[%d] AfterOk = %v, want [%s]", idx, job.AfterOk, aByIndex[idx])
+		}
+	}
+}
+
+// afterok on an array fans every dependent task out to all of the array's tasks.
+func TestSubmitArrayAfterOkFansOut(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	a := submitArray(t, svc, ctx, []int{0, 1, 2}, nil)
+	c := submitArray(t, svc, ctx, []int{0, 1}, []string{"afterok:" + a.ArrayID})
+
+	for _, cj := range c.Jobs {
+		job, err := svc.store.GetJob(ctx, cj.JobID)
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if len(job.AfterOk) != 3 {
+			t.Fatalf("C task AfterOk = %v, want all 3 tasks of A", job.AfterOk)
+		}
+	}
+}
+
+func TestSubmitArrayAfterCorrSizeMismatch(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	a := submitArray(t, svc, ctx, []int{0, 1, 2}, nil)
+	_, err := svc.SubmitArray(ctx, &api.SubmitArrayRequest{
+		SubmitJobRequest: api.SubmitJobRequest{
+			Details:   map[string]string{"script": "x"},
+			ArrayDeps: []string{"aftercorr:" + a.ArrayID},
+		},
+		ArrayIndices: []int{0, 1}, // 2 != 3
+	})
+	if err == nil {
+		t.Fatal("expected aftercorr size-mismatch error")
+	}
+}
+
+// ListJobs with an ArrayID filter returns exactly that array's tasks.
+func TestListJobsByArrayID(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	a := submitArray(t, svc, ctx, []int{0, 1, 2}, nil)
+	_ = submitArray(t, svc, ctx, []int{0, 1}, nil) // a second, unrelated array
+	if _, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{Details: map[string]string{"script": "x"}}); err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+
+	got, err := svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, ArrayID: a.ArrayID})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("array filter returned %d jobs, want 3", len(got))
+	}
+	for _, j := range got {
+		if j.Details["array_id"] != a.ArrayID {
+			t.Fatalf("filtered job has array_id %q, want %q", j.Details["array_id"], a.ArrayID)
+		}
+	}
+}
+
+// A single job with afterok on an array waits for all of the array's tasks.
+func TestSubmitJobAfterOkArray(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	a := submitArray(t, svc, ctx, []int{0, 1, 2}, nil)
+	b, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{
+		Details:   map[string]string{"script": "y"},
+		ArrayDeps: []string{"afterok:" + a.ArrayID},
+	})
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	job, err := svc.store.GetJob(ctx, b.JobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if len(job.AfterOk) != 3 {
+		t.Fatalf("B AfterOk = %v, want all 3 tasks of A", job.AfterOk)
+	}
+	if job.Status != jobs.WAITING {
+		t.Fatalf("B status = %v, want WAITING", job.Status)
+	}
+}
 
 func newService(t *testing.T) *Service {
 	t.Helper()

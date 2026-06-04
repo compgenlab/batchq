@@ -323,6 +323,10 @@ func (s *Server) routes() http.Handler {
 	p := api.Prefix
 
 	mux.HandleFunc("POST "+p+api.RouteJobs, s.handleSubmitJob)
+	mux.HandleFunc("POST "+p+api.RouteJobsArray, s.handleSubmitArray)
+	mux.HandleFunc("POST "+p+api.RouteArrayCancel, s.handleCancelArray)
+	mux.HandleFunc("POST "+p+api.RouteArrayHold, s.handleHoldArray)
+	mux.HandleFunc("POST "+p+api.RouteArrayRelease, s.handleReleaseArray)
 	mux.HandleFunc("GET "+p+api.RouteJobs, s.handleListJobs)
 	mux.HandleFunc("GET "+p+api.RouteJobsByID, s.handleGetJob)
 	mux.HandleFunc("DELETE "+p+api.RouteJobsByID, s.handleCancelJob)
@@ -336,6 +340,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET "+p+api.RouteQueueCounts, s.handleQueueCounts)
 
 	mux.HandleFunc("POST "+p+api.RouteRunnerClaim, s.handleClaim)
+	mux.HandleFunc("POST "+p+api.RouteRunnerClaimArray, s.handleClaimArray)
 	mux.HandleFunc("POST "+p+api.RouteRunnerJobProxy, s.handleMarkProxied)
 	mux.HandleFunc("PATCH "+p+api.RouteRunnerJobRunning, s.handleUpdateRunning)
 	mux.HandleFunc("POST "+p+api.RouteRunnerJobEnd, s.handleEndJob)

@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/client"
 	"github.com/mbreese/batchq/jobs"
 	"github.com/mbreese/batchq/support"
 	"github.com/spf13/cobra"
@@ -171,6 +169,15 @@ var submitCmd = &cobra.Command{
 							if jobDeps == "" {
 								jobDeps = v
 							}
+						case "aftercorr":
+							if v == "" {
+								log.Fatal("Missing value for -aftercorr")
+							}
+							for _, t := range strings.Split(v, ",") {
+								if t = strings.TrimSpace(t); t != "" {
+									jobAfterCorr = append(jobAfterCorr, t)
+								}
+							}
 						case "run-id":
 							if v == "" {
 								log.Fatal("Missing value for -run-id")
@@ -193,6 +200,13 @@ var submitCmd = &cobra.Command{
 								log.Fatal("Missing value for -resource")
 							}
 							jobResources = append(jobResources, v)
+						case "array":
+							if v == "" {
+								log.Fatal("Missing value for -array")
+							}
+							if jobArray == "" {
+								jobArray = v
+							}
 						default:
 						}
 					}
@@ -277,15 +291,28 @@ var submitCmd = &cobra.Command{
 								log.Fatal("Missing value for --constraint")
 							}
 							jobResources = append(jobResources, slurmConstraintFeatures(v)...)
+						case "a", "array":
+							if v == "" {
+								log.Fatal("Missing value for --array")
+							}
+							if jobArray == "" {
+								jobArray = v
+							}
 						case "H", "hold":
 							jobHold = true
 						case "d", "dependency":
-							if jobDeps == "" {
-								if v[:8] == "afterok:" {
-									jobDeps = strings.Join(strings.Split(v[8:], ":"), ",")
-								} else {
-									log.Fatal("Bad value for -d. Only -d afterok:... is supported by batchq!")
+							if rest, ok := strings.CutPrefix(v, "afterok:"); ok {
+								if jobDeps == "" {
+									jobDeps = strings.Join(strings.Split(rest, ":"), ",")
 								}
+							} else if rest, ok := strings.CutPrefix(v, "aftercorr:"); ok {
+								for _, t := range strings.Split(rest, ":") {
+									if t = strings.TrimSpace(t); t != "" {
+										jobAfterCorr = append(jobAfterCorr, t)
+									}
+								}
+							} else {
+								log.Fatal("Bad value for -d. Only -d afterok:... and aftercorr:... are supported by batchq!")
 							}
 						default:
 							fmt.Fprintf(os.Stderr, "Unsupported SBATCH directive: %s\n", line)
@@ -379,40 +406,24 @@ var submitCmd = &cobra.Command{
 		// The script source is carried in details["script"] over the wire.
 		details["script"] = scriptSrc
 
-		var afterOk []string
+		// Dependencies are sent as "kind:target" specs and resolved server-side
+		// (a target may be a job id or an array id). Bare ids and afterok:<id>
+		// are afterok; aftercorr:<id> pairs element-wise (array submit only).
+		var arrayDeps []string
 		for _, val := range strings.Split(jobDeps, ",") {
-			depid := strings.TrimSpace(val)
-			if depid == "" {
+			t := strings.TrimSpace(val)
+			if t == "" {
 				continue
 			}
-			afterOk = append(afterOk, depid)
+			kind, target := parseDepEntry(t)
+			arrayDeps = append(arrayDeps, kind+":"+target)
+		}
+		for _, t := range jobAfterCorr {
+			arrayDeps = append(arrayDeps, "aftercorr:"+t)
 		}
 
 		c := mustDialClient()
 		defer c.Close()
-
-		baddep := false
-		for _, depid := range afterOk {
-			ctx, cancel := cmdContext()
-			dep, err := c.GetJob(ctx, depid)
-			cancel()
-			if err != nil {
-				if errors.Is(err, client.ErrNotFound) {
-					fmt.Fprintf(os.Stderr, "ERROR: Bad job dependency: %s\n", depid)
-					baddep = true
-					continue
-				}
-				log.Fatalln(err)
-			}
-			if dep == nil || dep.Status == jobs.CANCELED.String() || dep.Status == jobs.FAILED.String() {
-				fmt.Fprintf(os.Stderr, "ERROR: Bad job dependency: %s\n", depid)
-				baddep = true
-			}
-		}
-
-		if baddep {
-			os.Exit(1)
-		}
 
 		ctx, cancel := cmdContext()
 		defer cancel()
@@ -422,11 +433,41 @@ var submitCmd = &cobra.Command{
 		req := &api.SubmitJobRequest{
 			Name:        jobName,
 			Hold:        jobHold,
-			AfterOk:     afterOk,
+			ArrayDeps:   arrayDeps,
 			Details:     details,
 			InputFiles:  jobInputs,
 			OutputFiles: jobOutputs,
 		}
+
+		if jobArray != "" {
+			spec, err := jobs.ParseArraySpec(jobArray)
+			if err != nil {
+				log.Fatalf("Bad --array value: %v", err)
+			}
+			// Array tasks need per-task output paths. Rewrite a %JOBID-based
+			// path (including the default ./batchq-%JOBID.stdout) into the
+			// SLURM-style %A_%a form so each task writes a distinct file and a
+			// single `sbatch --array` -o/-e pattern works.
+			for _, k := range []string{"stdout", "stderr"} {
+				if v, ok := details[k]; ok && strings.Contains(v, "%JOBID") {
+					details[k] = strings.ReplaceAll(v, "%JOBID", "%A_%a")
+				}
+			}
+			arrReq := &api.SubmitArrayRequest{
+				SubmitJobRequest: *req,
+				ArrayIndices:     spec.Indices,
+				ArrayThrottle:    spec.Throttle,
+			}
+			resp, err := c.SubmitArray(ctx, arrReq)
+			if err != nil {
+				log.Fatalln(err)
+			}
+			// Print the single array id (matches `sbatch --parsable`); the one
+			// line is the contract downstream tools parse.
+			fmt.Printf("%s\n", resp.ArrayID)
+			return
+		}
+
 		dto, err := c.SubmitJob(ctx, req)
 		if err != nil {
 			log.Fatalln(err)
@@ -480,6 +521,19 @@ func slurmConstraintFeatures(v string) []string {
 	return out
 }
 
+// parseDepEntry splits a --deps entry into a (kind, target) pair. An
+// "aftercorr:"/"afterok:" prefix sets the kind; a bare entry is afterok.
+func parseDepEntry(entry string) (kind, target string) {
+	entry = strings.TrimSpace(entry)
+	if rest, ok := strings.CutPrefix(entry, "aftercorr:"); ok {
+		return "aftercorr", strings.TrimSpace(rest)
+	}
+	if rest, ok := strings.CutPrefix(entry, "afterok:"); ok {
+		return "afterok", strings.TrimSpace(rest)
+	}
+	return "afterok", entry
+}
+
 func isDirectory(path string) (bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -506,6 +560,8 @@ var jobRunID string
 var jobInputs []string
 var jobOutputs []string
 var jobResources []string
+var jobArray string
+var jobAfterCorr []string
 
 var verbose bool
 var slurmMode bool
@@ -529,6 +585,7 @@ func init() {
 	submitCmd.Flags().StringArrayVar(&jobInputs, "input", nil, "Input file path (repeatable)")
 	submitCmd.Flags().StringArrayVar(&jobOutputs, "output", nil, "Output file path (repeatable)")
 	submitCmd.Flags().StringArrayVar(&jobResources, "resource", nil, "Required resource (name=value or name, repeatable)")
+	submitCmd.Flags().StringVar(&jobArray, "array", "", "Submit as a job array (e.g. 0-99, 1-10:2, 1,3,5, 0-99%4)")
 
 	rootCmd.AddCommand(submitCmd)
 }

@@ -38,7 +38,7 @@ type simpleRunner struct {
 	resources      map[string]string
 	shellBin       string
 	runnerId       string
-	interrupt      context.CancelFunc
+	wakeup         chan struct{}
 	lock           sync.Mutex
 	logLock        sync.Mutex
 	spoolDir       string
@@ -69,8 +69,18 @@ criterion.
 */
 func NewSimpleRunner(c *client.Client) *simpleRunner {
 	id := uuid.New()
-	runner := simpleRunner{client: c, maxProcs: -1, maxMemoryMb: -1, maxWalltimeSec: -1, maxJobs: -1, foreverMode: false, runnerId: id.String(), spoolDir: filepath.Join(support.GetBatchqHome(), "spool")}
+	runner := simpleRunner{client: c, maxProcs: -1, maxMemoryMb: -1, maxWalltimeSec: -1, maxJobs: -1, foreverMode: false, runnerId: id.String(), spoolDir: filepath.Join(support.GetBatchqHome(), "spool"), wakeup: make(chan struct{}, 1)}
 	return &runner
+}
+
+// wake nudges the run loop to re-poll immediately (e.g. when a job finishes and
+// frees a slot). Non-blocking: a wakeup is already pending if the buffer is
+// full, and one pending wake is enough to trigger a full re-poll.
+func (r *simpleRunner) wake() {
+	select {
+	case r.wakeup <- struct{}{}:
+	default:
+	}
 }
 
 func (r *simpleRunner) SetMaxProcs(procs int) *simpleRunner {
@@ -246,11 +256,7 @@ func (r *simpleRunner) Start() bool {
 				case 1:
 					keepRunning = false
 					r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything.\n")
-					r.lock.Lock()
-					if r.interrupt != nil {
-						r.interrupt()
-					}
-					r.lock.Unlock()
+					r.wake()
 				case 2:
 					r.logf("Killing all running jobs...\n")
 					for len(r.curJobs) > 0 {
@@ -264,11 +270,7 @@ func (r *simpleRunner) Start() bool {
 						cancel()
 						curJob.cmd.Cancel()
 					}
-					r.lock.Lock()
-					if r.interrupt != nil {
-						r.interrupt()
-					}
-					r.lock.Unlock()
+					r.wake()
 				default:
 					r.logf("Exiting... cleanup running jobs manually!!!\n")
 					os.Exit(1)
@@ -399,18 +401,15 @@ func (r *simpleRunner) Start() bool {
 		// run more jobs? if we are draining, let's wait to see if the jobs finish...
 
 		if keepRunning || len(r.curJobs) > 0 {
-			ctx, cancel := context.WithCancel(context.Background())
-			r.lock.Lock()
-			r.interrupt = cancel
-			r.lock.Unlock()
-
-			// sleep for 60 seconds to see if jobs complete
-			if err := interruptibleSleep(ctx, 60*time.Second); err != nil {
-				r.logf("Interrupted\n")
+			// Wait for a running job to finish (r.wake from the completion
+			// goroutine) or a fallback heartbeat to re-poll for new work. The
+			// wakeup channel is always available, so a completion never races
+			// with a nil interrupt — the old bug that made quick jobs wait the
+			// full interval.
+			select {
+			case <-time.After(15 * time.Second):
+			case <-r.wakeup:
 			}
-			r.lock.Lock()
-			r.interrupt = nil
-			r.lock.Unlock()
 		}
 	}
 
@@ -424,12 +423,44 @@ func (r *simpleRunner) IsDrain() bool {
 	return false
 }
 
-func interruptibleSleep(ctx context.Context, d time.Duration) error {
-	select {
-	case <-time.After(d):
-		return nil // Sleep completed
-	case <-ctx.Done():
-		return ctx.Err() // Interrupted
+// expandArrayPlaceholders substitutes the array output placeholders %A (array
+// id) and %a (array index) in a path at run time — deferred from insert time so
+// a SLURM array's per-task -o/-e pattern survives to sbatch. %JOBID is already
+// resolved at insert. For a non-array job the path is returned unchanged.
+func expandArrayPlaceholders(job *api.JobDTO, path string) string {
+	idx := job.Details["array_index"]
+	if path == "" || idx == "" {
+		return path
+	}
+	path = strings.ReplaceAll(path, "%A", job.Details["array_id"])
+	path = strings.ReplaceAll(path, "%a", idx)
+	return path
+}
+
+// arrayTaskEnv returns the per-task array environment variables for an array
+// task, exported under the batchq, SLURM, PBS, and SGE names so a script
+// written for any of those schedulers finds its task index/count. Returns nil
+// for a non-array job.
+func arrayTaskEnv(job *api.JobDTO) []string {
+	idx := job.Details["array_index"]
+	if idx == "" {
+		return nil
+	}
+	arrayID := job.Details["array_id"]
+	count := job.Details["array_size"]
+	return []string{
+		"BATCHQ_ARRAY_ID=" + arrayID,
+		"BATCHQ_ARRAY_TASK_ID=" + idx,
+		"BATCHQ_ARRAY_TASK_COUNT=" + count,
+		// SLURM
+		"SLURM_ARRAY_JOB_ID=" + arrayID,
+		"SLURM_ARRAY_TASK_ID=" + idx,
+		"SLURM_ARRAY_TASK_COUNT=" + count,
+		// PBS Pro + Torque
+		"PBS_ARRAY_INDEX=" + idx,
+		"PBS_ARRAYID=" + idx,
+		// SGE / UGE
+		"SGE_TASK_ID=" + idx,
 	}
 }
 
@@ -492,8 +523,8 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 	var stdoutFile *os.File
 	var stderrFile *os.File
 
-	jobStdout := job.Details["stdout"]
-	jobStderr := job.Details["stderr"]
+	jobStdout := expandArrayPlaceholders(job, job.Details["stdout"])
+	jobStderr := expandArrayPlaceholders(job, job.Details["stderr"])
 
 	if jobStdout != "" {
 		if filepath.Dir(jobStdout) != "." {
@@ -525,6 +556,7 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 	} else {
 		cmd.Env = []string{fmt.Sprintf("JOB_ID=%s", job.JobID)}
 	}
+	cmd.Env = append(cmd.Env, arrayTaskEnv(job)...)
 	cmd.Dir = job.Details["wd"]
 
 	// create a new progress group for this job (so we can kill them all if necessary)
@@ -703,11 +735,10 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 			r.availMem = r.availMem + jobMem
 		}
 
-		if r.interrupt != nil {
-			r.interrupt()
-		}
 		r.lock.Unlock()
 
+		// Nudge the run loop to re-poll now that a slot has freed up.
+		r.wake()
 	}()
 
 	return true

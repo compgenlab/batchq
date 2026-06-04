@@ -238,6 +238,16 @@ func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api
 	return resp.Job, nil
 }
 
+// SubmitArray submits a job array (one template + task indices) and returns the
+// generated array id plus the persisted task jobs.
+func (c *Client) SubmitArray(ctx context.Context, req *api.SubmitArrayRequest) (*api.SubmitArrayResponse, error) {
+	var resp api.SubmitArrayResponse
+	if err := c.do(ctx, http.MethodPost, api.Prefix+api.RouteJobsArray, req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 func (c *Client) GetJob(ctx context.Context, jobID string) (*api.JobDTO, error) {
 	var resp api.JobResponse
 	if err := c.do(ctx, http.MethodGet, api.Prefix+"/jobs/"+jobID, nil, &resp); err != nil {
@@ -256,9 +266,10 @@ type ListJobsOptions struct {
 	Offset       int
 
 	// Optional filters.
-	RunID  string // jobs whose "run_id" detail equals this
-	Output string // jobs that list this path in output_files
-	Input  string // jobs that list this path in input_files
+	RunID   string // jobs whose "run_id" detail equals this
+	ArrayID string // tasks whose "array_id" detail equals this
+	Output  string // jobs that list this path in output_files
+	Input   string // jobs that list this path in input_files
 }
 
 func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
@@ -283,6 +294,9 @@ func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Job
 	}
 	if opts.RunID != "" {
 		q.Set("run_id", opts.RunID)
+	}
+	if opts.ArrayID != "" {
+		q.Set("array_id", opts.ArrayID)
 	}
 	if opts.Output != "" {
 		q.Set("output", opts.Output)
@@ -325,6 +339,27 @@ func (c *Client) ReleaseJob(ctx context.Context, jobID string) error {
 func (c *Client) AdjustJobPriority(ctx context.Context, jobID string, delta int) error {
 	return c.do(ctx, http.MethodPost, api.Prefix+"/jobs/"+jobID+"/priority",
 		api.PriorityRequest{Delta: delta}, nil)
+}
+
+// CancelArray/HoldArray/ReleaseArray apply the operation to every task of an
+// array, returning the number of affected tasks.
+func (c *Client) CancelArray(ctx context.Context, arrayID, reason string) (int, error) {
+	var resp api.ArrayActionResponse
+	err := c.do(ctx, http.MethodPost, api.Prefix+"/arrays/"+arrayID+"/cancel",
+		api.CancelJobRequest{Reason: reason}, &resp)
+	return resp.Count, err
+}
+
+func (c *Client) HoldArray(ctx context.Context, arrayID string) (int, error) {
+	var resp api.ArrayActionResponse
+	err := c.do(ctx, http.MethodPost, api.Prefix+"/arrays/"+arrayID+"/hold", nil, &resp)
+	return resp.Count, err
+}
+
+func (c *Client) ReleaseArray(ctx context.Context, arrayID string) (int, error) {
+	var resp api.ArrayActionResponse
+	err := c.do(ctx, http.MethodPost, api.Prefix+"/arrays/"+arrayID+"/release", nil, &resp)
+	return resp.Count, err
 }
 
 // CleanupJob removes a terminal job from storage. The server returns
@@ -383,6 +418,26 @@ func (c *Client) ClaimNextJob(ctx context.Context, runnerID, kind string, maxPro
 	var resp api.ClaimJobResponse
 	if err := c.do(ctx, http.MethodPost,
 		api.Prefix+"/runners/"+runnerID+"/claim", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ClaimNextArrayBatch claims the next plain job or array batch for a
+// batch-capable runner. maxTasks (<=0 = unbounded) caps how many tasks of one
+// array are claimed together. See api.ClaimArrayResponse for the shape.
+func (c *Client) ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, maxProcs, maxMemMB, maxWalltimeSec int, resources map[string]string, maxTasks int) (*api.ClaimArrayResponse, error) {
+	req := api.ClaimArrayRequest{
+		Kind:           kind,
+		MaxProcs:       maxProcs,
+		MaxMemoryMB:    maxMemMB,
+		MaxWalltimeSec: maxWalltimeSec,
+		Resources:      resources,
+		MaxTasks:       maxTasks,
+	}
+	var resp api.ClaimArrayResponse
+	if err := c.do(ctx, http.MethodPost,
+		api.Prefix+"/runners/"+runnerID+"/claim-array", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
