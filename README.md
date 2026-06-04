@@ -140,7 +140,7 @@ Config equivalents under `[simple_runner]`: `max_procs`, `max_mem`,
 
 ### SLURM runner (proxy to SLURM)
 ```sh
-batchq run --slurm --slurm-user $USER --slurm-acct acct123 --slurm-max-jobs 200
+batchq run --slurm --slurm-user $USER --slurm-account acct123 --slurm-max-jobs 200
 ```
 
 Or set `[batchq] runner = slurm` and configure `[slurm_runner]`:
@@ -148,7 +148,7 @@ Or set `[batchq] runner = slurm` and configure `[slurm_runner]`:
 [slurm_runner]
 user = myuser          # default: current user
 account = acct123      # optional
-max_jobs = 200         # cap of concurrent jobs visible to SLURM
+max_slurm_jobs = 200   # cap on this user's live SLURM-queue jobs
 ```
 
 Behavior:
