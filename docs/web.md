@@ -4,7 +4,7 @@
 client of the batchq server like everything else — it does not have
 its own copy of the database, and it does not modify jobs. The whole
 thing is a thin renderer on top of the same REST API the CLI uses, so
-what you see in the browser is exactly what `batchq show` would show
+what you see in the browser is exactly what `batchq queue` would show
 you.
 
 ## Starting it
@@ -107,6 +107,10 @@ A search box and a "run id" box at the top let you narrow the listing:
 - **Run id** filters to just the jobs sharing a specific `--run-id` —
   useful for looking at all the jobs in one workflow run together.
 
+Array tasks carry an array column linking to the rest of their batch;
+clicking it filters the listing to that array's tasks (the `?array_id=`
+view). See [Job arrays](job-arrays.md).
+
 Clicking a job id takes you to its detail page.
 
 ### The job detail page (`/jobs/{id}`)
@@ -135,6 +139,10 @@ Everything batchq knows about a single job, in one screen:
   view of every job sharing that run id. The current job is
   highlighted. This is the easiest way to see the shape of a multi-job
   pipeline.
+- **Array tab.** If the job is a task of a job array, an "Array" tab
+  with a per-status progress summary (how many of the array's tasks are
+  queued / running / done / failed) and the list of sibling tasks, each
+  linking to its own page. See [Job arrays](job-arrays.md).
 
 ## What you cannot do
 
@@ -174,6 +182,8 @@ removes its socket file (if any) and exits cleanly.
 
 - [Submitting jobs](submitting-jobs.md) — what populates the queue
   the UI displays.
+- [Job arrays](job-arrays.md) — the array column, `?array_id=` filter,
+  and the job-page Array tab.
 - [Configuration](configuration.md) — `[web]` knobs for the listener.
 - [Remote access](remote.md) — for putting the API behind a reverse
   proxy; the same principles apply to the web socket.

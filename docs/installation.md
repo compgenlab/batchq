@@ -76,14 +76,14 @@ command-line flags — they are just the built-in defaults derived from
 ## First run
 
 You do not need to start the server yourself. Any CLI client
-(`batchq submit`, `batchq show`, …) will fork-exec a server with a short
+(`batchq submit`, `batchq queue`, …) will fork-exec a server with a short
 idle timeout when it cannot reach the socket, then poll for the socket
 to come up:
 
 ```sh
 batchq submit ./hello.sh         # auto-spawns batchq server --idle-timeout 1m
 batchq run                       # picks up and runs ./hello.sh
-batchq show queue                # see the result
+batchq queue                     # see the result
 ```
 
 This is the intended mode of operation on every kind of deployment:

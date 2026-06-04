@@ -82,9 +82,9 @@ default: a CLI client autospawns one with a one-minute idle timeout
 when the socket is unreachable, so overlapping or rapid requests share
 a single process without anyone running a long-lived daemon.
 
-**Client.** Every other subcommand (`submit`, `show`, `hold`, `cleanup`,
-`run`, `web`, `search`, `stop`). Clients open the server's unix socket
-and speak HTTP REST to it.
+**Client.** Every other subcommand (`submit`, `queue`, `status`, `hold`,
+`cancel`, `cleanup`, `run`, `web`, `search`, `stop`, …). Clients open the
+server's unix socket and speak HTTP REST to it.
 
 **Runner.** A long-running client that pulls jobs off the queue and
 runs them. Two implementations ship today: the **simple runner** runs
@@ -137,10 +137,16 @@ of its `afterok` dependents are cancelled with reason "parent canceled".
 - **It does not own its own network listener.** The server only ever
   binds a unix socket. Remote access goes through a reverse proxy that
   terminates TLS — see [Remote access](remote.md).
-- **It is not multi-tenant.** One server, one `$BATCHQ_HOME`, one
-  database file. Shared deployments are supported by running the server
-  as a system user that owns the socket, but there is no per-user
-  authentication today.
+- **It is not multi-tenant in the database sense.** One server, one
+  `$BATCHQ_HOME`, one shared queue and database file — not isolated
+  per-user queues. Shared deployments are still supported: the server
+  derives each unix-socket client's identity from kernel-attested peer
+  credentials and gates hold/release/cancel on it (and, run as root, can
+  execute each job under the submitter's account). What's missing is
+  network-side auth — server-side bearer-token validation for clients
+  arriving over the reverse proxy isn't implemented yet, so those rely on
+  the proxy for access control. See [running jobs](running-jobs.md) and
+  [remote access](remote.md).
 
 ## Where to go next
 

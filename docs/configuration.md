@@ -68,12 +68,19 @@ shell = "/bin/bash"
 use_cgroup_v2 = false
 use_cgroup_v1 = false
 
+[simple_runner.resources]       # generic resources this runner advertises
+gpu = "4"
+cluster = "biocluster"
+
 [slurm_runner]
 user = "myuser"
 account = "acct123"
 partition = "general"
 max_jobs = 0                      # zero / unset means unlimited
 max_slurm_jobs = 200
+
+[slurm_runner.resources]        # usually cluster/feature routing labels
+cluster = "biocluster"
 ```
 
 ## `[batchq]` — deployment-wide
@@ -138,6 +145,27 @@ that requests more than these values stays in the queue and waits.
 | `use_cgroup_v1` | bool | `false` | Enforce procs/mem via cgroup v1. Requires root. |
 | `use_cgroup_v2` | bool | `false` | Enforce procs/mem via cgroup v2. Requires root. |
 
+### `[simple_runner.resources]` — what this runner advertises
+
+A subtable of `name = "value"` entries declaring the generic resources
+this runner provides, beyond procs/mem/walltime. A job's `--resource`
+requirements are matched against what's advertised here. Integer strings
+are **counts** (consumed by running jobs); other strings are **labels**;
+an empty value is a **feature flag**.
+
+```toml
+[simple_runner.resources]
+gpu = "4"                 # count: 4 GPUs
+"gpu:a100" = "4"          # typed count (quote keys with ':')
+cluster = "biocluster"    # label
+fastio = ""               # feature flag
+```
+
+A runner with no `resources` subtable advertises nothing and so claims
+only jobs that require nothing. `batchq run --resource name=value`
+(repeatable) overrides individual keys for one invocation. See
+[Generic resources](resources.md) for the matching rules.
+
 ## `[slurm_runner]` — SLURM-runner specifics
 
 Read by `batchq run --slurm` (or when `[batchq] runner = "slurm"`).
@@ -149,6 +177,22 @@ Read by `batchq run --slurm` (or when `[batchq] runner = "slurm"`).
 | `partition` | string | (unset) | SLURM partition to pass to `sbatch`. |
 | `max_jobs` | int | `0` (unlimited) | Cap on how many jobs the runner submits in one `batchq run --slurm` invocation. |
 | `max_slurm_jobs` | int | `0` (unlimited) | Cap on this user's live SLURM-queue jobs. The runner polls `squeue` and pauses submission when this is reached. |
+
+### `[slurm_runner.resources]` — cluster routing labels
+
+Same subtable shape as `[simple_runner.resources]`, but for the SLURM
+runner these are typically **labels** that route resource-tagged jobs to
+the right cluster — procs/mem/walltime stay enforced by SLURM itself
+through the generated `sbatch` flags, so you don't re-declare them here.
+
+```toml
+[slurm_runner.resources]
+cluster = "biocluster"
+```
+
+A job submitted with `--resource cluster=biocluster` is then claimed only
+by the SLURM runner advertising that label. See
+[Generic resources](resources.md).
 
 ## Environment variables
 
@@ -226,5 +270,7 @@ taking effect — it eliminates guessing.
   it maps onto `[job_defaults]`.
 - [Running jobs](running-jobs.md) — how `[simple_runner]` ceilings are
   enforced.
+- [Generic resources](resources.md) — the `resources` subtables and how
+  requirements are matched.
 - [SLURM](slurm.md) — `[slurm_runner]` in context.
 - [Remote access](remote.md) — `[batchq] remote` and `[batchq] token`.

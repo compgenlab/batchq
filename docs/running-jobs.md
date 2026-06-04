@@ -134,6 +134,7 @@ starting a second runner while the previous one is still in flight.
 | `--forever` | `false` | Keep polling for new jobs instead of exiting when the queue empties. |
 | `--use-cgroupv1` | from `[simple_runner] use_cgroup_v1` | Enforce per-job procs/mem via cgroup v1. Requires root. |
 | `--use-cgroupv2` | from `[simple_runner] use_cgroup_v2` | Enforce per-job procs/mem via cgroup v2. Requires root. |
+| `--resource name[=value]` | from `[simple_runner.resources]` | Advertise a generic resource this runner provides (repeatable). The runner only claims jobs whose `--resource` requirements it can satisfy. See [Generic resources](resources.md). |
 
 The corresponding config keys live under `[simple_runner]` — see
 [configuration](configuration.md).
