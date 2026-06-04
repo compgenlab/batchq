@@ -97,6 +97,7 @@ Ignored entirely when `[batchq] remote` is set (no local server runs).
 | `db` | string | `sqlite3://$BATCHQ_HOME/batchq.db` | The database URL. `sqlite3:///path` today; `postgres://…` is reserved for future use. |
 | `idle_timeout` | duration | (unset, no shutdown) | If non-zero, the server shuts down after this duration of no requests. Autospawned servers use a built-in `1m` value. |
 | `sqlite_wal` | bool | `false` | Opt into SQLite WAL journaling. Off by default because WAL's `-shm` shared-memory file is unsafe on NFS/Lustre. Only enable when the DB file is on local disk. |
+| `token` | string | (unset) | A shared bearer token. When set, **every** API request must carry `Authorization: Bearer <token>` matching it (the health check is exempt); a mismatch or missing token gets a 401. Left unset, the server enforces nothing in-band and relies on the unix socket's `0600` permissions. This is a single shared secret — a "secure-enough" floor for a self-hosted single-user server, not per-user auth. Prefer the `BATCHQ_SERVER_TOKEN` env var so the secret stays out of a checked-in config. See [remote access](remote.md). |
 
 ## `[web]` — `batchq web` listener
 
@@ -158,7 +159,8 @@ for the config file.
 | Variable | Overrides | Notes |
 |---|---|---|
 | `BATCHQ_HOME` | Resolves before anything else | Defaults to `~/.batchq`. |
-| `BATCHQ_TOKEN` | `[batchq] token` | Recommended place to put the bearer token — stays out of `ps` and out of any checked-in config. An empty value is treated as unset (so an unset env var cannot accidentally blank a config value). |
+| `BATCHQ_TOKEN` | `[batchq] token` | The **client's** bearer token, sent on every request. Recommended place to put it — stays out of `ps` and out of any checked-in config. An empty value is treated as unset (so an unset env var cannot accidentally blank a config value). |
+| `BATCHQ_SERVER_TOKEN` | `[server] token` | The **server's** required shared token. Recommended place to put it on the server host, for the same reasons. Empty is treated as unset. |
 
 Adding another env override means extending `support.EnvOverrides` and
 `Config.ApplyEnv`. `batchq debug` will pick the new variable up

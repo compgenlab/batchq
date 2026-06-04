@@ -106,12 +106,12 @@ The lower three layers (env, config, default) are folded into a single resolved 
 
 For knobs that have a built-in default (`Server.DB`, `Server.Listen`, `Web.Socket`, `Batchq.Runner`, `Batchq.AutospawnWaitTimeout`, `JobDefaults.Stdout`/`Stderr`/`Wd`, `SimpleRunner.Shell`), `Config.X` is never empty after init. For optional knobs (numeric/bool fields, `Batchq.Remote`, `JobDefaults.Procs/Mem/Walltime/Name`, `SlurmRunner.User/Account/...`), zero values still mean "not set" and call sites should treat them that way.
 
-**Env-var overrides**: only `BATCHQ_TOKEN` is consumed today, overriding `[batchq] token` for bearer-auth secrets so they stay out of argv and out of a checked-in config. `BATCHQ_HOME` is consumed earlier, at `support.GetBatchqHome()`, and shifts every home-relative default. Adding another env var means extending `support.EnvOverrides` and `Config.ApplyEnv`; the debug command picks it up automatically once you add a row.
+**Env-var overrides**: two secret-bearing vars are consumed today — `BATCHQ_TOKEN` overrides `[batchq] token` (the client's bearer token) and `BATCHQ_SERVER_TOKEN` overrides `[server] token` (the server's required shared token) — both kept in env so they stay out of argv and out of a checked-in config. `BATCHQ_HOME` is consumed earlier, at `support.GetBatchqHome()`, and shifts every home-relative default. Adding another env var means extending `support.EnvOverrides` and `Config.ApplyEnv`; the debug command picks it up automatically once you add a row.
 
 Sections:
 
 - `[batchq]` — `runner` (`simple` | `slurm`), `remote` (HTTPS URL of remote API server, optional), `token`, `multiuser`, `autospawn_wait_timeout`.
-- `[server]` — `listen`, `db` (local sqlite3 / postgres URL), `idle_timeout`, `sqlite_wal`. Ignored when `[batchq] remote` is set.
+- `[server]` — `listen`, `db` (local sqlite3 / postgres URL), `idle_timeout`, `sqlite_wal`, `token` (shared bearer token; when set, the server's `withAuth` middleware requires `Authorization: Bearer <token>` on every request except `/healthz`). Ignored when `[batchq] remote` is set.
 - `[web]` — `socket`, `listen`.
 - `[job_defaults]` — submit-time defaults: `name`, `procs`, `mem`, `walltime`, `wd`, `stdout`, `stderr`, `hold`, `env`.
 - `[simple_runner]` — `max_procs`, `max_mem`, `max_walltime`, `shell`, `use_cgroup_v1`, `use_cgroup_v2`, plus `[simple_runner.resources]` (a `name = "value"` subtable advertising generic resources; counts are integer strings, labels are plain/comma-set strings). Counts are consumed by running jobs (the runner advertises pool-minus-running each claim); labels are advertised as-is.
@@ -135,8 +135,9 @@ Job IDs are UUID strings (with hyphens) — anywhere code splits on `-` or `:` i
 ## Authentication / transport
 
 - **Unix socket** (the only thing batchq binds today): created with mode `0600`. No in-band auth — FS permissions are the contract. This is how `gpg-agent` / `ssh-agent` work.
-- **Network access**: served via a reverse proxy (nginx, Caddy, Traefik, ...) in front of the unix socket. The proxy terminates TLS and forwards to batchq; remote clients set `[batchq] remote = "https://your-host"` (or `"https://your-host/proxy/path"` for a subpath deployment). The URL path is treated as a mount-point prefix — the client adds `/api/v1/...` to every request. Bearer-token auth (`Authorization: Bearer <token>` with tokens HMAC-signed against a `$BATCHQ_HOME/master.key`) is designed but not yet implemented — until it lands, remote deployments need to gate access at the proxy layer.
-- **Bearer-token plumbing** (the client side already exists): `--token` flag > `BATCHQ_TOKEN` env > `[batchq] token` config. The env var is the recommended slot for the secret — it stays out of `ps` listings and out of any checked-in TOML.
+- **Network access**: served via a reverse proxy (nginx, Caddy, Traefik, ...) in front of the unix socket. The proxy terminates TLS and forwards to batchq; remote clients set `[batchq] remote = "https://your-host"` (or `"https://your-host/proxy/path"` for a subpath deployment). The URL path is treated as a mount-point prefix — the client adds `/api/v1/...` to every request.
+- **Shared-token auth** (implemented): set `[server] token` (or `BATCHQ_SERVER_TOKEN`) and the server's `withAuth` middleware (`server/auth.go`) requires `Authorization: Bearer <token>` on every request except `/healthz` (constant-time sha256 compare; `HeaderInternalOwner` self-dials are exempt). It's a single shared secret — a secure-enough floor for a self-hosted single-user server, **not** per-user auth. Real per-user identity (tokens bound to a user, validated server-side and fed into the hold/release/cancel authz checks; the HMAC-against-`master.key` design) belongs in the managed Postgres-backed server, not the single binary.
+- **Client token plumbing**: `--token` flag > `BATCHQ_TOKEN` env > `[batchq] token` config. The client sends the bearer header on *every* transport when a token is set — over https to a remote server and over the unix socket to a local one (so a local runner can authenticate to a token-protected server). The env var is the recommended slot — it stays out of `ps` listings and out of any checked-in TOML.
 
 ## Testing
 

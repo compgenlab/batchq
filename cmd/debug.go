@@ -59,8 +59,9 @@ func printDebugConfig(w io.Writer) {
 
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "env vars:")
-	fmt.Fprintf(w, "  BATCHQ_HOME   = %s\n", envOrUnset("BATCHQ_HOME"))
-	fmt.Fprintf(w, "  BATCHQ_TOKEN  = %s\n", envOrRedacted("BATCHQ_TOKEN"))
+	fmt.Fprintf(w, "  BATCHQ_HOME          = %s\n", envOrUnset("BATCHQ_HOME"))
+	fmt.Fprintf(w, "  BATCHQ_TOKEN         = %s\n", envOrRedacted("BATCHQ_TOKEN"))
+	fmt.Fprintf(w, "  BATCHQ_SERVER_TOKEN  = %s\n", envOrRedacted("BATCHQ_SERVER_TOKEN"))
 	fmt.Fprintln(w)
 
 	sections := []struct {
@@ -161,6 +162,22 @@ func serverRows(raw *support.Config, d support.Defaults) []debugRow {
 		stringRow("db", serverDB, raw.Server.DB, d.Backend),
 		durationRow("idle_timeout", raw.Server.IdleTimeout.AsDuration(), 0),
 		boolRow("sqlite_wal", raw.Server.SqliteWAL),
+		serverTokenRow(raw),
+	}
+}
+
+// serverTokenRow picks a source for [server] token following the
+// resolution order: BATCHQ_SERVER_TOKEN env > [server] token in config.
+// The value is redacted so a casual `batchq debug` doesn't print the
+// shared secret.
+func serverTokenRow(raw *support.Config) debugRow {
+	switch {
+	case envOverrides.ServerToken != "":
+		return debugRow{"token", "(set, redacted)", "env BATCHQ_SERVER_TOKEN"}
+	case raw != nil && raw.Server.Token != "":
+		return debugRow{"token", "(set, redacted)", "config"}
+	default:
+		return debugRow{"token", "", "unset"}
 	}
 }
 

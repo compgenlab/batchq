@@ -116,6 +116,7 @@ func runServer(_ *cobra.Command, _ []string) error {
 	srv, err := server.New(svc, server.Options{
 		Listen:      serverListen,
 		IdleTimeout: serverIdleTimeout,
+		AuthToken:   Config.Server.Token,
 	})
 	if err != nil {
 		return err
@@ -124,6 +125,9 @@ func runServer(_ *cobra.Command, _ []string) error {
 	fmt.Fprintf(os.Stderr, "batchq server listening on %s (db: %s)\n", serverListen, backend.Raw)
 	if serverIdleTimeout > 0 {
 		fmt.Fprintf(os.Stderr, "batchq server: idle timeout %s\n", serverIdleTimeout)
+	}
+	if Config.Server.Token != "" {
+		fmt.Fprintln(os.Stderr, "batchq server: shared-token auth enabled (Authorization: Bearer required)")
 	}
 	if err := srv.Serve(ctx); err != nil {
 		if errors.Is(err, server.ErrAlreadyRunning) {

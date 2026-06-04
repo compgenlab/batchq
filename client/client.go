@@ -70,9 +70,11 @@ type Options struct {
 	// Plain http:// is intentionally not supported.
 	URL string
 
-	// Token is the bearer token used for the Authorization header on
-	// https:// transports. Empty token means no header is sent (the
-	// unix-socket case).
+	// Token is the bearer token sent in the Authorization header. It is
+	// attached on every transport when set — over https for a remote
+	// server, and over the unix socket too so a local client/runner can
+	// authenticate to a server configured with a shared `[server] token`.
+	// Empty token means no header is sent.
 	Token string
 
 	// Timeout for individual requests. Default 30s. Pass 0 to mean "no
@@ -180,7 +182,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.opts.Token != "" && c.socket == "" {
+	if c.opts.Token != "" {
 		req.Header.Set(api.HeaderAuthorization, "Bearer "+c.opts.Token)
 	}
 	req.Header.Set("User-Agent", c.opts.UserAgent)

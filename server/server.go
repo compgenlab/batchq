@@ -69,6 +69,12 @@ type Options struct {
 	// triggers Shutdown — catches the case where another server has
 	// taken over the path. Defaults to 30s. Zero disables.
 	OwnershipCheckInterval time.Duration
+
+	// AuthToken, if non-empty, requires every API request (except the
+	// health check) to carry `Authorization: Bearer <AuthToken>`. Empty
+	// (the default) disables in-band auth — the unix socket's filesystem
+	// permissions are then the only access control.
+	AuthToken string
 }
 
 // Server is a long-lived HTTP server over the batchq REST API.
@@ -348,7 +354,9 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("POST "+p+api.RouteShutdown, s.handleShutdown)
 
-	return s.withVersionHeader(s.withActivity(mux))
+	// withAuth sits outside withActivity so unauthenticated requests
+	// neither reset the idle timer nor count as in-flight.
+	return s.withVersionHeader(s.withAuth(s.withActivity(mux)))
 }
 
 // withVersionHeader stamps every response with the API version header so
