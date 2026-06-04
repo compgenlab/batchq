@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -207,6 +209,13 @@ func (r *slurmRunner) Start() bool {
 				}
 			} else {
 				fmt.Printf("Error submitting SLURM job: %v\n", err)
+				// The failed submission never reaches the DB, so persist the
+				// generated script + error for troubleshooting.
+				if path, werr := saveFailedSlurmScript(jobdef.JobID, src, err); werr == nil {
+					fmt.Printf("  Wrote failed sbatch script to %s (and %s.err)\n", path, path)
+				} else {
+					fmt.Printf("  Could not save failed sbatch script: %v\n", werr)
+				}
 				cctx, ccancel := context.WithTimeout(ctx, 30*time.Second)
 				if cerr := r.client.CancelJob(cctx, jobdef.JobID, fmt.Sprintf("Error submitting to SLURM: %s", err.Error())); cerr != nil {
 					fmt.Printf("Error canceling SLURM job %s: %v\n", jobdef.JobID, cerr)
@@ -338,11 +347,18 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO)
 	if val := jobdef.Details["env"]; val != "" {
 		src += "#SBATCH --export=ALL\n"
 	}
-	if val := jobdef.Details["uid"]; val != "" {
-		src += fmt.Sprintf("#SBATCH --uid %s\n", val)
-	}
-	if val := jobdef.Details["gid"]; val != "" {
-		src += fmt.Sprintf("#SBATCH --gid %s\n", val)
+	// sbatch --uid/--gid are privileged (root/SlurmUser only): a normal user
+	// submitting on their own behalf must NOT pass them or sbatch rejects the
+	// job (exit 255). Only emit them when this runner is actually root and can
+	// legitimately submit on another user's behalf; otherwise the SLURM job
+	// already runs as the submitting user.
+	if support.AmIRoot() {
+		if val := jobdef.Details["uid"]; val != "" {
+			src += fmt.Sprintf("#SBATCH --uid %s\n", val)
+		}
+		if val := jobdef.Details["gid"]; val != "" {
+			src += fmt.Sprintf("#SBATCH --gid %s\n", val)
+		}
 	}
 	if val := jobdef.Details["mem"]; val != "" {
 		src += fmt.Sprintf("#SBATCH --mem=%s\n", val)
@@ -495,9 +511,17 @@ func SlurmSbatch(script string, env []string) (string, error) {
 
 	cmd.Stdin = strings.NewReader(script)
 
-	// Capture stdout
+	// Capture stderr too — sbatch reports the actual reason for a rejection
+	// there, so swallowing it (cmd.Output only keeps stdout) leaves a bare
+	// "exit status N" with no detail.
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
 	out, err := cmd.Output()
 	if err != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", fmt.Errorf("running sbatch: %w: %s", err, msg)
+		}
 		return "", fmt.Errorf("running sbatch: %w", err)
 	}
 
@@ -506,6 +530,24 @@ func SlurmSbatch(script string, env []string) (string, error) {
 	} else {
 		return strings.TrimSpace(string(line)), nil
 	}
+}
+
+// saveFailedSlurmScript writes a generated sbatch script (and the submission
+// error) to $BATCHQ_HOME/failed/ so a failed submission — which is never
+// persisted to the DB — can still be inspected. Returns the script path.
+func saveFailedSlurmScript(jobID, script string, subErr error) (string, error) {
+	dir := filepath.Join(support.GetBatchqHome(), "failed")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, "slurm-"+jobID+".sh")
+	if err := os.WriteFile(path, []byte(script), 0o644); err != nil {
+		return "", err
+	}
+	if subErr != nil {
+		_ = os.WriteFile(path+".err", []byte(subErr.Error()+"\n"), 0o644)
+	}
+	return path, nil
 }
 
 func SlurmSecsToWalltime(secStr string) string {
