@@ -134,18 +134,19 @@ of its `afterok` dependents are cancelled with reason "parent canceled".
 - **It is not a cluster scheduler.** It does not allocate nodes, manage
   cgroups across machines, or know about hardware topology. For real
   cluster execution it delegates to SLURM.
-- **It does not own its own network listener.** The server only ever
-  binds a unix socket. Remote access goes through a reverse proxy that
-  terminates TLS — see [Remote access](remote.md).
+- **It does not terminate TLS.** The server binds a unix socket
+  (default) or a plain-HTTP TCP port; HTTPS for remote clients is a
+  reverse proxy's job — see [Remote access](remote.md).
 - **It is not multi-tenant in the database sense.** One server, one
   `$BATCHQ_HOME`, one shared queue and database file — not isolated
   per-user queues. Shared deployments are still supported: the server
   derives each unix-socket client's identity from kernel-attested peer
   credentials and gates hold/release/cancel on it (and, run as root, can
-  execute each job under the submitter's account). What's missing is
-  network-side auth — server-side bearer-token validation for clients
-  arriving over the reverse proxy isn't implemented yet, so those rely on
-  the proxy for access control. See [running jobs](running-jobs.md) and
+  execute each job under the submitter's account). Over the network it
+  offers a **shared-token** gate (`[server] token`) — secure-enough for a
+  single-user server, but one secret shared by all callers, *not*
+  per-user identity. Token-bound, per-user auth lives in the managed
+  server, not this binary. See [running jobs](running-jobs.md) and
   [remote access](remote.md).
 
 ## Where to go next

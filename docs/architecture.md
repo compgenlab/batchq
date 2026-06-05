@@ -22,7 +22,7 @@ is that exactly one process is touching the database file at a time.
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Clients (one per process invocation)                               │
 │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐  │
-│  │ submit │ │  show  │ │  hold  │ │cleanup │ │  run   │ │  web   │  │
+│  │ submit │ │ queue  │ │  hold  │ │cleanup │ │  run   │ │  web   │  │
 │  └────┬───┘ └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘  │
 └───────┼─────────┼──────────┼──────────┼──────────┼──────────┼───────┘
         │         │          │          │          │          │
@@ -69,19 +69,27 @@ A secondary benefit: clients become trivial. They speak HTTP REST, they
 do not need to know whether the server is local, remote, or in-process
 for a test. The same code path serves all three.
 
-## Unix sockets, not TCP
+## Unix sockets by default (opt-in TCP), never TLS
 
-The server only ever binds a unix domain socket. It never opens a TCP
-port. There are two reasons:
+By default the server binds a unix domain socket — and that's the
+recommended shape, for two reasons:
 
 - **Authentication.** Filesystem permissions on the socket (mode `0600`,
-  owned by the user running the server) are the access control
-  mechanism. This is the same model `ssh-agent` and `gpg-agent` use, and
-  it is dead simple to reason about.
+  owned by the user running the server) plus kernel peer credentials are
+  the access control mechanism. This is the same model `ssh-agent` and
+  `gpg-agent` use, and it is dead simple to reason about.
 - **Deployment.** Exposing the API to the network is a reverse proxy's
   job. nginx, Caddy, Traefik all forward HTTP to a unix socket without
   fuss; the proxy terminates TLS, applies network-level access
   controls, and forwards to batchq. See [remote access](remote.md).
+
+For containers and orchestrators, where a host-path socket is awkward,
+the server can instead bind a plain-HTTP **TCP port**
+(`[server] listen = "tcp://host:port"`). A TCP port has no filesystem
+ACL and no peer credentials, so it should be paired with a shared
+`[server] token` (the server warns if it isn't) and/or a proxy. What the
+server never does is terminate TLS — that stays the proxy's job in every
+topology.
 
 ## Single-instance election
 
@@ -150,8 +158,9 @@ The directories under the repository root map roughly to layers:
   both the server and the client.
 - `client/` — the Go client. One method per REST endpoint plus the
   autospawn helper. Used by every in-repo subcommand.
-- `server/` — the HTTP layer: route wiring, the unix-socket listener,
-  the activity-tracking middleware that drives idle shutdown.
+- `server/` — the HTTP layer: route wiring, the listener (unix socket or
+  TCP), the shared-token auth middleware, and the activity-tracking
+  middleware that drives idle shutdown.
 - `service/` — server-side business logic that wraps the storage layer
   with dependency resolution, queue ordering, atomic claim, hold and
   release, recursive cleanup. No HTTP knowledge here.
@@ -187,8 +196,9 @@ A typical submission and execution looks like this:
    next eligible job and transitions it `QUEUED → RUNNING`, returning
    the job DTO.
 4. The runner executes the job, captures stdout and stderr, and reports
-   the outcome back via `POST /api/v1/jobs/{id}/status` and friends. The
-   server writes the terminal state and resolves any waiting dependents.
+   the outcome back via the runner endpoints (`POST
+   /api/v1/runners/{id}/jobs/{id}/end` and friends). The server writes
+   the terminal state and resolves any waiting dependents.
 5. **`batchq queue`** GETs `/api/v1/queue/jobs` and pretty-prints
    the result.
 
@@ -203,5 +213,5 @@ specifics.
   defaults.
 - [SLURM](slurm.md) — how the SLURM runner fits into this picture, and
   why it is the only component that talks to SLURM.
-- [Remote access](remote.md) — exposing the unix-socket-only server to
-  remote clients.
+- [Remote access](remote.md) — exposing the server to remote clients
+  over a reverse proxy or a TCP port.

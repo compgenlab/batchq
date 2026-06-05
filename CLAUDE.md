@@ -16,7 +16,7 @@ This is a Go module (Go 1.23). batchq is **pure Go** — `modernc.org/sqlite` re
 
 ## Architecture (v2 client/server)
 
-`batchq` is a single binary that runs in two roles: a long-lived `batchq server` process that owns the SQLite database, and short-lived clients (`submit`, `run`, `show`, `hold`, `cleanup`, `web`) that talk to it over an HTTP REST API on a unix domain socket (or, opt-in, a plain-HTTP TCP port — `tcp://host:port` — for containerized deployments). batchq never terminates TLS; network exposure (TLS, remote clients, runners on other hosts) is the reverse proxy's job. This split exists so the DB file can safely live on a networked filesystem (NFS / Lustre): only one process touches it, so SQLite's cross-process locking failure modes don't apply.
+`batchq` is a single binary that runs in two roles: a long-lived `batchq server` process that owns the SQLite database, and short-lived clients (`submit`, `run`, `queue`, `hold`, `cleanup`, `web`) that talk to it over an HTTP REST API on a unix domain socket (or, opt-in, a plain-HTTP TCP port — `tcp://host:port` — for containerized deployments). batchq never terminates TLS; network exposure (TLS, remote clients, runners on other hosts) is the reverse proxy's job. This split exists so the DB file can safely live on a networked filesystem (NFS / Lustre): only one process touches it, so SQLite's cross-process locking failure modes don't apply.
 
 On a workstation, a CLI client transparently fork-execs `batchq server --idle-timeout 1m` when the socket is unreachable, then polls for it to come up. The server idles out when no requests arrive — so `batchq submit ./script.sh` still Just Works without explicit server management.
 
@@ -32,7 +32,7 @@ The conventional layout under `$BATCHQ_HOME` (default `~/.batchq`):
 
 - `main.go` — embeds `LICENSE` and hands off to `cmd.Execute()`.
 - `cmd/` — Cobra subcommands.
-  - `root.go` loads `~/.batchq/config` (overridable via `BATCHQ_HOME`), then layers env-var overrides and built-in defaults on top. The resolved `Config` is exposed via the package-level `*support.Config`; the raw TOML-loaded copy is retained in `rawConfig` purely for the debug command's source labelling. `submit`/`show`/`hold`/`cleanup`/`run`/`web` all open a REST client via `cmd/clientconn.go:dialClient()`.
+  - `root.go` loads `~/.batchq/config` (overridable via `BATCHQ_HOME`), then layers env-var overrides and built-in defaults on top. The resolved `Config` is exposed via the package-level `*support.Config`; the raw TOML-loaded copy is retained in `rawConfig` purely for the debug command's source labelling. `submit`/`queue`/`hold`/`cleanup`/`run`/`web` all open a REST client via `cmd/clientconn.go:dialClient()`.
   - `debug.go` — renders `batchq debug`. Compares `rawConfig`, `envOverrides`, `defaultsResolved`, and persistent flag vars to label each value's source. Token values are redacted.
   - `server.go` is the server entrypoint; flags: `--listen`, `--db`, `--sqlite-wal`, `--idle-timeout`. The DB URL (sqlite3 path) comes from `--db` / `[server] db` config. Refuses to start when `[batchq] remote` is set.
   - `clientconn.go` — `dialClient()` picks the API endpoint: if `[batchq] remote` (or `--remote`) is set, dial that HTTPS URL with no autospawn; otherwise dial `Config.Server.Listen` (the local unix socket) and autospawn if nothing is answering. `--no-autospawn` opts out of the autospawn path.
