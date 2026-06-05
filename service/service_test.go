@@ -27,6 +27,59 @@ func submitArray(t *testing.T, svc *Service, ctx context.Context, indices []int,
 	return resp
 }
 
+// ClaimNextJob records the runner's advertised host as a "host" running
+// detail so the queue/detail views can show which machine is running a job.
+func TestClaimRecordsHost(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	dto, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{Details: map[string]string{"script": "x"}})
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+
+	claim, err := svc.ClaimNextJob(ctx, "r1", "simple", "node42", storage.Limits{})
+	if err != nil {
+		t.Fatalf("ClaimNextJob: %v", err)
+	}
+	if claim.Job == nil {
+		t.Fatal("expected a claimed job")
+	}
+	// Returned job carries the host in-memory.
+	if got := claim.Job.GetRunningDetail("host", ""); got != "node42" {
+		t.Fatalf("claim response host = %q, want node42", got)
+	}
+	// And it was persisted.
+	job, err := svc.store.GetJob(ctx, dto.JobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got := job.GetRunningDetail("host", ""); got != "node42" {
+		t.Fatalf("persisted host = %q, want node42", got)
+	}
+}
+
+// An empty advertised host records no host detail (no spurious "" rows).
+func TestClaimEmptyHostRecordsNothing(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	dto, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{Details: map[string]string{"script": "x"}})
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	if _, err := svc.ClaimNextJob(ctx, "r1", "simple", "", storage.Limits{}); err != nil {
+		t.Fatalf("ClaimNextJob: %v", err)
+	}
+	job, err := svc.store.GetJob(ctx, dto.JobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got := job.GetRunningDetail("host", "<unset>"); got != "<unset>" {
+		t.Fatalf("expected no host detail, got %q", got)
+	}
+}
+
 // aftercorr pairs each dependent task with the dep array's same-index task.
 func TestSubmitArrayAfterCorr(t *testing.T) {
 	svc := newService(t)
@@ -229,7 +282,7 @@ func TestEndJobSuccessAutoPromotesWaiters(t *testing.T) {
 		Details: map[string]string{"script": "x"},
 	})
 
-	claim, err := svc.ClaimNextJob(ctx, "r1", "simple", storage.Limits{})
+	claim, err := svc.ClaimNextJob(ctx, "r1", "simple", "", storage.Limits{})
 	if err != nil {
 		t.Fatalf("Claim: %v", err)
 	}
@@ -265,7 +318,7 @@ func TestCleanupOnTerminalSucceeds(t *testing.T) {
 	svc := newService(t)
 	ctx := ctxT(t)
 	dto, _ := svc.SubmitJob(ctx, &api.SubmitJobRequest{Details: map[string]string{"script": "x"}})
-	_, _ = svc.ClaimNextJob(ctx, "r", "simple", storage.Limits{})
+	_, _ = svc.ClaimNextJob(ctx, "r", "simple", "", storage.Limits{})
 	_ = svc.EndJob(ctx, "r", dto.JobID, 0, "")
 	if err := svc.CleanupJob(ctx, dto.JobID); err != nil {
 		t.Fatalf("CleanupJob: %v", err)

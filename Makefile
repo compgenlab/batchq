@@ -51,4 +51,10 @@ run:
 test:
 	go test ./...
 
-.PHONY: all clean run test
+# The race detector requires CGO, so this target opts out of the pure-Go
+# default (CGO_ENABLED=0) used everywhere else. Run it in CI and before
+# touching the runner's concurrent run loop.
+test-race:
+	CGO_ENABLED=1 go test -race ./...
+
+.PHONY: all clean run test test-race

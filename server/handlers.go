@@ -334,7 +334,7 @@ func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.svc.ClaimNextJob(r.Context(), runnerID, req.Kind, storage.Limits{
+	result, err := s.svc.ClaimNextJob(r.Context(), runnerID, req.Kind, req.Host, storage.Limits{
 		MaxProcs:       req.MaxProcs,
 		MaxMemoryMB:    req.MaxMemoryMB,
 		MaxWalltimeSec: req.MaxWalltimeSec,
@@ -369,7 +369,7 @@ func (s *Server) handleClaimArray(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.svc.ClaimNextArrayBatch(r.Context(), runnerID, req.Kind, storage.Limits{
+	result, err := s.svc.ClaimNextArrayBatch(r.Context(), runnerID, req.Kind, req.Host, storage.Limits{
 		MaxProcs:       req.MaxProcs,
 		MaxMemoryMB:    req.MaxMemoryMB,
 		MaxWalltimeSec: req.MaxWalltimeSec,

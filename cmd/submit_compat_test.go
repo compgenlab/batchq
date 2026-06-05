@@ -505,6 +505,35 @@ func TestSubmitSlurmHeaders(t *testing.T) {
 	}
 }
 
+// TestSubmitSlurmValuelessFlags guards the regression where a valueless
+// long-form SBATCH directive (no '=') panicked the parser by indexing
+// spl[1] out of range. "#SBATCH --hold" must be honored and an unknown
+// valueless flag must be tolerated (warned, not fatal/panic).
+func TestSubmitSlurmValuelessFlags(t *testing.T) {
+	c := startCompatServer(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "valueless.sh")
+	body := strings.Join([]string{
+		"#!/bin/sh",
+		"#SBATCH --hold",
+		"#SBATCH --exclusive",
+		"echo go",
+	}, "\n") + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	out := runSubmit(t, "--slurm", script)
+	dto, err := c.GetJob(context.Background(), out)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if dto.Status != "USERHOLD" {
+		t.Fatalf("status: %s, want USERHOLD (--hold should be honored)", dto.Status)
+	}
+}
+
 func TestSubmitHoldFlag(t *testing.T) {
 	c := startCompatServer(t)
 

@@ -708,7 +708,7 @@ func (s *sqliteStorage) GetQueueJobs(ctx context.Context, showAll, sortByStatus 
 		LEFT JOIN (
 			SELECT job_id, group_concat(key || '=' || value, char(10)) AS running
 			FROM job_running_details
-			WHERE key IN ('pid', 'slurm_status', 'slurm_job_id', 'slurm_array_id', 'slurm_task_index')
+			WHERE key IN ('pid', 'host', 'slurm_status', 'slurm_job_id', 'slurm_array_id', 'slurm_task_index')
 			GROUP BY job_id
 		) running ON running.job_id = j.id
 	`
@@ -1197,7 +1197,6 @@ func jobDetailTx(ctx context.Context, tx *sql.Tx, jobID, key string) (string, er
 // details that fit the supplied limits. Missing details are treated as 0 (no
 // requirement). Limit values <= 0 mean "no cap on this dimension".
 func jobFitsLimits(ctx context.Context, tx *sql.Tx, jobID string, limits Limits) (bool, error) {
-	keys := []string{"procs", "mem", "walltime"}
 	vals := map[string]int{}
 	rows, err := tx.QueryContext(ctx,
 		`SELECT key, value FROM job_details
@@ -1219,7 +1218,6 @@ func jobFitsLimits(ctx context.Context, tx *sql.Tx, jobID string, limits Limits)
 	if err := rows.Err(); err != nil {
 		return false, err
 	}
-	_ = keys
 	if limits.MaxProcs > 0 && vals["procs"] > limits.MaxProcs {
 		return false, nil
 	}

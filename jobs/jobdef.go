@@ -116,6 +116,35 @@ func NewJobDef(name string, src string) *JobDef {
 // claim request, not in the job; see storage.jobFitsResources.
 const ResourcePrefix = "resource."
 
+// IsReservedResourceName reports whether name is one of the resource names
+// expressed through dedicated flags (-p/-m/-t) rather than as a generic
+// resource. These are rejected wherever a generic resource is parsed.
+func IsReservedResourceName(name string) bool {
+	switch name {
+	case "procs", "mem", "walltime":
+		return true
+	}
+	return false
+}
+
+// ParseResourceEntry splits a "name[=value]" generic-resource entry, trimming
+// both halves. It rejects an empty or whitespace-containing name and the
+// reserved names (procs/mem/walltime). A bare "name" (no '=') yields an empty
+// value — a feature label. Shared by the submit CLI and the runner's
+// advertised-resource parsing so both validate identically.
+func ParseResourceEntry(entry string) (name, value string, err error) {
+	name, value, _ = strings.Cut(entry, "=")
+	name = strings.TrimSpace(name)
+	value = strings.TrimSpace(value)
+	if name == "" || strings.ContainsAny(name, " \t") {
+		return "", "", fmt.Errorf("bad resource name: %q", entry)
+	}
+	if IsReservedResourceName(name) {
+		return "", "", fmt.Errorf("resource %q is reserved; use -p/-m/-t instead", name)
+	}
+	return name, value, nil
+}
+
 func (job *JobDef) GetDetail(key string, defval string) string {
 	for _, detail := range job.Details {
 		if detail.Key == key {

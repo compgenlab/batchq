@@ -11,24 +11,6 @@ import (
 	"time"
 )
 
-func GetUserHomeFilePath(path ...string) (string, error) {
-	home := os.Getenv("HOME")
-	if home == "" {
-		usr, err := user.Current()
-		if err != nil {
-			return "", err
-		}
-		home = usr.HomeDir
-	}
-
-	tmp := make([]string, len(path)+1)
-	tmp[0] = home
-	for i := 0; i < len(path); i++ {
-		tmp[i+1] = path[i]
-	}
-	return filepath.Join(tmp...), nil
-}
-
 func AmIRoot() bool {
 	if u, err := user.Current(); err == nil {
 		return u.Uid == "0"
@@ -36,21 +18,10 @@ func AmIRoot() bool {
 	return false
 }
 
-func GetCurrentUsername() string {
-	u, err := user.Current()
-	if err == nil {
-		return u.Username
-	}
-	if name := os.Getenv("USER"); name != "" {
-		return name
-	}
-	if name := os.Getenv("USERNAME"); name != "" {
-		return name
-	}
-	return "unknown"
-}
-
 func ExpandPathAbs(path string) (string, error) {
+	if path == "" {
+		return "", nil
+	}
 	endsWithSlash := false
 	if path[len(path)-1] == os.PathSeparator {
 		endsWithSlash = true
@@ -73,12 +44,6 @@ func GetNowUTCString() string {
 	return time.Now().UTC().Format("2006-01-02 15:04:05 MST")
 }
 
-func MustWriteFile(path, content string) {
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		panic(fmt.Sprintf("Failed to write to %s: %v", path, err))
-	}
-}
-
 func Contains[T comparable](slice []T, val T) bool {
 	for _, v := range slice {
 		if v == val {
@@ -88,9 +53,12 @@ func Contains[T comparable](slice []T, val T) bool {
 	return false
 }
 
+// FileExists reports whether path exists and is statable. A stat error other
+// than "not found" (e.g. a permission error) reports false rather than
+// masquerading as existence.
 func FileExists(path string) bool {
 	_, err := os.Stat(path)
-	return err == nil || !os.IsNotExist(err)
+	return err == nil
 }
 
 func NewUUID() string {

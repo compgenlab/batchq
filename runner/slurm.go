@@ -671,7 +671,10 @@ func SlurmGetUserJobCount(username string) (int, error) {
 	count := 0
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line[:5] == "JOBID" {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "JOBID") {
 			// header line
 			continue
 		}

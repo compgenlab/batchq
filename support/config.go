@@ -205,13 +205,31 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // Clone returns a deep copy of c. Used to retain the raw TOML-loaded
-// values before defaults are layered on top.
+// values before defaults are layered on top, so later mutation of the
+// resolved config can't corrupt the retained snapshot. The map-valued
+// fields (the resource subtables) are copied explicitly; a plain struct
+// copy would share them.
 func (c *Config) Clone() *Config {
 	if c == nil {
 		return nil
 	}
 	cp := *c
+	cp.JobDefaults.Resources = cloneStringMap(c.JobDefaults.Resources)
+	cp.SimpleRunner.Resources = cloneStringMap(c.SimpleRunner.Resources)
+	cp.SlurmRunner.Resources = cloneStringMap(c.SlurmRunner.Resources)
 	return &cp
+}
+
+// cloneStringMap returns a shallow copy of m, or nil if m is nil.
+func cloneStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // EnvOverrides is the set of config knobs that may be overridden by an

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -30,11 +31,17 @@ type simpleRunner struct {
 	foreverMode    bool
 	useCgroupV2    bool
 	useCgroupV1    bool
+	// curJobs, availProcs, and availMem are scheduling state shared between
+	// the run loop and the per-job completion goroutines; all access goes
+	// through r.lock (see snapshotState). availJobs is touched only by the
+	// run loop. keepRunning is set from the signal handler too, so it's an
+	// atomic rather than lock-guarded.
 	curJobs        []jobStatus
 	maxJobs        int
 	availJobs      int
 	availProcs     int
 	availMem       int
+	keepRunning    atomic.Bool
 	resources      map[string]string
 	shellBin       string
 	runnerId       string
@@ -47,11 +54,9 @@ type simpleRunner struct {
 }
 
 type jobStatus struct {
-	job        *api.JobDTO
-	cmd        *exec.Cmd
-	running    bool
-	returnCode int
-	startTime  time.Time
+	job       *api.JobDTO
+	cmd       *exec.Cmd
+	startTime time.Time
 }
 
 /*
@@ -82,6 +87,28 @@ func (r *simpleRunner) wake() {
 	case r.wakeup <- struct{}{}:
 	default:
 	}
+}
+
+// snapshotState returns a copy of the running-job list plus the current
+// available proc/mem counters, read atomically under r.lock. The run loop
+// uses this so it can iterate jobs and make scheduling decisions without
+// holding the lock across the REST calls in between (the per-job completion
+// goroutines need the lock to remove finished jobs and return resources). The
+// returned slice is a copy; each jobStatus shares the underlying *JobDTO and
+// *exec.Cmd, which are stable for the life of a job.
+func (r *simpleRunner) snapshotState() (curJobs []jobStatus, availProcs, availMem int) {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	curJobs = make([]jobStatus, len(r.curJobs))
+	copy(curJobs, r.curJobs)
+	return curJobs, r.availProcs, r.availMem
+}
+
+// numJobs returns the count of currently running jobs under r.lock.
+func (r *simpleRunner) numJobs() int {
+	r.lock.Lock()
+	defer r.lock.Unlock()
+	return len(r.curJobs)
 }
 
 func (r *simpleRunner) SetMaxProcs(procs int) *simpleRunner {
@@ -235,7 +262,7 @@ func (r *simpleRunner) Start() bool {
 	r.availMem = r.maxMemoryMb
 	r.availJobs = r.maxJobs
 
-	keepRunning := true
+	r.keepRunning.Store(true)
 	ranAtLeastOneJob := false
 
 	// Channel to receive OS signals
@@ -272,14 +299,17 @@ func (r *simpleRunner) Start() bool {
 				sigCount++
 				switch sigCount {
 				case 1:
-					keepRunning = false
+					r.keepRunning.Store(false)
 					r.logf("Waiting for jobs to complete. Hit Ctrl+C again to kill everything.\n")
 					r.wake()
 				case 2:
 					r.logf("Killing all running jobs...\n")
-					for len(r.curJobs) > 0 {
-						curJob := r.curJobs[0]
-						r.curJobs = r.curJobs[1:]
+					// Cancel every running job from a snapshot taken under
+					// the lock. We don't mutate curJobs here — each job's
+					// completion goroutine removes its own entry once the
+					// killed process exits, so this can't race their writes.
+					killing, _, _ := r.snapshotState()
+					for _, curJob := range killing {
 						r.logf("Killing job %s [proc: %d]\n", curJob.job.JobID, curJob.cmd.Process.Pid)
 						ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 						if err := r.client.CancelJob(ctx, curJob.job.JobID, "Shutting down runner"); err != nil {
@@ -301,9 +331,13 @@ func (r *simpleRunner) Start() bool {
 	if r.foreverMode {
 		r.logf("Hit Ctrl+C to exit. Will try to drain jobs first.")
 	}
-	for keepRunning || len(r.curJobs) > 0 {
-		// check to see if we need to cancel a running job
-		for _, curJob := range r.curJobs {
+	for r.keepRunning.Load() || r.numJobs() > 0 {
+		// check to see if we need to cancel a running job. Iterate a
+		// snapshot taken under the lock so the per-job REST calls below
+		// don't run while holding it (completion goroutines need the lock
+		// to remove finished jobs and return their resources).
+		curJobs, _, _ := r.snapshotState()
+		for _, curJob := range curJobs {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
 			// this could be optimized, but just iterating over jobs
@@ -327,7 +361,7 @@ func (r *simpleRunner) Start() bool {
 				// Check to see if the job has a walltime set...
 				if val := job.Details["walltime"]; val != "" {
 					if jobTime, err := strconv.Atoi(val); err != nil {
-						log.Fatal(err)
+						r.logf("Job %s: unparseable walltime %q, skipping limit check: %v\n", curJob.job.JobID, val, err)
 					} else if jobTime > 0 {
 						duration := time.Now().UTC().Sub(curJob.startTime)
 						if duration.Seconds() > float64(jobTime) {
@@ -345,34 +379,40 @@ func (r *simpleRunner) Start() bool {
 			}
 		}
 
-		if r.IsDrain() || !keepRunning {
-			r.logf("Draining jobs (remaining:%d)\n", len(r.curJobs))
-			if r.IsDrain() && len(r.curJobs) == 0 {
-				keepRunning = false
+		drain := r.IsDrain()
+		if drain || !r.keepRunning.Load() {
+			n := r.numJobs()
+			r.logf("Draining jobs (remaining:%d)\n", n)
+			if drain && n == 0 {
+				r.keepRunning.Store(false)
 				r.logf("Done processing jobs")
 			}
 		} else {
+			// Snapshot scheduling state under the lock; the per-job
+			// completion goroutines mutate curJobs/availProcs/availMem under
+			// the same lock as they finish.
+			curJobs, availProcs, availMem := r.snapshotState()
 			// check to see if we have the resources to run a job
 			findJob := false
-			r.logf("Available resources (c:%d, m:%d)\n", r.availProcs, r.availMem)
+			r.logf("Available resources (c:%d, m:%d)\n", availProcs, availMem)
 			if maxConcurrentJobs > 0 {
-				if len(r.curJobs) < maxConcurrentJobs {
+				if len(curJobs) < maxConcurrentJobs {
 					findJob = true
 				}
 			} else {
-				if r.availMem > 0 && r.availProcs > 0 {
+				if availMem > 0 && availProcs > 0 {
 					findJob = true
-				} else if r.availMem > 0 && r.availProcs == -1 {
+				} else if availMem > 0 && availProcs == -1 {
 					findJob = true
-				} else if r.availProcs > 0 && r.availMem == -1 {
+				} else if availProcs > 0 && availMem == -1 {
 					findJob = true
 				}
 			}
 
-			if keepRunning && r.availJobs == 0 {
+			if r.keepRunning.Load() && r.availJobs == 0 {
 				// No more jobs allowed
 				findJob = false
-				keepRunning = false
+				r.keepRunning.Store(false)
 				r.logf("Reached maximum job count (%d). Not starting new jobs.\n", r.maxJobs)
 			}
 
@@ -380,7 +420,7 @@ func (r *simpleRunner) Start() bool {
 			if findJob {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
-				resp, err := r.client.ClaimNextJob(ctx, r.runnerId, "simple", r.host, r.availProcs, r.availMem, r.maxWalltimeSec, r.availableResources())
+				resp, err := r.client.ClaimNextJob(ctx, r.runnerId, "simple", r.host, availProcs, availMem, r.maxWalltimeSec, r.availableResources())
 				cancel()
 				if err != nil {
 					r.logf("Error claiming job: %v\n", err)
@@ -388,17 +428,18 @@ func (r *simpleRunner) Start() bool {
 					job := resp.Job
 					r.logf("Processing job: %s\n", job.JobID)
 					r.lock.Lock()
-					if !r.startJob(job) {
-						r.logf("Error starting job -- draining")
-						keepRunning = false
-					}
+					ok := r.startJob(job)
 					r.lock.Unlock()
+					if !ok {
+						r.logf("Error starting job -- draining")
+						r.keepRunning.Store(false)
+					}
 					ranAtLeastOneJob = true
 					if r.availJobs > 0 {
 						r.availJobs--
 					}
 					continue
-				} else if len(r.curJobs) == 0 && !resp.MoreEligible && !r.foreverMode {
+				} else if r.numJobs() == 0 && !resp.MoreEligible && !r.foreverMode {
 					// Nothing running and we claimed nothing. With no jobs
 					// running, the limits we just offered were our full
 					// capacity, so any Blocked jobs exceed what this runner can
@@ -410,7 +451,7 @@ func (r *simpleRunner) Start() bool {
 					} else {
 						r.logf("Done processing jobs")
 					}
-					keepRunning = false
+					r.keepRunning.Store(false)
 				}
 			}
 		}
@@ -418,7 +459,7 @@ func (r *simpleRunner) Start() bool {
 		// do we have more jobs to run? should we keep waiting to
 		// run more jobs? if we are draining, let's wait to see if the jobs finish...
 
-		if keepRunning || len(r.curJobs) > 0 {
+		if r.keepRunning.Load() || r.numJobs() > 0 {
 			// Wait for a running job to finish (r.wake from the completion
 			// goroutine) or a fallback heartbeat to re-poll for new work. The
 			// wakeup channel is always available, so a completion never races
@@ -487,18 +528,22 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 	jobMem := -1
 
 	if val := job.Details["procs"]; val != "" {
-		if p, err := strconv.Atoi(val); err != nil {
-			log.Fatal(err)
-		} else {
-			jobProcs = p
+		p, err := strconv.Atoi(val)
+		if err != nil {
+			r.logf("Job %s: invalid procs detail %q: %v\n", job.JobID, val, err)
+			r.failClaimedJob(job.JobID, 1, fmt.Sprintf("invalid procs detail %q: %v", val, err))
+			return false
 		}
+		jobProcs = p
 	}
 	if val := job.Details["mem"]; val != "" {
-		if m, err := strconv.Atoi(val); err != nil {
-			log.Fatal(err)
-		} else {
-			jobMem = m
+		m, err := strconv.Atoi(val)
+		if err != nil {
+			r.logf("Job %s: invalid mem detail %q: %v\n", job.JobID, val, err)
+			r.failClaimedJob(job.JobID, 1, fmt.Sprintf("invalid mem detail %q: %v", val, err))
+			return false
 		}
+		jobMem = m
 	}
 
 	script := filepath.Join(r.spoolDir, fmt.Sprintf("batchq-%s.sh", job.JobID))
@@ -516,15 +561,13 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 		if cmd.Process != nil {
 			pgid, _ := syscall.Getpgid(cmd.Process.Pid)
 			r.logf("Canceling job: %s [%d]\n", job.JobID, pgid)
-			// the negative should kill all members of the pgid
-			syscall.Kill(-pgid, syscall.SIGKILL)
-			ps, err := cmd.Process.Wait()
-			if err != nil {
-				r.logf("Error killing process %d: %v\n", pgid, err)
-			} else if ps != nil {
-				r.logf("Killing process %d: %v\n", pgid, ps.String())
-			} else {
-				r.logf("Killing process %d: done\n", pgid)
+			// Kill the whole process group (negative pgid). We deliberately
+			// do NOT Wait here: the completion goroutine started below owns
+			// the single Process.Wait() for this command. A second Wait would
+			// race it, and only one can succeed — the other gets a bogus
+			// nil/errored state.
+			if err := syscall.Kill(-pgid, syscall.SIGKILL); err != nil {
+				r.logf("Error killing process group %d for job %s: %v\n", pgid, job.JobID, err)
 			}
 		} else {
 			r.logf("Canceling job: %s, but process already done\n", job.JobID)
@@ -540,6 +583,29 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 
 	var stdoutFile *os.File
 	var stderrFile *os.File
+
+	cgroupV2Path := fmt.Sprintf("/sys/fs/cgroup/batchq-%s", job.JobID)
+	cgroupV1BaseCPU := fmt.Sprintf("/sys/fs/cgroup/cpu/batchq-%s", job.JobID)
+	cgroupV1BaseMem := fmt.Sprintf("/sys/fs/cgroup/memory/batchq-%s", job.JobID)
+
+	// cleanup releases what startJob has acquired so far (open stdout/stderr
+	// files and any cgroup dirs). Call it on every failure path that returns
+	// false before the completion goroutine — which otherwise owns this
+	// teardown — has started. Removing a cgroup dir that was never created is
+	// a no-op.
+	cleanup := func() {
+		if stdoutFile != nil {
+			stdoutFile.Close()
+		}
+		if stderrFile != nil {
+			stderrFile.Close()
+		}
+		if r.useCgroupV2 && support.AmIRoot() {
+			os.RemoveAll(cgroupV2Path)
+		} else if r.useCgroupV1 && support.AmIRoot() {
+			_ = cleanupCgroupV1([]string{cgroupV1BaseCPU, cgroupV1BaseMem})
+		}
+	}
 
 	jobStdout := expandArrayPlaceholders(job, job.Details["stdout"])
 	jobStderr := expandArrayPlaceholders(job, job.Details["stderr"])
@@ -585,6 +651,7 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 		uid, err := strconv.Atoi(uidS)
 		if err != nil {
 			r.logf("Missing UID from job details: %s\n", job.JobID)
+			cleanup()
 			r.failClaimedJob(job.JobID, 1, "missing or invalid UID in job details")
 			return false
 		}
@@ -592,6 +659,7 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 
 		if err != nil {
 			r.logf("Missing GID from job details: %s\n", job.JobID)
+			cleanup()
 			r.failClaimedJob(job.JobID, 1, "missing or invalid GID in job details")
 			return false
 		}
@@ -639,52 +707,79 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 		}
 	}
 
-	cgroupV2Path := fmt.Sprintf("/sys/fs/cgroup/batchq-%s", job.JobID)
-	cgroupV1BaseCPU := fmt.Sprintf("/sys/fs/cgroup/cpu/batchq-%s", job.JobID)
-	cgroupV1BaseMem := fmt.Sprintf("/sys/fs/cgroup/memory/batchq-%s", job.JobID)
-	if r.useCgroupV2 && support.AmIRoot() {
-
-		// setup cgroups
-
-		// Create the cgroup directory
-		if err := os.MkdirAll(cgroupV2Path, 0755); err != nil {
-			panic(err)
+	// cgroupWrite writes a cgroup control file, failing the job cleanly
+	// (before the process starts) rather than panicking the whole runner if
+	// the kernel rejects the value. Returns false once the job has been
+	// failed, so the caller should return false too.
+	cgroupWrite := func(path, content string) bool {
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			r.logf("Job %s: cgroup setup (%s): %v\n", job.JobID, path, err)
+			cleanup()
+			r.failClaimedJob(job.JobID, 1, fmt.Sprintf("cgroup setup failed: %v", err))
+			return false
 		}
-
+		return true
+	}
+	if r.useCgroupV2 && support.AmIRoot() {
+		// Create the cgroup directory, then set the limits.
+		if err := os.MkdirAll(cgroupV2Path, 0755); err != nil {
+			r.logf("Job %s: cgroup mkdir %s: %v\n", job.JobID, cgroupV2Path, err)
+			cleanup()
+			r.failClaimedJob(job.JobID, 1, fmt.Sprintf("cgroup setup failed: %v", err))
+			return false
+		}
 		if jobProcs > 0 {
-			support.MustWriteFile(filepath.Join(cgroupV2Path, "cpu.max"), fmt.Sprintf("%d 100000", 100000*jobProcs)) // 2 CPUs (200ms every 100ms)
+			if !cgroupWrite(filepath.Join(cgroupV2Path, "cpu.max"), fmt.Sprintf("%d 100000", 100000*jobProcs)) {
+				return false
+			}
 		}
 		if jobMem > 0 {
-			support.MustWriteFile(filepath.Join(cgroupV2Path, "memory.max"), fmt.Sprintf("%dM", jobMem)) // 100MB limit
+			if !cgroupWrite(filepath.Join(cgroupV2Path, "memory.max"), fmt.Sprintf("%dM", jobMem)) {
+				return false
+			}
 		}
 	} else if r.useCgroupV1 && support.AmIRoot() {
 		_ = os.MkdirAll(cgroupV1BaseCPU, 0755)
 		_ = os.MkdirAll(cgroupV1BaseMem, 0755)
 		// Set CPU quota (e.g., 2 CPUs assuming 100000us period)
-		support.MustWriteFile(filepath.Join(cgroupV1BaseCPU, "cpu.cfs_period_us"), "100000")
-		support.MustWriteFile(filepath.Join(cgroupV1BaseCPU, "cpu.cfs_quota_us"), fmt.Sprintf("%d", 100000*jobProcs))
-
+		if !cgroupWrite(filepath.Join(cgroupV1BaseCPU, "cpu.cfs_period_us"), "100000") {
+			return false
+		}
+		if !cgroupWrite(filepath.Join(cgroupV1BaseCPU, "cpu.cfs_quota_us"), fmt.Sprintf("%d", 100000*jobProcs)) {
+			return false
+		}
 		// Set memory limit
-		support.MustWriteFile(filepath.Join(cgroupV1BaseMem, "memory.limit_in_bytes"), fmt.Sprintf("%d", jobMem*1024*1024)) //  MB
-
+		if !cgroupWrite(filepath.Join(cgroupV1BaseMem, "memory.limit_in_bytes"), fmt.Sprintf("%d", jobMem*1024*1024)) {
+			return false
+		}
 	}
 
 	err := cmd.Start()
 	if err != nil {
 		r.logf("Error starting jobs: %v\n", err)
+		cleanup()
 		r.failClaimedJob(job.JobID, 1, fmt.Sprintf("failed to start process: %v", err))
 		return false
 	}
+	// The process is already running here, so a failure to move it into the
+	// cgroup can't cleanly fail the job — log it (the job runs unconfined)
+	// instead of panicking the runner.
 	if r.useCgroupV2 && support.AmIRoot() {
 		pid := strconv.Itoa(cmd.Process.Pid)
-		support.MustWriteFile(filepath.Join(cgroupV2Path, "cgroup.procs"), pid)
+		if err := os.WriteFile(filepath.Join(cgroupV2Path, "cgroup.procs"), []byte(pid), 0644); err != nil {
+			r.logf("Job %s: failed to add pid %s to cgroup (running unconfined): %v\n", job.JobID, pid, err)
+		}
 	} else if r.useCgroupV1 && support.AmIRoot() {
 		pid := strconv.Itoa(cmd.Process.Pid)
-		support.MustWriteFile(filepath.Join(cgroupV1BaseCPU, "tasks"), pid)
-		support.MustWriteFile(filepath.Join(cgroupV1BaseMem, "tasks"), pid)
+		if err := os.WriteFile(filepath.Join(cgroupV1BaseCPU, "tasks"), []byte(pid), 0644); err != nil {
+			r.logf("Job %s: failed to add pid %s to cpu cgroup: %v\n", job.JobID, pid, err)
+		}
+		if err := os.WriteFile(filepath.Join(cgroupV1BaseMem, "tasks"), []byte(pid), 0644); err != nil {
+			r.logf("Job %s: failed to add pid %s to memory cgroup: %v\n", job.JobID, pid, err)
+		}
 	}
 
-	myStatus := jobStatus{job: job, running: false, returnCode: 0, cmd: cmd, startTime: time.Now()}
+	myStatus := jobStatus{job: job, cmd: cmd, startTime: time.Now()}
 	r.curJobs = append(r.curJobs, myStatus)
 
 	if r.availProcs != -1 && jobProcs > 0 {

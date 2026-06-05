@@ -661,8 +661,11 @@ func isTerminal(s jobs.StatusCode) bool {
 
 // --- Runner endpoints --------------------------------------------------
 
-// ClaimNextJob is the atomic claim primitive exposed to runners.
-func (s *Service) ClaimNextJob(ctx context.Context, runnerID, kind string, limits storage.Limits) (storage.ClaimResult, error) {
+// ClaimNextJob is the atomic claim primitive exposed to runners. host is the
+// hostname the runner advertised; when non-empty it is recorded as a "host"
+// running detail on the claimed job so the queue/detail views can show which
+// machine is running it.
+func (s *Service) ClaimNextJob(ctx context.Context, runnerID, kind, host string, limits storage.Limits) (storage.ClaimResult, error) {
 	if runnerID == "" {
 		return storage.ClaimResult{}, fmt.Errorf("%w: runner_id required", ErrBadRequest)
 	}
@@ -672,12 +675,34 @@ func (s *Service) ClaimNextJob(ctx context.Context, runnerID, kind string, limit
 	// Best-effort resolve before claiming so newly-eligible waiters become
 	// candidates. Errors here are non-fatal — we still try the claim.
 	_, _ = s.ResolveDependencies(ctx)
-	return s.store.ClaimNextJob(ctx, runnerID, kind, limits)
+	res, err := s.store.ClaimNextJob(ctx, runnerID, kind, limits)
+	if err != nil {
+		return res, err
+	}
+	if res.Job != nil {
+		s.recordHost(ctx, host, res.Job)
+	}
+	return res, nil
+}
+
+// recordHost persists the runner's advertised host as a "host" running detail
+// on a freshly-claimed job and reflects it into the in-memory job so the claim
+// response carries it. A no-op for an empty host; a failed write is logged but
+// not fatal (the job is already claimed and running).
+func (s *Service) recordHost(ctx context.Context, host string, job *jobs.JobDef) {
+	if host == "" || job == nil {
+		return
+	}
+	if err := s.store.UpdateRunningDetails(ctx, job.JobId, map[string]string{"host": host}); err != nil {
+		log.Printf("service: record host for job %s: %v", job.JobId, err)
+		return
+	}
+	job.RunningDetails = append(job.RunningDetails, jobs.JobRunningDetail{Key: "host", Value: host})
 }
 
 // ClaimNextArrayBatch claims the next eligible plain job or array batch for a
 // batch-capable runner. See storage.ClaimNextArrayBatch.
-func (s *Service) ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, limits storage.Limits, maxTasks int) (storage.ArrayClaimResult, error) {
+func (s *Service) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host string, limits storage.Limits, maxTasks int) (storage.ArrayClaimResult, error) {
 	if runnerID == "" {
 		return storage.ArrayClaimResult{}, fmt.Errorf("%w: runner_id required", ErrBadRequest)
 	}
@@ -685,7 +710,23 @@ func (s *Service) ClaimNextArrayBatch(ctx context.Context, runnerID, kind string
 		kind = "slurm"
 	}
 	_, _ = s.ResolveDependencies(ctx)
-	return s.store.ClaimNextArrayBatch(ctx, runnerID, kind, limits, maxTasks)
+	res, err := s.store.ClaimNextArrayBatch(ctx, runnerID, kind, limits, maxTasks)
+	if err != nil {
+		return res, err
+	}
+	if host != "" {
+		// Plain-job batch: the single Job carries the host like ClaimNextJob.
+		if res.Job != nil {
+			s.recordHost(ctx, host, res.Job)
+		}
+		// Array batch: record host on every claimed task.
+		for _, t := range res.Tasks {
+			if derr := s.store.UpdateRunningDetails(ctx, t.JobID, map[string]string{"host": host}); derr != nil {
+				log.Printf("service: record host for task %s: %v", t.JobID, derr)
+			}
+		}
+	}
+	return res, nil
 }
 
 func (s *Service) MarkJobProxied(ctx context.Context, runnerID, jobID string, runningDetails map[string]string) error {

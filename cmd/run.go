@@ -197,12 +197,11 @@ func mergeResources(base map[string]string, flags []string) map[string]string {
 		merged[k] = v
 	}
 	for _, entry := range flags {
-		name, val, _ := strings.Cut(entry, "=")
-		name = strings.TrimSpace(name)
-		if name == "" {
-			log.Fatalf("Bad --resource value (empty name): %q", entry)
+		name, val, err := jobs.ParseResourceEntry(entry)
+		if err != nil {
+			log.Fatalf("Bad --resource value: %v", err)
 		}
-		merged[name] = strings.TrimSpace(val)
+		merged[name] = val
 	}
 	return merged
 }

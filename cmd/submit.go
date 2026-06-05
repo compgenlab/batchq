@@ -95,8 +95,7 @@ var submitCmd = &cobra.Command{
 			details[jobs.ResourcePrefix+"host"] = v
 		}
 		for k, v := range Config.JobDefaults.Resources {
-			switch k {
-			case "procs", "mem", "walltime":
+			if jobs.IsReservedResourceName(k) {
 				log.Fatalf("[job_defaults.resources] %q is reserved; use procs/mem/walltime", k)
 			}
 			details[jobs.ResourcePrefix+k] = v
@@ -240,12 +239,19 @@ var submitCmd = &cobra.Command{
 						sub := line[10:]
 						spl := strings.SplitN(sub, "=", 2)
 						k = strings.TrimSpace(spl[0])
-						v = strings.TrimSpace(spl[1])
+						// Valueless long flags (e.g. "#SBATCH --hold") split
+						// into a single element; leave v empty rather than
+						// indexing spl[1] out of range.
+						if len(spl) > 1 {
+							v = strings.TrimSpace(spl[1])
+						}
 					} else if len(line) > 9 && line[:9] == "#SBATCH -" {
 						sub := line[9:]
 						spl := strings.SplitN(sub, " ", 2)
 						k = strings.TrimSpace(spl[0])
-						v = strings.TrimSpace(spl[1])
+						if len(spl) > 1 {
+							v = strings.TrimSpace(spl[1])
+						}
 					}
 					if k != "" {
 						switch k {
@@ -364,16 +370,11 @@ var submitCmd = &cobra.Command{
 
 		// generic required resources (--resource name=value / #BATCHQ -resource ...)
 		for _, entry := range jobResources {
-			name, val, _ := strings.Cut(entry, "=")
-			name = strings.TrimSpace(name)
-			if name == "" || strings.ContainsAny(name, " \t") {
-				log.Fatalf("Bad --resource name: %q", entry)
+			name, val, err := jobs.ParseResourceEntry(entry)
+			if err != nil {
+				log.Fatalf("%v", err)
 			}
-			switch name {
-			case "procs", "mem", "walltime":
-				log.Fatalf("--resource %q is reserved; use -p/-m/-t instead", name)
-			}
-			details[jobs.ResourcePrefix+name] = strings.TrimSpace(val)
+			details[jobs.ResourcePrefix+name] = val
 		}
 
 		// if the job name isn't set, look for a default option
@@ -554,6 +555,9 @@ func parseDepEntry(entry string) (kind, target string) {
 }
 
 func isDirectory(path string) (bool, error) {
+	if path == "" {
+		return false, fmt.Errorf("empty path")
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		if path[len(path)-1] == os.PathSeparator {
