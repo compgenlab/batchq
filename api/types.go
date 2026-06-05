@@ -218,6 +218,9 @@ type ClaimJobRequest struct {
 	MaxProcs       int    `json:"max_procs,omitempty"`
 	MaxMemoryMB    int    `json:"max_memory_mb,omitempty"`
 	MaxWalltimeSec int    `json:"max_walltime_sec,omitempty"`
+	// Host is the hostname the runner runs on, advertised so a (remote) server
+	// can show which machine a job ran on. Omitted/empty means unknown.
+	Host string `json:"host,omitempty"`
 	// Resources is the set of generic resources the runner advertises, keyed by
 	// resource name (counts as integer strings, labels as comma-separated sets).
 	// Omitted/nil means the runner advertises no generic resources.
@@ -243,6 +246,7 @@ type ClaimArrayRequest struct {
 	MaxProcs       int               `json:"max_procs,omitempty"`
 	MaxMemoryMB    int               `json:"max_memory_mb,omitempty"`
 	MaxWalltimeSec int               `json:"max_walltime_sec,omitempty"`
+	Host           string            `json:"host,omitempty"`
 	Resources      map[string]string `json:"resources,omitempty"`
 	MaxTasks       int               `json:"max_tasks,omitempty"`
 }

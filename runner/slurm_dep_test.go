@@ -37,7 +37,7 @@ func TestSlurmDepTrustsRecordedID(t *testing.T) {
 		t.Fatalf("SubmitJob parent: %v", err)
 	}
 
-	if _, err := c.ClaimNextJob(ctx, "test-runner", "slurm", 0, 0, 0, nil); err != nil {
+	if _, err := c.ClaimNextJob(ctx, "test-runner", "slurm", "", 0, 0, 0, nil); err != nil {
 		t.Fatalf("ClaimNextJob: %v", err)
 	}
 	const slurmID = "987654"
@@ -88,7 +88,7 @@ func TestSlurmDepSkipsSucceeded(t *testing.T) {
 		Name:    "parent",
 		Details: map[string]string{"script": "#!/bin/sh\necho parent\n"},
 	})
-	if _, err := c.ClaimNextJob(ctx, "test-runner", "simple", 0, 0, 0, nil); err != nil {
+	if _, err := c.ClaimNextJob(ctx, "test-runner", "simple", "", 0, 0, 0, nil); err != nil {
 		t.Fatalf("ClaimNextJob: %v", err)
 	}
 	if err := c.EndJob(ctx, "test-runner", parent.JobID, 0, ""); err != nil {
@@ -126,7 +126,7 @@ func TestEndJobNotesPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubmitJob: %v", err)
 	}
-	if _, err := c.ClaimNextJob(ctx, "runner-x", "simple", 0, 0, 0, nil); err != nil {
+	if _, err := c.ClaimNextJob(ctx, "runner-x", "simple", "", 0, 0, 0, nil); err != nil {
 		t.Fatalf("ClaimNextJob: %v", err)
 	}
 	const reason = "missing UID in job details"

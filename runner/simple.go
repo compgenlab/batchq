@@ -38,6 +38,7 @@ type simpleRunner struct {
 	resources      map[string]string
 	shellBin       string
 	runnerId       string
+	host           string
 	wakeup         chan struct{}
 	lock           sync.Mutex
 	logLock        sync.Mutex
@@ -101,6 +102,23 @@ func (r *simpleRunner) SetMaxWalltimeSec(walltime int) *simpleRunner {
 // running jobs; labels are advertised unchanged. See availableResources.
 func (r *simpleRunner) SetResources(resources map[string]string) *simpleRunner {
 	r.resources = resources
+	return r
+}
+
+// SetHost sets the hostname advertised on each claim. Empty leaves it unset
+// (the server then records no host for this runner).
+func (r *simpleRunner) SetHost(host string) *simpleRunner {
+	r.host = host
+	return r
+}
+
+// SetRunnerID overrides the runner's identity (default: a fresh UUID). A stable
+// id (e.g. the hostname) makes the server's Runners view show one row per
+// runner that updates across restarts. Empty is ignored (keeps the default).
+func (r *simpleRunner) SetRunnerID(id string) *simpleRunner {
+	if id != "" {
+		r.runnerId = id
+	}
 	return r
 }
 
@@ -362,7 +380,7 @@ func (r *simpleRunner) Start() bool {
 			if findJob {
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
-				resp, err := r.client.ClaimNextJob(ctx, r.runnerId, "simple", r.availProcs, r.availMem, r.maxWalltimeSec, r.availableResources())
+				resp, err := r.client.ClaimNextJob(ctx, r.runnerId, "simple", r.host, r.availProcs, r.availMem, r.maxWalltimeSec, r.availableResources())
 				cancel()
 				if err != nil {
 					r.logf("Error claiming job: %v\n", err)

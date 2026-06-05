@@ -90,10 +90,10 @@ type Options struct {
 // Client is a REST client for the batchq server. It is safe for concurrent
 // use.
 type Client struct {
-	opts    Options
-	httpC   *http.Client
-	base    string // URL prefix to prepend to every request (e.g. "http://batchq")
-	socket  string // unix socket path, if applicable; empty for https
+	opts   Options
+	httpC  *http.Client
+	base   string // URL prefix to prepend to every request (e.g. "http://batchq")
+	socket string // unix socket path, if applicable; empty for https
 }
 
 // Dial parses the URL and returns a Client. No connection is made until
@@ -421,9 +421,10 @@ func (c *Client) GetJobStatusCounts(ctx context.Context, showAll bool) (map[stri
 // response has Job=nil if nothing was claimed; MoreEligible then signals a lost
 // claim race (an immediate retry may land a job) and Blocked signals that
 // queued jobs remain which don't fit this runner's limits/resources.
-func (c *Client) ClaimNextJob(ctx context.Context, runnerID, kind string, maxProcs, maxMemMB, maxWalltimeSec int, resources map[string]string) (*api.ClaimJobResponse, error) {
+func (c *Client) ClaimNextJob(ctx context.Context, runnerID, kind, host string, maxProcs, maxMemMB, maxWalltimeSec int, resources map[string]string) (*api.ClaimJobResponse, error) {
 	req := api.ClaimJobRequest{
 		Kind:           kind,
+		Host:           host,
 		MaxProcs:       maxProcs,
 		MaxMemoryMB:    maxMemMB,
 		MaxWalltimeSec: maxWalltimeSec,
@@ -440,9 +441,10 @@ func (c *Client) ClaimNextJob(ctx context.Context, runnerID, kind string, maxPro
 // ClaimNextArrayBatch claims the next plain job or array batch for a
 // batch-capable runner. maxTasks (<=0 = unbounded) caps how many tasks of one
 // array are claimed together. See api.ClaimArrayResponse for the shape.
-func (c *Client) ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, maxProcs, maxMemMB, maxWalltimeSec int, resources map[string]string, maxTasks int) (*api.ClaimArrayResponse, error) {
+func (c *Client) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host string, maxProcs, maxMemMB, maxWalltimeSec int, resources map[string]string, maxTasks int) (*api.ClaimArrayResponse, error) {
 	req := api.ClaimArrayRequest{
 		Kind:           kind,
+		Host:           host,
 		MaxProcs:       maxProcs,
 		MaxMemoryMB:    maxMemMB,
 		MaxWalltimeSec: maxWalltimeSec,

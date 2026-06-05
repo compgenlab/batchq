@@ -83,6 +83,25 @@ var submitCmd = &cobra.Command{
 			jobEnv = true
 		}
 
+		// Default required resources: the submit-side counterpart to the
+		// runner's advertised cluster/host/resources. These route a job to a
+		// matching runner once a server fronts multiple clusters/hosts. Set
+		// here first so an explicit --cluster/--host flag or a --resource /
+		// #BATCHQ -resource entry (processed below) overrides them.
+		if v := firstNonEmpty(submitCluster, Config.JobDefaults.Cluster); v != "" {
+			details[jobs.ResourcePrefix+"cluster"] = v
+		}
+		if v := firstNonEmpty(submitHost, Config.JobDefaults.Host); v != "" {
+			details[jobs.ResourcePrefix+"host"] = v
+		}
+		for k, v := range Config.JobDefaults.Resources {
+			switch k {
+			case "procs", "mem", "walltime":
+				log.Fatalf("[job_defaults.resources] %q is reserved; use procs/mem/walltime", k)
+			}
+			details[jobs.ResourcePrefix+k] = v
+		}
+
 		// process values from script prefixed with #BATCHQ
 		//
 		// supported values:
@@ -562,6 +581,8 @@ var jobOutputs []string
 var jobResources []string
 var jobArray string
 var jobAfterCorr []string
+var submitCluster string
+var submitHost string
 
 var verbose bool
 var slurmMode bool
@@ -585,6 +606,8 @@ func init() {
 	submitCmd.Flags().StringArrayVar(&jobInputs, "input", nil, "Input file path (repeatable)")
 	submitCmd.Flags().StringArrayVar(&jobOutputs, "output", nil, "Output file path (repeatable)")
 	submitCmd.Flags().StringArrayVar(&jobResources, "resource", nil, "Required resource (name=value or name, repeatable)")
+	submitCmd.Flags().StringVar(&submitCluster, "cluster", "", "Require this cluster (shorthand for --resource cluster=<name>)")
+	submitCmd.Flags().StringVar(&submitHost, "host", "", "Require this host (shorthand for --resource host=<name>)")
 	submitCmd.Flags().StringVar(&jobArray, "array", "", "Submit as a job array (e.g. 0-99, 1-10:2, 1,3,5, 0-99%4)")
 
 	rootCmd.AddCommand(submitCmd)

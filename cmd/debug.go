@@ -199,6 +199,9 @@ func jobDefaultsRows(raw *support.Config, d support.Defaults) []debugRow {
 		stringRow("stderr", "", raw.JobDefaults.Stderr, d.JobStderr),
 		boolRow("hold", raw.JobDefaults.Hold),
 		boolRow("env", raw.JobDefaults.Env),
+		stringRow("cluster", "", raw.JobDefaults.Cluster, ""),
+		stringRow("host", "", raw.JobDefaults.Host, ""),
+		resourcesRow(raw.JobDefaults.Resources),
 	}
 }
 
@@ -210,6 +213,10 @@ func simpleRunnerRows(raw *support.Config, d support.Defaults) []debugRow {
 		stringRow("max_walltime", "", raw.SimpleRunner.MaxWalltime, ""),
 		boolRow("use_cgroup_v1", raw.SimpleRunner.UseCgroupV1),
 		boolRow("use_cgroup_v2", raw.SimpleRunner.UseCgroupV2),
+		intRow("max_jobs", raw.SimpleRunner.MaxJobs),
+		stringRow("runner_id", "", raw.SimpleRunner.RunnerID, ""),
+		stringRow("host", "", raw.SimpleRunner.Host, ""),
+		stringRow("cluster", "", raw.SimpleRunner.Cluster, ""),
 		resourcesRow(raw.SimpleRunner.Resources),
 	}
 }
@@ -221,6 +228,9 @@ func slurmRunnerRows(raw *support.Config) []debugRow {
 		stringRow("partition", "", raw.SlurmRunner.Partition, ""),
 		intRow("max_jobs", raw.SlurmRunner.MaxJobs),
 		intRow("max_slurm_jobs", raw.SlurmRunner.MaxSlurmJobs),
+		stringRow("runner_id", "", raw.SlurmRunner.RunnerID, ""),
+		stringRow("host", "", raw.SlurmRunner.Host, ""),
+		stringRow("cluster", "", raw.SlurmRunner.Cluster, ""),
 		resourcesRow(raw.SlurmRunner.Resources),
 	}
 }

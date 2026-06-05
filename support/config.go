@@ -92,6 +92,21 @@ type JobDefaultsConfig struct {
 	Stderr   string `toml:"stderr"`
 	Hold     bool   `toml:"hold"`
 	Env      bool   `toml:"env"`
+
+	// Cluster / Host are default required resources attached to every job this
+	// user submits — the submit-side counterpart to the runner's advertised
+	// cluster/host. They only matter once a single server fronts multiple
+	// clusters/hosts: the scheduler then routes a job to a runner advertising
+	// the matching cluster/host. Locally (one runner) they are redundant and
+	// usually left unset. Mirrored by submit's --cluster / --host flags;
+	// an explicit --resource (or #BATCHQ -resource) of the same name overrides.
+	Cluster string `toml:"cluster"`
+	Host    string `toml:"host"`
+
+	// Resources is a map of additional default required resources attached to
+	// every submission (e.g. scratch = "500GB"), the submit-side counterpart to
+	// [*_runner.resources]. Overridable per-submit by --resource.
+	Resources map[string]string `toml:"resources"`
 }
 
 type SimpleRunnerConfig struct {
@@ -101,6 +116,28 @@ type SimpleRunnerConfig struct {
 	UseCgroupV1 bool   `toml:"use_cgroup_v1"`
 	UseCgroupV2 bool   `toml:"use_cgroup_v2"`
 	Shell       string `toml:"shell"`
+
+	// MaxJobs caps how many jobs this runner runs concurrently. Zero / unset
+	// means unlimited (bounded only by max_procs/max_mem). Mirrors the
+	// --max-jobs flag.
+	MaxJobs int `toml:"max_jobs"`
+
+	// RunnerID is the stable identity this runner reports to the server, so the
+	// Runners view shows one row per runner that updates in place across
+	// restarts (rather than a new row per invocation). Empty / unset defaults
+	// to the hostname. Mirrors the --runner-id flag.
+	RunnerID string `toml:"runner_id"`
+
+	// Host is the hostname this runner advertises to the server on each claim
+	// (so a remote server's Runners view can show which machine ran a job).
+	// Empty / unset defaults to the OS hostname.
+	Host string `toml:"host"`
+
+	// Cluster is advertised as a "cluster" resource on every claim — a
+	// convenience for the common case of tagging a runner with the cluster it
+	// runs on, so jobs requiring that cluster are routed here. Equivalent to
+	// adding cluster = "..." under [simple_runner.resources].
+	Cluster string `toml:"cluster"`
 
 	// Resources advertises generic resources this runner provides, e.g.
 	// [simple_runner.resources] with gpu = "4", cluster = "xyz_cluster".
@@ -122,6 +159,19 @@ type SlurmRunnerConfig struct {
 	// queue at once. The runner polls `squeue` and pauses submitting when
 	// the live count reaches this limit. Zero / unset means unlimited.
 	MaxSlurmJobs int `toml:"max_slurm_jobs"`
+
+	// RunnerID is the stable identity this runner reports to the server.
+	// Empty / unset defaults to the hostname. Mirrors the --runner-id flag.
+	RunnerID string `toml:"runner_id"`
+
+	// Host is the hostname this runner advertises to the server on each claim.
+	// Empty / unset defaults to the OS hostname.
+	Host string `toml:"host"`
+
+	// Cluster is advertised as a "cluster" resource on every claim (convenience
+	// for tagging this SLURM runner with its cluster). Equivalent to a
+	// cluster = "..." entry under [slurm_runner.resources].
+	Cluster string `toml:"cluster"`
 
 	// Resources advertises generic resources this SLURM runner provides
 	// (e.g. cluster = "xyz_cluster"), so resource-tagged jobs can be routed

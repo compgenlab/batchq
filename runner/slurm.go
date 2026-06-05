@@ -27,6 +27,7 @@ type slurmRunner struct {
 	account     string
 	username    string
 	partition   string
+	host        string
 	resources   map[string]string
 }
 
@@ -119,6 +120,22 @@ func (r *slurmRunner) SetResources(resources map[string]string) *slurmRunner {
 	return r
 }
 
+// SetHost sets the hostname advertised on each claim (the SLURM submit host).
+func (r *slurmRunner) SetHost(host string) *slurmRunner {
+	r.host = host
+	return r
+}
+
+// SetRunnerID overrides the runner's identity (default: a fresh UUID). A stable
+// id makes the server's Runners view show one row per runner across restarts.
+// Empty is ignored (keeps the default).
+func (r *slurmRunner) SetRunnerID(id string) *slurmRunner {
+	if id != "" {
+		r.runnerId = id
+	}
+	return r
+}
+
 func (r *slurmRunner) Start() bool {
 	submittedOne := false
 	r.availJobs = r.maxJobs
@@ -161,7 +178,7 @@ func (r *slurmRunner) Start() bool {
 		// SLURM enforces them. An array candidate is claimed in a budget-bounded
 		// batch so it becomes one `sbatch --array`, drip-fed across passes.
 		claimCtx, claimCancel := context.WithTimeout(ctx, 30*time.Second)
-		resp, err := r.client.ClaimNextArrayBatch(claimCtx, r.runnerId, "slurm", -1, -1, -1, r.resources, maxTasks)
+		resp, err := r.client.ClaimNextArrayBatch(claimCtx, r.runnerId, "slurm", r.host, -1, -1, -1, r.resources, maxTasks)
 		claimCancel()
 		if err != nil {
 			fmt.Printf("Error claiming job: %v\n", err)
