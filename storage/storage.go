@@ -18,6 +18,13 @@ var ErrJobNotFound = errors.New("job not found")
 // current state (e.g. ending a job that isn't running).
 var ErrInvalidState = errors.New("invalid state for operation")
 
+// ArrayMember identifies one task of a job array: its job id and the task's
+// array_index. Returned by FindArrayMembers.
+type ArrayMember struct {
+	ID    string
+	Index int
+}
+
 // Limits constrains which queued jobs a runner is willing to claim. A value
 // of -1 means "no limit on this dimension".
 type Limits struct {
@@ -201,6 +208,13 @@ type Storage interface {
 	// (key, value) row in job_details. Used for the run_id filter on
 	// GET /jobs.
 	FindJobsByDetail(ctx context.Context, key, value string) ([]string, error)
+
+	// FindArrayMembers returns the members of the array identified by
+	// arrayID — each member's job id and array_index — in a single query.
+	// Empty if arrayID is not an array (no job carries it as array_id).
+	// Replaces the FindJobsByDetail + per-id GetJob N+1 in array dependency
+	// expansion.
+	FindArrayMembers(ctx context.Context, arrayID string) ([]ArrayMember, error)
 
 	// FindJobsByInputPath / FindJobsByOutputPath return job IDs that
 	// list path as an input / output file, respectively.

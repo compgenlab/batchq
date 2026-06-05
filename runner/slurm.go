@@ -667,6 +667,14 @@ func SlurmGetUserJobCount(username string) (int, error) {
 		return 0, fmt.Errorf("running squeue: %w", err)
 	}
 
+	return countSqueueJobs(out)
+}
+
+// countSqueueJobs counts the job rows in `squeue` output: every non-blank line
+// except the "JOBID ..." header. Blank lines are skipped (HasPrefix, not a
+// fixed-width slice, so short/blank lines can't panic). Split out from
+// SlurmGetUserJobCount so the parsing is unit-testable without a SLURM install.
+func countSqueueJobs(out []byte) (int, error) {
 	scanner := bufio.NewScanner(bytes.NewReader(out))
 	count := 0
 	for scanner.Scan() {

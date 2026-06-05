@@ -699,6 +699,11 @@ func (s *sqliteStorage) GetQueueJobs(ctx context.Context, showAll, sortByStatus 
 			FROM job_deps
 			GROUP BY job_id
 		) deps ON deps.job_id = j.id
+		-- The group_concat/parseConcatKV round-trip is delimited by char(10)
+		-- and splits each entry on the first '='. The keys selected here must
+		-- therefore never contain a newline in their value (procs/mem/walltime/
+		-- user/run_id never do). Do NOT add a free-text key (e.g. script, notes)
+		-- to this IN (...) list without changing the encoding.
 		LEFT JOIN (
 			SELECT job_id, group_concat(key || '=' || value, char(10)) AS details
 			FROM job_details
@@ -1824,6 +1829,34 @@ func (s *sqliteStorage) FindJobsByDetail(ctx context.Context, key, value string)
 	}
 	defer rows.Close()
 	return collectIDs(rows)
+}
+
+func (s *sqliteStorage) FindArrayMembers(ctx context.Context, arrayID string) ([]ArrayMember, error) {
+	// One query: every job carrying array_id = ?, left-joined to its
+	// array_index detail. Replaces N+1 GetJob calls in dependency expansion.
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT a.job_id, COALESCE(i.value, '')
+		 FROM job_details a
+		 LEFT JOIN job_details i
+		   ON i.job_id = a.job_id AND i.key = 'array_index'
+		 WHERE a.key = 'array_id' AND a.value = ?`,
+		arrayID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []ArrayMember
+	for rows.Next() {
+		var id, idxStr string
+		if err := rows.Scan(&id, &idxStr); err != nil {
+			return nil, err
+		}
+		// A missing/blank array_index parses to 0, matching the previous
+		// strconv.Atoi(GetDetail(...)) behavior in the service layer.
+		idx, _ := strconv.Atoi(idxStr)
+		members = append(members, ArrayMember{ID: id, Index: idx})
+	}
+	return members, rows.Err()
 }
 
 func (s *sqliteStorage) FindJobsByInputPath(ctx context.Context, path string) ([]string, error) {

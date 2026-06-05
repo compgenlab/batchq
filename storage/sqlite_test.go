@@ -412,6 +412,49 @@ func TestInsertArray(t *testing.T) {
 	}
 }
 
+// FindArrayMembers returns id+index for every task in one query, and nothing
+// for a non-array id. Backs the N+1-free array dependency expansion.
+func TestFindArrayMembers(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	const arrayID = "arr-fm"
+	var tasks []*jobs.JobDef
+	for _, idx := range []int{0, 1, 2} {
+		tasks = append(tasks, mkArrayTask("fm-"+strconv.Itoa(idx), arrayID, idx, 3, 0, nil))
+	}
+	if err := s.InsertArray(ctx, arrayID, tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+
+	members, err := s.FindArrayMembers(ctx, arrayID)
+	if err != nil {
+		t.Fatalf("FindArrayMembers: %v", err)
+	}
+	if len(members) != 3 {
+		t.Fatalf("expected 3 members, got %d", len(members))
+	}
+	got := map[string]int{}
+	for _, m := range members {
+		got[m.ID] = m.Index
+	}
+	for _, idx := range []int{0, 1, 2} {
+		id := "fm-" + strconv.Itoa(idx)
+		if got[id] != idx {
+			t.Errorf("member %q index = %d, want %d", id, got[id], idx)
+		}
+	}
+
+	// A non-array id yields no members.
+	none, err := s.FindArrayMembers(ctx, "not-an-array")
+	if err != nil {
+		t.Fatalf("FindArrayMembers(non-array): %v", err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("expected 0 members for non-array id, got %d", len(none))
+	}
+}
+
 // InsertArray must be atomic: a failure mid-array (here a duplicate task id)
 // rolls back every task.
 func TestInsertArrayAtomic(t *testing.T) {

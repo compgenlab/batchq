@@ -136,21 +136,16 @@ func parseDepSpecs(arrayDeps []string) ([]depSpec, error) {
 // loadArrayMembers returns the member jobs of an array id, or nil if the id is
 // not an array (i.e. a plain job id).
 func (s *Service) loadArrayMembers(ctx context.Context, arrayID string) ([]arrayMember, error) {
-	ids, err := s.store.FindJobsByDetail(ctx, "array_id", arrayID)
+	rows, err := s.store.FindArrayMembers(ctx, arrayID)
 	if err != nil {
 		return nil, err
 	}
-	if len(ids) == 0 {
+	if len(rows) == 0 {
 		return nil, nil
 	}
-	members := make([]arrayMember, 0, len(ids))
-	for _, id := range ids {
-		job, err := s.store.GetJob(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		idx, _ := strconv.Atoi(job.GetDetail("array_index", ""))
-		members = append(members, arrayMember{id: id, index: idx})
+	members := make([]arrayMember, 0, len(rows))
+	for _, r := range rows {
+		members = append(members, arrayMember{id: r.ID, index: r.Index})
 	}
 	return members, nil
 }

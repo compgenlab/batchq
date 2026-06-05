@@ -555,6 +555,11 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 
 	os.Chmod(script, 0755) // just in case it existed before
 
+	// CommandContext with a never-canceled Background context: os/exec requires
+	// a context-created command before cmd.Cancel may be set. We don't drive
+	// cancellation through the context, though — the job's lifetime is decoupled
+	// from any request context. Cancellation is instead invoked explicitly via
+	// cmd.Cancel below, which the signal handler calls to kill the process group.
 	cmd := exec.CommandContext(context.Background(), script)
 
 	cmd.Cancel = func() error {
@@ -574,8 +579,6 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 		}
 		return nil
 	}
-
-	cmd.WaitDelay = 30 * time.Second
 
 	cmd.Stdin = nil
 	cmd.Stdout = nil
@@ -610,26 +613,49 @@ func (r *simpleRunner) startJob(job *api.JobDTO) bool {
 	jobStdout := expandArrayPlaceholders(job, job.Details["stdout"])
 	jobStderr := expandArrayPlaceholders(job, job.Details["stderr"])
 
+	// A job whose output file can't be created must fail loudly rather than run
+	// with discarded stdout/stderr and report SUCCESS — silently losing output
+	// defeats the point of the queue. cleanup() releases anything opened so far.
 	if jobStdout != "" {
-		if filepath.Dir(jobStdout) != "." {
-			os.MkdirAll(filepath.Dir(jobStdout), 0755)
+		if dir := filepath.Dir(jobStdout); dir != "." {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				r.logf("Job %s: cannot create stdout dir %q: %v\n", job.JobID, dir, err)
+				cleanup()
+				r.failClaimedJob(job.JobID, 1, fmt.Sprintf("cannot create stdout dir %q: %v", dir, err))
+				return false
+			}
 		}
-		if f, err := os.Create(jobStdout); err == nil {
-			cmd.Stdout = f
-			stdoutFile = f
+		f, err := os.Create(jobStdout)
+		if err != nil {
+			r.logf("Job %s: cannot create stdout %q: %v\n", job.JobID, jobStdout, err)
+			cleanup()
+			r.failClaimedJob(job.JobID, 1, fmt.Sprintf("cannot create stdout %q: %v", jobStdout, err))
+			return false
 		}
+		cmd.Stdout = f
+		stdoutFile = f
 	}
 	if jobStderr != "" {
 		if jobStderr == jobStdout {
 			cmd.Stderr = cmd.Stdout
 		} else {
-			if filepath.Dir(jobStderr) != "." {
-				os.MkdirAll(filepath.Dir(jobStderr), 0755)
+			if dir := filepath.Dir(jobStderr); dir != "." {
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					r.logf("Job %s: cannot create stderr dir %q: %v\n", job.JobID, dir, err)
+					cleanup()
+					r.failClaimedJob(job.JobID, 1, fmt.Sprintf("cannot create stderr dir %q: %v", dir, err))
+					return false
+				}
 			}
-			if f, err := os.Create(jobStderr); err == nil {
-				cmd.Stderr = f
-				stderrFile = f
+			f, err := os.Create(jobStderr)
+			if err != nil {
+				r.logf("Job %s: cannot create stderr %q: %v\n", job.JobID, jobStderr, err)
+				cleanup()
+				r.failClaimedJob(job.JobID, 1, fmt.Sprintf("cannot create stderr %q: %v", jobStderr, err))
+				return false
 			}
+			cmd.Stderr = f
+			stderrFile = f
 		}
 	}
 	if env := job.Details["env"]; env != "" {
