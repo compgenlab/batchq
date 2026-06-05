@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"log"
+	"os"
 	"os/exec"
 	"os/user"
 	"strings"
@@ -57,13 +58,15 @@ var runCmd = &cobra.Command{
 				log.Fatalln("SLURM username must be specified via --slurm-user or in the config file")
 			}
 
+			resources := withCluster(mergeResources(Config.SlurmRunner.Resources, runResources), firstNonEmpty(runCluster, Config.SlurmRunner.Cluster))
 			runr = runner.NewSlurmRunner(c).
 				SetSlurmMaxUserJobs(slurmMaxJobs).
 				SetMaxJobCount(maxJobs).
 				SetSlurmUsername(slurmUser).
 				SetSlurmAccount(slurmAcct).
 				SetSlurmPartition(slurmPartition).
-				SetResources(mergeResources(Config.SlurmRunner.Resources, runResources))
+				SetHost(resolveHost(runHost, Config.SlurmRunner.Host)).
+				SetResources(resources)
 
 		case "simple":
 			if maxProcs < 0 && Config.SimpleRunner.MaxProcs > 0 {
@@ -88,6 +91,7 @@ var runCmd = &cobra.Command{
 				log.Fatalln("You cannot use cgroup v2 and v1 at the same time!")
 			}
 
+			resources := withCluster(mergeResources(Config.SimpleRunner.Resources, runResources), firstNonEmpty(runCluster, Config.SimpleRunner.Cluster))
 			runr = runner.NewSimpleRunner(c).
 				SetMaxProcs(maxProcs).
 				SetMaxMemMB(jobs.ParseMemoryString(maxMemStr)).
@@ -96,7 +100,8 @@ var runCmd = &cobra.Command{
 				SetShell(shell).
 				SetCgroupV2(useCgroupV2).
 				SetCgroupV1(useCgroupV1).
-				SetResources(mergeResources(Config.SimpleRunner.Resources, runResources))
+				SetHost(resolveHost(runHost, Config.SimpleRunner.Host)).
+				SetResources(resources)
 		}
 		if runr != nil {
 			runr.Start()
@@ -118,6 +123,37 @@ var slurmAcct string
 var slurmPartition string
 var slurmMaxJobs int
 var runResources []string
+var runHost string
+var runCluster string
+
+// resolveHost picks the hostname the runner advertises: the --host flag, else
+// the config value, else the OS hostname.
+func resolveHost(flag, cfg string) string {
+	if flag != "" {
+		return flag
+	}
+	if cfg != "" {
+		return cfg
+	}
+	if h, err := os.Hostname(); err == nil {
+		return h
+	}
+	return ""
+}
+
+// withCluster advertises cluster as a "cluster" resource (a convenience over
+// adding it to [*_runner.resources]). An explicit cluster resource already in
+// the map is overridden by the dedicated flag/config value.
+func withCluster(resources map[string]string, cluster string) map[string]string {
+	if cluster == "" {
+		return resources
+	}
+	if resources == nil {
+		resources = map[string]string{}
+	}
+	resources["cluster"] = cluster
+	return resources
+}
 
 // mergeResources folds repeated --resource name=value flags over the config-file
 // resource map (flags override config per key). Returns nil if neither supplies
@@ -156,6 +192,8 @@ func init() {
 	runCmd.Flags().IntVar(&slurmMaxJobs, "slurm-max-jobs", -1, "Max jobs allowed for this user account")
 	runCmd.Flags().StringVar(&slurmUser, "slurm-user", "", "SLURM user (used for calculating job-count)")
 	runCmd.Flags().StringArrayVar(&runResources, "resource", nil, "Advertise an available resource (name=value or name, repeatable)")
+	runCmd.Flags().StringVar(&runHost, "host", "", "Hostname this runner advertises on each claim (default: OS hostname)")
+	runCmd.Flags().StringVar(&runCluster, "cluster", "", "Advertise this cluster name as a 'cluster' resource")
 
 	rootCmd.AddCommand(runCmd)
 }

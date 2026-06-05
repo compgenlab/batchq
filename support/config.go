@@ -102,6 +102,17 @@ type SimpleRunnerConfig struct {
 	UseCgroupV2 bool   `toml:"use_cgroup_v2"`
 	Shell       string `toml:"shell"`
 
+	// Host is the hostname this runner advertises to the server on each claim
+	// (so a remote server's Runners view can show which machine ran a job).
+	// Empty / unset defaults to the OS hostname.
+	Host string `toml:"host"`
+
+	// Cluster is advertised as a "cluster" resource on every claim — a
+	// convenience for the common case of tagging a runner with the cluster it
+	// runs on, so jobs requiring that cluster are routed here. Equivalent to
+	// adding cluster = "..." under [simple_runner.resources].
+	Cluster string `toml:"cluster"`
+
 	// Resources advertises generic resources this runner provides, e.g.
 	// [simple_runner.resources] with gpu = "4", cluster = "xyz_cluster".
 	// Counts are integer strings; labels are plain or comma-separated sets.
@@ -122,6 +133,15 @@ type SlurmRunnerConfig struct {
 	// queue at once. The runner polls `squeue` and pauses submitting when
 	// the live count reaches this limit. Zero / unset means unlimited.
 	MaxSlurmJobs int `toml:"max_slurm_jobs"`
+
+	// Host is the hostname this runner advertises to the server on each claim.
+	// Empty / unset defaults to the OS hostname.
+	Host string `toml:"host"`
+
+	// Cluster is advertised as a "cluster" resource on every claim (convenience
+	// for tagging this SLURM runner with its cluster). Equivalent to a
+	// cluster = "..." entry under [slurm_runner.resources].
+	Cluster string `toml:"cluster"`
 
 	// Resources advertises generic resources this SLURM runner provides
 	// (e.g. cluster = "xyz_cluster"), so resource-tagged jobs can be routed
