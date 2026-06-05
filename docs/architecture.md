@@ -22,7 +22,7 @@ is that exactly one process is touching the database file at a time.
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Clients (one per process invocation)                               │
 │  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐  │
-│  │ submit │ │  show  │ │  hold  │ │cleanup │ │  run   │ │  web   │  │
+│  │ submit │ │ queue  │ │  hold  │ │cleanup │ │  run   │ │  web   │  │
 │  └────┬───┘ └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘ └───┬────┘  │
 └───────┼─────────┼──────────┼──────────┼──────────┼──────────┼───────┘
         │         │          │          │          │          │
@@ -158,8 +158,9 @@ The directories under the repository root map roughly to layers:
   both the server and the client.
 - `client/` — the Go client. One method per REST endpoint plus the
   autospawn helper. Used by every in-repo subcommand.
-- `server/` — the HTTP layer: route wiring, the unix-socket listener,
-  the activity-tracking middleware that drives idle shutdown.
+- `server/` — the HTTP layer: route wiring, the listener (unix socket or
+  TCP), the shared-token auth middleware, and the activity-tracking
+  middleware that drives idle shutdown.
 - `service/` — server-side business logic that wraps the storage layer
   with dependency resolution, queue ordering, atomic claim, hold and
   release, recursive cleanup. No HTTP knowledge here.
@@ -195,8 +196,9 @@ A typical submission and execution looks like this:
    next eligible job and transitions it `QUEUED → RUNNING`, returning
    the job DTO.
 4. The runner executes the job, captures stdout and stderr, and reports
-   the outcome back via `POST /api/v1/jobs/{id}/status` and friends. The
-   server writes the terminal state and resolves any waiting dependents.
+   the outcome back via the runner endpoints (`POST
+   /api/v1/runners/{id}/jobs/{id}/end` and friends). The server writes
+   the terminal state and resolves any waiting dependents.
 5. **`batchq queue`** GETs `/api/v1/queue/jobs` and pretty-prints
    the result.
 
