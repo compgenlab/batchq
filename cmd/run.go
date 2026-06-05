@@ -59,7 +59,9 @@ var runCmd = &cobra.Command{
 			}
 
 			host := resolveHost(runHost, Config.SlurmRunner.Host)
-			resources := withCluster(mergeResources(Config.SlurmRunner.Resources, runResources), firstNonEmpty(runCluster, Config.SlurmRunner.Cluster))
+			resources := mergeResources(Config.SlurmRunner.Resources, runResources)
+			resources = withResource(resources, "cluster", firstNonEmpty(runCluster, Config.SlurmRunner.Cluster))
+			resources = withResource(resources, "host", host)
 			runr = runner.NewSlurmRunner(c).
 				SetSlurmMaxUserJobs(slurmMaxJobs).
 				SetMaxJobCount(maxJobs).
@@ -98,7 +100,9 @@ var runCmd = &cobra.Command{
 			}
 
 			host := resolveHost(runHost, Config.SimpleRunner.Host)
-			resources := withCluster(mergeResources(Config.SimpleRunner.Resources, runResources), firstNonEmpty(runCluster, Config.SimpleRunner.Cluster))
+			resources := mergeResources(Config.SimpleRunner.Resources, runResources)
+			resources = withResource(resources, "cluster", firstNonEmpty(runCluster, Config.SimpleRunner.Cluster))
+			resources = withResource(resources, "host", host)
 			runr = runner.NewSimpleRunner(c).
 				SetMaxProcs(maxProcs).
 				SetMaxMemMB(jobs.ParseMemoryString(maxMemStr)).
@@ -165,17 +169,18 @@ func resolveRunnerID(flag, cfg, host string) string {
 	return host
 }
 
-// withCluster advertises cluster as a "cluster" resource (a convenience over
-// adding it to [*_runner.resources]). An explicit cluster resource already in
-// the map is overridden by the dedicated flag/config value.
-func withCluster(resources map[string]string, cluster string) map[string]string {
-	if cluster == "" {
+// withResource adds key=val to the advertised resource map (creating it if
+// nil), so a job requiring that resource can be matched to this runner. An
+// empty value is a no-op. Used to advertise the cluster and host as matchable
+// resources (in addition to host being reported as display metadata).
+func withResource(resources map[string]string, key, val string) map[string]string {
+	if val == "" {
 		return resources
 	}
 	if resources == nil {
 		resources = map[string]string{}
 	}
-	resources["cluster"] = cluster
+	resources[key] = val
 	return resources
 }
 

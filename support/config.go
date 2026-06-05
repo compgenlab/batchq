@@ -92,6 +92,21 @@ type JobDefaultsConfig struct {
 	Stderr   string `toml:"stderr"`
 	Hold     bool   `toml:"hold"`
 	Env      bool   `toml:"env"`
+
+	// Cluster / Host are default required resources attached to every job this
+	// user submits — the submit-side counterpart to the runner's advertised
+	// cluster/host. They only matter once a single server fronts multiple
+	// clusters/hosts: the scheduler then routes a job to a runner advertising
+	// the matching cluster/host. Locally (one runner) they are redundant and
+	// usually left unset. Mirrored by submit's --cluster / --host flags;
+	// an explicit --resource (or #BATCHQ -resource) of the same name overrides.
+	Cluster string `toml:"cluster"`
+	Host    string `toml:"host"`
+
+	// Resources is a map of additional default required resources attached to
+	// every submission (e.g. scratch = "500GB"), the submit-side counterpart to
+	// [*_runner.resources]. Overridable per-submit by --resource.
+	Resources map[string]string `toml:"resources"`
 }
 
 type SimpleRunnerConfig struct {

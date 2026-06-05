@@ -29,15 +29,19 @@ func TestResolveHostPrefersFlagThenConfig(t *testing.T) {
 	}
 }
 
-func TestWithCluster(t *testing.T) {
-	if got := withCluster(nil, ""); got != nil {
-		t.Errorf("empty cluster should leave resources nil, got %v", got)
+func TestWithResource(t *testing.T) {
+	if got := withResource(nil, "cluster", ""); got != nil {
+		t.Errorf("empty value should leave resources nil, got %v", got)
 	}
-	if got := withCluster(nil, "hpc"); got["cluster"] != "hpc" {
-		t.Errorf("cluster not advertised: %v", got)
+	if got := withResource(nil, "cluster", "hpc"); got["cluster"] != "hpc" {
+		t.Errorf("resource not advertised: %v", got)
 	}
-	got := withCluster(map[string]string{"cluster": "old", "gpu": "4"}, "new")
+	got := withResource(map[string]string{"cluster": "old", "gpu": "4"}, "cluster", "new")
 	if got["cluster"] != "new" || got["gpu"] != "4" {
 		t.Errorf("cluster should override, gpu should survive: %v", got)
+	}
+	got = withResource(map[string]string{"cluster": "x"}, "host", "node01")
+	if got["host"] != "node01" || got["cluster"] != "x" {
+		t.Errorf("host should be added alongside cluster: %v", got)
 	}
 }

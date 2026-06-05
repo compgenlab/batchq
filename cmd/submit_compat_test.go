@@ -147,6 +147,8 @@ func resetSubmitFlags() {
 	jobResources = nil
 	jobArray = ""
 	jobAfterCorr = nil
+	submitCluster = ""
+	submitHost = ""
 	verbose = false
 	slurmMode = false
 
@@ -297,6 +299,51 @@ func TestSubmitResourceFlagsAndDirectives(t *testing.T) {
 	// Bare #BATCHQ -resource directive lands as a present, empty-valued flag.
 	if v, ok := dto.Details["resource.fastio"]; !ok || v != "" {
 		t.Fatalf("resource.fastio: got (%q, present=%v), want empty+present", v, ok)
+	}
+}
+
+// --cluster/--host shorthands, the [job_defaults] cluster/host config, and the
+// precedence between them (flag > config; an explicit --resource wins over the
+// shorthand).
+func TestSubmitClusterHostDefaults(t *testing.T) {
+	c := startCompatServer(t)
+	dir := t.TempDir()
+	script := filepath.Join(dir, "ch.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	get := func(out string) map[string]string {
+		dto, err := c.GetJob(context.Background(), out)
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		return dto.Details
+	}
+
+	// Flags become required resources.
+	d := get(runSubmit(t, "--cluster", "chen-cluster", "--host", "node01", script))
+	if d["resource.cluster"] != "chen-cluster" || d["resource.host"] != "node01" {
+		t.Fatalf("flag resources: %+v", d)
+	}
+
+	// An explicit --resource overrides the --cluster shorthand.
+	d = get(runSubmit(t, "--cluster", "chen-cluster", "--resource", "cluster=override", script))
+	if d["resource.cluster"] != "override" {
+		t.Fatalf("explicit --resource should win: %q", d["resource.cluster"])
+	}
+
+	// [job_defaults] cluster applies when no flag is given.
+	saved := Config.JobDefaults.Cluster
+	Config.JobDefaults.Cluster = "lab-cluster"
+	defer func() { Config.JobDefaults.Cluster = saved }()
+	d = get(runSubmit(t, script))
+	if d["resource.cluster"] != "lab-cluster" {
+		t.Fatalf("config default cluster: %q", d["resource.cluster"])
+	}
+	// ...but the flag overrides the config default.
+	d = get(runSubmit(t, "--cluster", "flag-cluster", script))
+	if d["resource.cluster"] != "flag-cluster" {
+		t.Fatalf("flag should override config: %q", d["resource.cluster"])
 	}
 }
 

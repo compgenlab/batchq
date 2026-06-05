@@ -199,6 +199,9 @@ func jobDefaultsRows(raw *support.Config, d support.Defaults) []debugRow {
 		stringRow("stderr", "", raw.JobDefaults.Stderr, d.JobStderr),
 		boolRow("hold", raw.JobDefaults.Hold),
 		boolRow("env", raw.JobDefaults.Env),
+		stringRow("cluster", "", raw.JobDefaults.Cluster, ""),
+		stringRow("host", "", raw.JobDefaults.Host, ""),
+		resourcesRow(raw.JobDefaults.Resources),
 	}
 }
 
