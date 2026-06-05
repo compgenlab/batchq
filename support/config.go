@@ -102,6 +102,17 @@ type SimpleRunnerConfig struct {
 	UseCgroupV2 bool   `toml:"use_cgroup_v2"`
 	Shell       string `toml:"shell"`
 
+	// MaxJobs caps how many jobs this runner runs concurrently. Zero / unset
+	// means unlimited (bounded only by max_procs/max_mem). Mirrors the
+	// --max-jobs flag.
+	MaxJobs int `toml:"max_jobs"`
+
+	// RunnerID is the stable identity this runner reports to the server, so the
+	// Runners view shows one row per runner that updates in place across
+	// restarts (rather than a new row per invocation). Empty / unset defaults
+	// to the hostname. Mirrors the --runner-id flag.
+	RunnerID string `toml:"runner_id"`
+
 	// Host is the hostname this runner advertises to the server on each claim
 	// (so a remote server's Runners view can show which machine ran a job).
 	// Empty / unset defaults to the OS hostname.
@@ -133,6 +144,10 @@ type SlurmRunnerConfig struct {
 	// queue at once. The runner polls `squeue` and pauses submitting when
 	// the live count reaches this limit. Zero / unset means unlimited.
 	MaxSlurmJobs int `toml:"max_slurm_jobs"`
+
+	// RunnerID is the stable identity this runner reports to the server.
+	// Empty / unset defaults to the hostname. Mirrors the --runner-id flag.
+	RunnerID string `toml:"runner_id"`
 
 	// Host is the hostname this runner advertises to the server on each claim.
 	// Empty / unset defaults to the OS hostname.

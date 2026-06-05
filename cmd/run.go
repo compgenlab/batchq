@@ -58,6 +58,7 @@ var runCmd = &cobra.Command{
 				log.Fatalln("SLURM username must be specified via --slurm-user or in the config file")
 			}
 
+			host := resolveHost(runHost, Config.SlurmRunner.Host)
 			resources := withCluster(mergeResources(Config.SlurmRunner.Resources, runResources), firstNonEmpty(runCluster, Config.SlurmRunner.Cluster))
 			runr = runner.NewSlurmRunner(c).
 				SetSlurmMaxUserJobs(slurmMaxJobs).
@@ -65,7 +66,8 @@ var runCmd = &cobra.Command{
 				SetSlurmUsername(slurmUser).
 				SetSlurmAccount(slurmAcct).
 				SetSlurmPartition(slurmPartition).
-				SetHost(resolveHost(runHost, Config.SlurmRunner.Host)).
+				SetHost(host).
+				SetRunnerID(resolveRunnerID(runRunnerID, Config.SlurmRunner.RunnerID, host)).
 				SetResources(resources)
 
 		case "simple":
@@ -91,16 +93,23 @@ var runCmd = &cobra.Command{
 				log.Fatalln("You cannot use cgroup v2 and v1 at the same time!")
 			}
 
+			if maxJobs < 0 && Config.SimpleRunner.MaxJobs > 0 {
+				maxJobs = Config.SimpleRunner.MaxJobs
+			}
+
+			host := resolveHost(runHost, Config.SimpleRunner.Host)
 			resources := withCluster(mergeResources(Config.SimpleRunner.Resources, runResources), firstNonEmpty(runCluster, Config.SimpleRunner.Cluster))
 			runr = runner.NewSimpleRunner(c).
 				SetMaxProcs(maxProcs).
 				SetMaxMemMB(jobs.ParseMemoryString(maxMemStr)).
 				SetMaxWalltimeSec(jobs.ParseWalltimeString(maxTimeStr)).
+				SetMaxJobCount(maxJobs).
 				SetForever(forever).
 				SetShell(shell).
 				SetCgroupV2(useCgroupV2).
 				SetCgroupV1(useCgroupV1).
-				SetHost(resolveHost(runHost, Config.SimpleRunner.Host)).
+				SetHost(host).
+				SetRunnerID(resolveRunnerID(runRunnerID, Config.SimpleRunner.RunnerID, host)).
 				SetResources(resources)
 		}
 		if runr != nil {
@@ -125,6 +134,7 @@ var slurmMaxJobs int
 var runResources []string
 var runHost string
 var runCluster string
+var runRunnerID string
 
 // resolveHost picks the hostname the runner advertises: the --host flag, else
 // the config value, else the OS hostname.
@@ -139,6 +149,20 @@ func resolveHost(flag, cfg string) string {
 		return h
 	}
 	return ""
+}
+
+// resolveRunnerID picks the runner's stable identity: the --runner-id flag,
+// else the config value, else the resolved host (so by default the Runners view
+// shows one row per host that updates across restarts). Returns "" only when no
+// hostname is available, in which case the runner keeps its generated UUID.
+func resolveRunnerID(flag, cfg, host string) string {
+	if flag != "" {
+		return flag
+	}
+	if cfg != "" {
+		return cfg
+	}
+	return host
 }
 
 // withCluster advertises cluster as a "cluster" resource (a convenience over
@@ -194,6 +218,7 @@ func init() {
 	runCmd.Flags().StringArrayVar(&runResources, "resource", nil, "Advertise an available resource (name=value or name, repeatable)")
 	runCmd.Flags().StringVar(&runHost, "host", "", "Hostname this runner advertises on each claim (default: OS hostname)")
 	runCmd.Flags().StringVar(&runCluster, "cluster", "", "Advertise this cluster name as a 'cluster' resource")
+	runCmd.Flags().StringVar(&runRunnerID, "runner-id", "", "Stable runner identity reported to the server (default: hostname)")
 
 	rootCmd.AddCommand(runCmd)
 }

@@ -126,6 +126,16 @@ func (r *slurmRunner) SetHost(host string) *slurmRunner {
 	return r
 }
 
+// SetRunnerID overrides the runner's identity (default: a fresh UUID). A stable
+// id makes the server's Runners view show one row per runner across restarts.
+// Empty is ignored (keeps the default).
+func (r *slurmRunner) SetRunnerID(id string) *slurmRunner {
+	if id != "" {
+		r.runnerId = id
+	}
+	return r
+}
+
 func (r *slurmRunner) Start() bool {
 	submittedOne := false
 	r.availJobs = r.maxJobs

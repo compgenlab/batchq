@@ -112,6 +112,16 @@ func (r *simpleRunner) SetHost(host string) *simpleRunner {
 	return r
 }
 
+// SetRunnerID overrides the runner's identity (default: a fresh UUID). A stable
+// id (e.g. the hostname) makes the server's Runners view show one row per
+// runner that updates across restarts. Empty is ignored (keeps the default).
+func (r *simpleRunner) SetRunnerID(id string) *simpleRunner {
+	if id != "" {
+		r.runnerId = id
+	}
+	return r
+}
+
 // availableResources returns the advertised resource pool reduced by the
 // countable resources currently reserved by running jobs, so a runner that
 // advertises gpu=4 won't claim more gpu work than it can host concurrently.
