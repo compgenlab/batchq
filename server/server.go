@@ -121,7 +121,7 @@ func New(svc *service.Service, opts Options) (*Server, error) {
 	}
 
 	if opts.OwnershipCheckInterval == 0 {
-		opts.OwnershipCheckInterval = 30 * time.Second
+		opts.OwnershipCheckInterval = 3 * time.Second
 	}
 
 	s := &Server{
@@ -341,17 +341,31 @@ func isAddrInUse(err error) bool {
 	return errors.Is(err, syscall.EADDRINUSE)
 }
 
-// socketIsLive probes path with a short connect. Success means a
-// process is accepting connections — definitionally alive. Any error
-// (ECONNREFUSED on a stale socket file, ENOENT on a vanished path) is
-// treated as "not live".
+// socketIsLive probes path with a short connect, retried a few times. Success
+// on ANY attempt means a process is accepting connections — definitionally
+// alive. We only conclude "not live" (a stale file from a crashed process)
+// after every attempt fails, so a live-but-momentarily-unreachable server (a
+// loaded node, a briefly-full accept backlog) is never mistaken for dead and
+// have its socket unlinked. The common case — a socket that is actually live —
+// returns true on the first try with no added latency.
 func socketIsLive(path string) bool {
-	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
-	if err != nil {
-		return false
+	return probeSocketLive(path, 3, 500*time.Millisecond, 100*time.Millisecond)
+}
+
+// probeSocketLive dials path up to attempts times (timeout each, gap between
+// tries), returning true as soon as one connect succeeds.
+func probeSocketLive(path string, attempts int, timeout, gap time.Duration) bool {
+	for i := 0; i < attempts; i++ {
+		conn, err := net.DialTimeout("unix", path, timeout)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
+		if i < attempts-1 {
+			time.Sleep(gap)
+		}
 	}
-	_ = conn.Close()
-	return true
+	return false
 }
 
 
@@ -524,26 +538,39 @@ func (s *Server) runOwnershipMonitor(ctx context.Context) {
 
 	ticker := time.NewTicker(s.opts.OwnershipCheckInterval)
 	defer ticker.Stop()
+	// Require several CONSECUTIVE failures before stepping down. A single
+	// failed self-dial under load (slow accept, transient hiccup) must not
+	// shut down a healthy server — that would itself create churn. A genuine
+	// takeover (a different instance now answers our path) fails every check,
+	// so it still evicts quickly: failThreshold × OwnershipCheckInterval.
+	const failThreshold = 3
+	consecutiveFails := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !s.confirmOwnership(ctx, httpClient) {
-				// If a shutdown is already in flight (idle monitor or
-				// caller-context cancel), the cleanupSocket path may
-				// have unlinked the socket already — this "failure"
-				// is just the tail end of a normal shutdown, not an
-				// orphan. Shutdown is idempotent so logging the line
-				// is harmless but noisy in that case.
-				log.Printf("server: ownership check failed (path %s no longer leads to instance %s); shutting down", sockPath, s.instanceID)
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := s.httpSrv.Shutdown(shutdownCtx); err != nil {
-					log.Printf("server: ownership shutdown: %v", err)
-				}
-				cancel()
-				return
+			if s.confirmOwnership(ctx, httpClient) {
+				consecutiveFails = 0
+				continue
 			}
+			consecutiveFails++
+			if consecutiveFails < failThreshold {
+				continue
+			}
+			// If a shutdown is already in flight (idle monitor or
+			// caller-context cancel), the cleanupSocket path may
+			// have unlinked the socket already — this "failure"
+			// is just the tail end of a normal shutdown, not an
+			// orphan. Shutdown is idempotent so logging the line
+			// is harmless but noisy in that case.
+			log.Printf("server: ownership check failed %d× (path %s no longer leads to instance %s); shutting down", consecutiveFails, sockPath, s.instanceID)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := s.httpSrv.Shutdown(shutdownCtx); err != nil {
+				log.Printf("server: ownership shutdown: %v", err)
+			}
+			cancel()
+			return
 		}
 	}
 }

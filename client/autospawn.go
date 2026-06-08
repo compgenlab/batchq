@@ -77,14 +77,38 @@ func DialAndConnect(ctx context.Context, opts Options, auto AutospawnConfig) (*C
 	}
 
 	// First probe: if the server's already up, we're done.
-	if probeErr := c.Health(ctx); probeErr == nil {
+	probeErr := c.Health(ctx)
+	if probeErr == nil {
 		return c, nil
-	} else if !auto.Enabled || c.SocketPath() == "" || !isConnectFailure(probeErr) {
+	}
+	if !auto.Enabled || c.SocketPath() == "" || !isConnectFailure(probeErr) {
 		c.Close()
 		return nil, probeErr
-	} else {
-		auto.logf("batchq: no server on %s, autospawning (%v)", c.SocketPath(), probeErr)
 	}
+
+	// The socket didn't answer — but a live server may just be briefly
+	// unreachable (loaded node, accept backlog momentarily full, mid-restart).
+	// Retry a few times before concluding nothing is running: connecting to the
+	// existing server is always preferable to spawning a duplicate, which would
+	// open the same DB and cause SQLITE_BUSY. Only after these fail do we treat
+	// the socket as truly down.
+	for i := 0; i < 3; i++ {
+		select {
+		case <-ctx.Done():
+			c.Close()
+			return nil, ctx.Err()
+		case <-time.After(300 * time.Millisecond):
+		}
+		probeErr = c.Health(ctx)
+		if probeErr == nil {
+			return c, nil
+		}
+		if !isConnectFailure(probeErr) {
+			c.Close()
+			return nil, probeErr
+		}
+	}
+	auto.logf("batchq: no server on %s after retries, autospawning (%v)", c.SocketPath(), probeErr)
 
 	// Stale socket file from a crashed prior server confuses both
 	// dial(2) (refused) and bind(2) (already in use). Remove it before
@@ -165,8 +189,11 @@ func isConnectFailure(err error) bool {
 }
 
 // removeStaleSocket unlinks the socket path if it exists *and* nothing
-// is listening on it. We refuse to delete a live socket (something
-// briefly answered, then went away between probe and delete).
+// is listening on it. We refuse to delete a live socket: the liveness
+// probe is retried over ~1s so a live-but-momentarily-unreachable server
+// (loaded node, briefly-full accept backlog) is never mistaken for dead
+// and have its socket deleted out from under it — which would spawn a
+// duplicate server against the same DB and cause SQLITE_BUSY.
 func removeStaleSocket(path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -174,12 +201,25 @@ func removeStaleSocket(path string) error {
 		}
 		return err
 	}
-	// Try to connect first; if it succeeds, someone's there.
-	if c, err := net.DialTimeout("unix", path, 200*time.Millisecond); err == nil {
-		_ = c.Close()
+	if socketResponds(path, 3, 500*time.Millisecond, 100*time.Millisecond) {
 		return errors.New("socket is live, refusing to remove")
 	}
 	return os.Remove(path)
+}
+
+// socketResponds dials path up to attempts times (timeout each, gap between
+// tries), returning true as soon as one connect succeeds.
+func socketResponds(path string, attempts int, timeout, gap time.Duration) bool {
+	for i := 0; i < attempts; i++ {
+		if c, err := net.DialTimeout("unix", path, timeout); err == nil {
+			_ = c.Close()
+			return true
+		}
+		if i < attempts-1 {
+			time.Sleep(gap)
+		}
+	}
+	return false
 }
 
 // spawnServer fork-execs `batchq server` in the background with stdio

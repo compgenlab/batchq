@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/mbreese/batchq/jobs"
@@ -60,24 +59,12 @@ func Open(ctx context.Context, path string, opts Options) (Storage, error) {
 		journal = "WAL"
 	}
 
-	// Enforce the single-owner invariant: take an exclusive advisory lock on a
-	// sidecar file before touching the DB. If another batchq process already
-	// owns it, fail fast with a clear message instead of letting two writers
-	// collide as a cryptic SQLITE_BUSY. (The classic trigger is a unix-socket
-	// client on another host autospawning a duplicate server against a DB on a
-	// shared filesystem.)
-	lockFile, err := acquireDBLock(ctx, path)
-	if err != nil {
-		return nil, err
-	}
-
 	dsn := fmt.Sprintf(
 		"file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(%s)&_pragma=busy_timeout(%d)&_pragma=synchronous(FULL)",
 		path, journal, opts.BusyTimeoutMS,
 	)
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		releaseDBLock(lockFile)
 		return nil, fmt.Errorf("storage: open sqlite: %w", err)
 	}
 	// One writer process — the server owns the file exclusively. A single
@@ -88,89 +75,14 @@ func Open(ctx context.Context, path string, opts Options) (Storage, error) {
 
 	if err := conn.PingContext(ctx); err != nil {
 		conn.Close()
-		releaseDBLock(lockFile)
 		return nil, fmt.Errorf("storage: ping: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, schemaSQL); err != nil {
 		conn.Close()
-		releaseDBLock(lockFile)
 		return nil, fmt.Errorf("storage: apply schema: %w", err)
 	}
 
-	return &sqliteStorage{db: conn, path: path, lockFile: lockFile}, nil
-}
-
-// acquireDBLock takes an exclusive advisory (flock) lock on "<path>-lock" so a
-// second batchq process cannot open the same database. The lock is held by the
-// returned *os.File for the storage's lifetime and released by closing it.
-//
-// Behavior:
-//   - Lock free → we own it; the holder's pid/host is written into the file for
-//     diagnostics. Returns the held file.
-//   - Lock held by another process → retry briefly (covering the sub-second
-//     handoff when one server idles out as another starts), then fail with an
-//     actionable error naming the current holder.
-//   - flock unsupported by the filesystem (some NFS/Lustre configs) → warn and
-//     proceed unlocked (returns nil, nil) rather than refuse to start.
-func acquireDBLock(ctx context.Context, path string) (*os.File, error) {
-	lockPath := path + "-lock"
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("storage: open lock file %s: %w", lockPath, err)
-	}
-
-	// inUseErr builds the actionable "another process owns this DB" error.
-	inUseErr := func() error {
-		holder := readLockHolder(lockPath)
-		return fmt.Errorf("storage: database %q is already open by another batchq process%s; refusing to open it twice (this is what causes SQLITE_BUSY). Run a single server and point clients at it (e.g. [server] listen = tcp://HOST:PORT plus [batchq] remote, or --no-autospawn) rather than autospawning a per-host server against a shared database", path, holder)
-	}
-
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		lerr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if lerr == nil {
-			host, _ := os.Hostname()
-			_ = f.Truncate(0)
-			_, _ = f.WriteAt([]byte(fmt.Sprintf("pid=%d host=%s\n", os.Getpid(), host)), 0)
-			return f, nil
-		}
-		if !errors.Is(lerr, syscall.EWOULDBLOCK) && !errors.Is(lerr, syscall.EAGAIN) {
-			// Filesystem doesn't support flock — don't break the deployment;
-			// warn and rely on SQLite's own locking as before.
-			fmt.Fprintf(os.Stderr, "batchq: warning: cannot lock %s (%v); proceeding without a DB lock — ensure only ONE batchq server uses this database\n", lockPath, lerr)
-			_ = f.Close()
-			return nil, nil
-		}
-		// The lock is held by another process. Retry briefly to absorb the
-		// sub-second handoff when one server idles out as another starts.
-		if time.Now().After(deadline) {
-			_ = f.Close()
-			return nil, inUseErr()
-		}
-		select {
-		case <-ctx.Done():
-			// Cut short while the lock was held — report the real reason.
-			_ = f.Close()
-			return nil, inUseErr()
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-}
-
-// readLockHolder returns " (pid=… host=…)" read from the lock file, or "".
-func readLockHolder(lockPath string) string {
-	b, err := os.ReadFile(lockPath)
-	if err != nil || len(strings.TrimSpace(string(b))) == 0 {
-		return ""
-	}
-	return " (" + strings.TrimSpace(string(b)) + ")"
-}
-
-// releaseDBLock closes the lock file, releasing the advisory lock. nil-safe.
-func releaseDBLock(f *os.File) {
-	if f != nil {
-		_ = f.Close()
-	}
+	return &sqliteStorage{db: conn, path: path}, nil
 }
 
 // Reset destroys any existing DB at path and creates a fresh one with the
@@ -196,10 +108,6 @@ type sqliteStorage struct {
 	db   *sql.DB
 	path string
 
-	// lockFile holds the exclusive advisory lock from acquireDBLock; closing
-	// it releases the lock. nil if the filesystem didn't support locking.
-	lockFile *os.File
-
 	mu     sync.Mutex
 	closed bool
 }
@@ -211,9 +119,7 @@ func (s *sqliteStorage) Close() error {
 		return nil
 	}
 	s.closed = true
-	err := s.db.Close()
-	releaseDBLock(s.lockFile)
-	return err
+	return s.db.Close()
 }
 
 // beginTx starts a write transaction, decoupled from the request context's
