@@ -107,6 +107,10 @@ func runServer(_ *cobra.Command, _ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Lifecycle debug log (shared with the client that spawned us via --log).
+	dlog := debugLog("server")
+	dlog.Logf("server start listen=%s db=%s idle=%s", serverListen, backend.Raw, serverIdleTimeout)
+
 	// Win the single-instance election BEFORE opening the database. A server
 	// that loses the election must never touch the DB file — otherwise
 	// concurrently autospawned servers contend on it and the winner sees
@@ -114,11 +118,14 @@ func runServer(_ *cobra.Command, _ []string) error {
 	ln, socketPath, err := server.Elect(serverListen, 0)
 	if err != nil {
 		if errors.Is(err, server.ErrAlreadyRunning) {
+			dlog.Logf("election lost: another instance already listening on %s; exiting", serverListen)
 			fmt.Fprintln(os.Stderr, "batchq server: another instance is already running")
 			return nil
 		}
+		dlog.Logf("election error on %s: %v", serverListen, err)
 		return err
 	}
+	dlog.Logf("election won socket=%s", socketPath)
 	// From here on we own the election token; release it if we bail before
 	// handing it to the server.
 	releaseToken := func() {
@@ -136,9 +143,11 @@ func runServer(_ *cobra.Command, _ []string) error {
 	// two servers contending on the DB and reporting SQLITE_BUSY.
 	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL})
 	if err != nil {
+		dlog.Logf("db open error path=%s: %v", storagePath, err)
 		releaseToken()
 		return fmt.Errorf("open storage: %w", err)
 	}
+	dlog.Logf("db opened path=%s wal=%v", storagePath, serverWAL)
 	// Safety net only — the server's ordered shutdown (OnShutdown) is the
 	// primary close; Storage.Close is idempotent so this double-close is a
 	// no-op if shutdown already ran.
@@ -150,6 +159,7 @@ func runServer(_ *cobra.Command, _ []string) error {
 		IdleTimeout: serverIdleTimeout,
 		AuthToken:   Config.Server.Token,
 		OnShutdown:  store.Close,
+		Logf:        dlog.Logf,
 	})
 	if err != nil {
 		releaseToken()
@@ -166,5 +176,7 @@ func runServer(_ *cobra.Command, _ []string) error {
 		fmt.Fprintln(os.Stderr, "batchq server: WARNING listening on a TCP port without [server] token — the API is unauthenticated (TCP carries no peer credentials). Set a token or front it with an authenticating proxy.")
 	}
 
-	return srv.ServeListener(ctx, ln, socketPath)
+	serveErr := srv.ServeListener(ctx, ln, socketPath)
+	dlog.Logf("serve exit err=%v", serveErr)
+	return serveErr
 }

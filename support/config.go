@@ -52,6 +52,14 @@ type BatchqConfig struct {
 	// freshly-spawned local server to bind its socket. Bumping this is
 	// useful on slow filesystems (NFS, Lustre) where 5s is tight.
 	AutospawnWaitTimeout Duration `toml:"autospawn_wait_timeout"`
+
+	// Log, if set to a file path, turns on the lifecycle debug log: every
+	// client appends timestamped, PID-tagged lines when it spawns/connects to
+	// a server and when a request fails, and every (auto)spawned server logs
+	// its start, each request it serves, every shutdown (with reason), and any
+	// DB error (e.g. SQLITE_BUSY) — to the SAME file, so overlapping server
+	// PIDs are visible at a glance. Overridable per-invocation with --log.
+	Log string `toml:"log"`
 }
 
 // ServerConfig holds server-runtime knobs. None of these apply when

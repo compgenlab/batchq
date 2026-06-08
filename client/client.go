@@ -89,6 +89,11 @@ type Options struct {
 
 	// UserAgent is the User-Agent header value. Default "batchq-client/2".
 	UserAgent string
+
+	// Log, if set, receives one line per failed request and per
+	// reconnect-and-retry — wired to the --log / [batchq] log debug file by
+	// cmd/clientconn.go. Nil disables it.
+	Log func(format string, args ...any)
 }
 
 // Client is a REST client for the batchq server. It is safe for concurrent
@@ -183,6 +188,13 @@ func (c *Client) Close() error {
 // SocketPath returns the unix socket path, or "" if not using unix.
 func (c *Client) SocketPath() string { return c.socket }
 
+// logf forwards a debug event to Options.Log if configured (no-op otherwise).
+func (c *Client) logf(format string, args ...any) {
+	if c.opts.Log != nil {
+		c.opts.Log(format, args...)
+	}
+}
+
 // --- core HTTP plumbing ------------------------------------------------
 
 // handoffBackoffs are the waits between reconnect-and-retry attempts when a
@@ -208,7 +220,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		if err == nil || attempt >= len(handoffBackoffs) || !retryableHandoff(err) {
 			return err
 		}
-		c.auto.logf("batchq: server handoff on %s %s (%v); reconnecting in %s (retry %d/%d)",
+		c.logf("server handoff on %s %s (%v); reconnecting in %s (retry %d/%d)",
 			method, path, err, handoffBackoffs[attempt], attempt+1, len(handoffBackoffs))
 		select {
 		case <-ctx.Done():
@@ -265,6 +277,11 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body, out any)
 
 	resp, err := c.httpC.Do(req)
 	if err != nil {
+		// Skip the frequent, expected health-probe connect failures (the
+		// autospawn poll loop) to keep the debug log high-signal.
+		if path != "/healthz" {
+			c.logf("http %s %s transport error: %v", method, path, err)
+		}
 		return fmt.Errorf("client: %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
@@ -285,6 +302,9 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body, out any)
 			if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Error != "" {
 				httpErr.APIError = &apiErr
 			}
+		}
+		if path != "/healthz" {
+			c.logf("http %s %s -> %d: %s", method, path, resp.StatusCode, strings.TrimSpace(httpErr.Error()))
 		}
 		return httpErr
 	}

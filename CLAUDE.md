@@ -12,6 +12,7 @@ This is a Go module (Go 1.23). batchq is **pure Go** — `modernc.org/sqlite` re
 - Tests: `go test ./...`. Single test: `go test ./cmd -run TestName`.
 - Version string: `cmd.Version` is set at build time via `-ldflags`. The Makefile resolves it from `git describe`: exact-tag commits get the tag (e.g. `v0.2.0`); anything else gets `v0.2.0-dev-<short-sha>`. Plain `go run` / `go build` (no ldflags) yields the literal `"dev"`. Bump the dev base in the Makefile when starting work on the next minor series. Surfaced via `batchq version`, `batchq --version`, and a footer line on every command's `--help`.
 - The hidden `batchq debug` subcommand prints the resolved configuration: `$BATCHQ_HOME`, config file path, every env var that's consumed, and every knob in every config section with its source labelled (`flag` / `env` / `config` / `default` / `unset`). First stop when diagnosing config loading.
+- The lifecycle debug log (`--log <file>` flag, or `[batchq] log` config) appends timestamped, PID-tagged lines from both clients and the servers they autospawn to one shared file: client `dial`/spawn/handoff-retry, server `start`/`election`/`db opened`/`req … -> status`/`shutdown begin|done`/`db closed`, and any 5xx with its error body. First stop when diagnosing "too many servers" / SQLITE_BUSY — overlapping server PIDs are visible at a glance. Implemented in `support/debuglog.go` (`DebugLogger`), wired via `cmd/clientconn.go:debugLog` (client + spawned-server `--log` passthrough) and `server` `Options.Logf` / `server/logging.go` (`withLogging`).
 - A Docker-based Go toolchain wrapper at `/tmp/dgo` is available in the dev environment when no host `go` is installed; it shells out to the `mcr.microsoft.com/devcontainers/go:1-1.23` image with the repo bind-mounted.
 
 ## Architecture (v2 client/server)
@@ -111,7 +112,7 @@ For knobs that have a built-in default (`Server.DB`, `Server.Listen`, `Web.Socke
 
 Sections:
 
-- `[batchq]` — `runner` (`simple` | `slurm`), `remote` (HTTPS URL of remote API server, optional), `token`, `multiuser`, `autospawn_wait_timeout`.
+- `[batchq]` — `runner` (`simple` | `slurm`), `remote` (HTTPS URL of remote API server, optional), `token`, `multiuser`, `autospawn_wait_timeout`, `log` (lifecycle debug-log file path; `--log` flag overrides).
 - `[server]` — `listen` (`unix:///path` default, or `tcp://host:port` for a plain-HTTP TCP port; `server/server.go:listenTCP`), `db` (local sqlite3 / postgres URL), `idle_timeout`, `sqlite_wal`, `token` (shared bearer token; when set, the server's `withAuth` middleware requires `Authorization: Bearer <token>` on every request except `/healthz`). Ignored when `[batchq] remote` is set.
 - `[web]` — `socket`, `listen`.
 - `[job_defaults]` — submit-time defaults: `name`, `procs`, `mem`, `walltime`, `wd`, `stdout`, `stderr`, `hold`, `env`.

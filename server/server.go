@@ -84,6 +84,11 @@ type Options struct {
 	// server has dropped it. This closes the idle-handoff window that
 	// otherwise lets two servers touch the DB at once and report SQLITE_BUSY.
 	OnShutdown func() error
+
+	// Logf, if set, receives lifecycle/debug events (each API request served,
+	// every shutdown with its reason, and any DB error). Wired to the --log /
+	// [batchq] log debug file by cmd/server.go. Nil disables it.
+	Logf func(format string, args ...any)
 }
 
 // Server is a long-lived HTTP server over the batchq REST API.
@@ -456,9 +461,11 @@ func (s *Server) shutdown(ctx context.Context, reason string, abortIfBusy bool) 
 	busy := s.inFlight.Load() > 0
 	if busy && abortIfBusy {
 		s.draining.Store(false)
+		s.logf("shutdown aborted reason=%s (request arrived mid-cull, still serving)", reason)
 		return errCullAborted
 	}
 	s.shutdownStarted = true
+	s.logf("shutdown begin reason=%s busy=%v", reason, busy)
 
 	var err error
 	if busy {
@@ -471,6 +478,7 @@ func (s *Server) shutdown(ctx context.Context, reason string, abortIfBusy bool) 
 		s.closeStorage(reason)
 		err = s.httpSrv.Shutdown(ctx)
 	}
+	s.logf("shutdown done reason=%s err=%v", reason, err)
 	return err
 }
 
@@ -480,7 +488,9 @@ func (s *Server) closeStorage(reason string) {
 	if s.onShutdown == nil {
 		return
 	}
-	if err := s.onShutdown(); err != nil {
+	err := s.onShutdown()
+	s.logf("db closed reason=%s err=%v", reason, err)
+	if err != nil {
 		log.Printf("server: close storage on %s shutdown: %v", reason, err)
 	}
 }
@@ -523,8 +533,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+p+api.RouteShutdown, s.handleShutdown)
 
 	// withAuth sits outside withActivity so unauthenticated requests
-	// neither reset the idle timer nor count as in-flight.
-	return s.withVersionHeader(s.withAuth(s.withActivity(mux)))
+	// neither reset the idle timer nor count as in-flight. withLogging is
+	// outermost so it records the FINAL status of every request (including
+	// draining 503s and auth 401s) for the debug log.
+	return s.withLogging(s.withVersionHeader(s.withAuth(s.withActivity(mux))))
 }
 
 // withVersionHeader stamps every response with the API version header so

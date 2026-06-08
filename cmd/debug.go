@@ -209,6 +209,7 @@ func batchqRows(raw *support.Config, d support.Defaults) []debugRow {
 		tokenRow(),
 		boolRow("multiuser", raw.Batchq.Multiuser),
 		durationRow("autospawn_wait_timeout", raw.Batchq.AutospawnWaitTimeout.AsDuration(), d.AutospawnWaitTimeout),
+		stringRow("log", clientLogPath, raw.Batchq.Log, ""),
 	}
 }
 

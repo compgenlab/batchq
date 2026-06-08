@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbreese/batchq/client"
@@ -30,6 +31,39 @@ var clientNoAutospawn bool
 // fresh server. Has no effect for remote backends — operators don't
 // shut down remote servers from a client flag.
 var clientRestartServer bool
+
+// clientLogPath is the --log flag: a file to append lifecycle debug events to
+// (server spawns/shutdowns, served requests, DB errors; each line carries a
+// timestamp and PID). Overrides [batchq] log.
+var clientLogPath string
+
+// resolveLogPath returns the debug-log file path: --log flag > [batchq] log.
+func resolveLogPath() string {
+	if clientLogPath != "" {
+		return clientLogPath
+	}
+	return Config.Batchq.Log
+}
+
+var (
+	debugLogOnce sync.Once
+	debugLogInst *support.DebugLogger
+)
+
+// debugLog returns the process-wide lifecycle logger, opening the file on first
+// use (nil if --log / [batchq] log is unset). role tags the lines ("client" /
+// "server"); a nil *DebugLogger logs nothing, so callers needn't nil-check.
+func debugLog(role string) *support.DebugLogger {
+	debugLogOnce.Do(func() {
+		l, err := support.OpenDebugLog(resolveLogPath(), role)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: --log: %v\n", err)
+			return
+		}
+		debugLogInst = l
+	})
+	return debugLogInst
+}
 
 // dialClient picks the API endpoint and returns a connected *client.Client.
 //
@@ -59,13 +93,20 @@ func dialClient() (*client.Client, error) {
 	if token == "" {
 		token = Config.Batchq.Token
 	}
+	logger := debugLog("client")
 	opts := client.Options{
 		URL:     dialURL,
 		Token:   token,
 		Timeout: 30 * time.Second,
 	}
+	if logger != nil {
+		opts.Log = logger.Logf
+	}
 
 	auto := client.AutospawnConfig{}
+	if logger != nil {
+		auto.Log = logger.Logf
+	}
 	waitTimeout := Config.Batchq.AutospawnWaitTimeout.AsDuration()
 	if waitTimeout <= 0 {
 		waitTimeout = defaultsResolved.AutospawnWaitTimeout
@@ -78,7 +119,12 @@ func dialClient() (*client.Client, error) {
 			"--idle-timeout", defaultsResolved.AutospawnIdleTimeout.String(),
 			"--db", Config.Server.DB,
 		}
+		// Spawned server logs to the SAME file so client+server PIDs interleave.
+		if lp := resolveLogPath(); lp != "" {
+			auto.ExtraArgs = append(auto.ExtraArgs, "--log", lp)
+		}
 	}
+	logger.Logf("dial url=%s remote=%v autospawn=%v", dialURL, remoteMode, auto.Enabled)
 
 	// --restart-server: drain and exit any running local server before
 	// the normal dial-and-autospawn path picks up. Best-effort: a
@@ -204,4 +250,6 @@ func init() {
 		"do not auto-start a local server when the socket is unreachable")
 	rootCmd.PersistentFlags().BoolVar(&clientRestartServer, "restart-server", false,
 		"shut down any running local server before this command (no effect for remote)")
+	rootCmd.PersistentFlags().StringVar(&clientLogPath, "log", "",
+		"append lifecycle debug events (server spawns/shutdowns, served requests, DB errors; with PIDs+timestamps) to this file")
 }
