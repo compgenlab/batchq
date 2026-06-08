@@ -36,6 +36,17 @@ type Options struct {
 	// BusyTimeoutMS controls how long SQLite waits on a locked DB before
 	// giving up. Default 5000ms.
 	BusyTimeoutMS int
+
+	// ReadPoolSize sets how many connections serve concurrent READS. Writes
+	// always go through one serialized connection. The default (0 or 1) shares
+	// the single writer connection for reads too — byte-for-byte the historical
+	// single-connection behavior. A value > 1 opens a SEPARATE read pool of
+	// that size so status-poll bursts aren't serialized behind one another or
+	// behind a write. Trade-off: > 1 re-introduces reader↔writer SQLite lock
+	// contention (bounded by busy_timeout) that the single connection avoided,
+	// and more open connections doing fcntl locking on NFS. Set back to 1 to
+	// revert. See the package docs and CLAUDE.md.
+	ReadPoolSize int
 }
 
 // Open returns a Storage backed by the SQLite file at path. The file (and
@@ -63,26 +74,47 @@ func Open(ctx context.Context, path string, opts Options) (Storage, error) {
 		"file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(%s)&_pragma=busy_timeout(%d)&_pragma=synchronous(FULL)",
 		path, journal, opts.BusyTimeoutMS,
 	)
-	conn, err := sql.Open("sqlite", dsn)
+	// writeDB is the single serialized WRITER. One writer process owns the file;
+	// a single connection gives safe transaction semantics for free and is the
+	// thing that makes "one server can't SQLITE_BUSY against itself" true.
+	writeDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("storage: open sqlite: %w", err)
 	}
-	// One writer process — the server owns the file exclusively. A single
-	// connection is sufficient and gives us safe transaction semantics for
-	// free.
-	conn.SetMaxOpenConns(1)
-	conn.SetMaxIdleConns(1)
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
 
-	if err := conn.PingContext(ctx); err != nil {
-		conn.Close()
+	if err := writeDB.PingContext(ctx); err != nil {
+		writeDB.Close()
 		return nil, fmt.Errorf("storage: ping: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, schemaSQL); err != nil {
-		conn.Close()
+	if _, err := writeDB.ExecContext(ctx, schemaSQL); err != nil {
+		writeDB.Close()
 		return nil, fmt.Errorf("storage: apply schema: %w", err)
 	}
 
-	return &sqliteStorage{db: conn, path: path}, nil
+	// readDB serves standalone reads (qRows/qRow). Default: share the writer
+	// connection — identical to the historical single-connection behavior. Only
+	// when ReadPoolSize > 1 do we open a SEPARATE pool so reads run concurrently
+	// (each takes a SHARED lock; readers never block readers). Same DSN: the
+	// read helpers only ever SELECT, so a read-only DSN isn't needed.
+	readDB := writeDB
+	if opts.ReadPoolSize > 1 {
+		readDB, err = sql.Open("sqlite", dsn)
+		if err != nil {
+			writeDB.Close()
+			return nil, fmt.Errorf("storage: open sqlite read pool: %w", err)
+		}
+		readDB.SetMaxOpenConns(opts.ReadPoolSize)
+		readDB.SetMaxIdleConns(opts.ReadPoolSize)
+		if err := readDB.PingContext(ctx); err != nil {
+			readDB.Close()
+			writeDB.Close()
+			return nil, fmt.Errorf("storage: ping read pool: %w", err)
+		}
+	}
+
+	return &sqliteStorage{db: writeDB, readDB: readDB, path: path}, nil
 }
 
 // Reset destroys any existing DB at path and creates a fresh one with the
@@ -105,8 +137,11 @@ func Reset(ctx context.Context, path string) error {
 }
 
 type sqliteStorage struct {
-	db   *sql.DB
-	path string
+	db   *sql.DB // single serialized WRITER (and reads when ReadPoolSize<=1)
+	// readDB serves standalone reads. Equals db when reads share the writer
+	// connection (ReadPoolSize<=1); a distinct pool when ReadPoolSize>1.
+	readDB *sql.DB
+	path   string
 
 	mu     sync.Mutex
 	closed bool
@@ -119,6 +154,11 @@ func (s *sqliteStorage) Close() error {
 		return nil
 	}
 	s.closed = true
+	// Close the distinct read pool first (if any), then the writer. When reads
+	// share the writer connection, readDB == db and we close it once.
+	if s.readDB != nil && s.readDB != s.db {
+		_ = s.readDB.Close()
+	}
 	return s.db.Close()
 }
 
@@ -169,11 +209,11 @@ func (s *sqliteStorage) beginTx(ctx context.Context) (*sql.Tx, error) {
 // is only ever one connection and serialization holds. The mutating methods
 // already do the same via `ctx = context.WithoutCancel(ctx)` + beginTx.
 func (s *sqliteStorage) qRows(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return s.db.QueryContext(context.WithoutCancel(ctx), query, args...)
+	return s.readDB.QueryContext(context.WithoutCancel(ctx), query, args...)
 }
 
 func (s *sqliteStorage) qRow(ctx context.Context, query string, args ...any) *sql.Row {
-	return s.db.QueryRowContext(context.WithoutCancel(ctx), query, args...)
+	return s.readDB.QueryRowContext(context.WithoutCancel(ctx), query, args...)
 }
 
 func (s *sqliteStorage) qExec(ctx context.Context, query string, args ...any) (sql.Result, error) {

@@ -74,6 +74,14 @@ type ServerConfig struct {
 	IdleTimeout Duration `toml:"idle_timeout"`
 	SqliteWAL   bool     `toml:"sqlite_wal"`
 
+	// ReadPoolSize sets how many connections serve concurrent reads. Default
+	// (0/1) shares the single writer connection — historical behavior. A value
+	// > 1 opens a separate read pool of that size so status-poll bursts run
+	// concurrently. Trade-off: > 1 re-introduces reader↔writer SQLite lock
+	// contention (bounded by busy_timeout) and more fcntl locking on NFS; set
+	// back to 1 to revert. `--read-pool-size` overrides.
+	ReadPoolSize int `toml:"read_pool_size"`
+
 	// Token, if non-empty, turns on shared-token auth: every API request
 	// (except the health check) must carry `Authorization: Bearer <token>`
 	// matching this value. Left empty (the default), the server enforces

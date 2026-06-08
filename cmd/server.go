@@ -22,6 +22,7 @@ var (
 	serverDB          string
 	serverWAL         bool
 	serverIdleTimeout time.Duration
+	serverReadPool    int
 )
 
 var serverCmd = &cobra.Command{
@@ -55,6 +56,8 @@ func init() {
 		"Enable SQLite WAL journal mode. NOT SAFE on networked filesystems; only use when the DB file is on local disk.")
 	serverCmd.Flags().DurationVar(&serverIdleTimeout, "idle-timeout", 0,
 		"Auto-shut-down after this duration of no activity. Zero (default) disables.")
+	serverCmd.Flags().IntVar(&serverReadPool, "read-pool-size", 0,
+		"Connections serving concurrent reads. 0/1 (default) shares the single writer connection; >1 opens a separate read pool (re-introduces reader/writer lock contention on NFS).")
 
 	rootCmd.AddCommand(serverCmd)
 }
@@ -92,6 +95,9 @@ func runServer(_ *cobra.Command, _ []string) error {
 	}
 	if !serverWAL {
 		serverWAL = Config.Server.SqliteWAL
+	}
+	if serverReadPool == 0 {
+		serverReadPool = Config.Server.ReadPoolSize
 	}
 	if serverIdleTimeout == 0 {
 		serverIdleTimeout = Config.Server.IdleTimeout.AsDuration()
@@ -141,13 +147,13 @@ func runServer(_ *cobra.Command, _ []string) error {
 	// freshly-autospawned server can't bind the socket — and thus can't open
 	// the DB — until this one has dropped it. That ordering is what prevents
 	// two servers contending on the DB and reporting SQLITE_BUSY.
-	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL})
+	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL, ReadPoolSize: serverReadPool})
 	if err != nil {
 		dlog.Logf("db open error path=%s: %v", storagePath, err)
 		releaseToken()
 		return fmt.Errorf("open storage: %w", err)
 	}
-	dlog.Logf("db opened path=%s wal=%v", storagePath, serverWAL)
+	dlog.Logf("db opened path=%s wal=%v read_pool=%d", storagePath, serverWAL, serverReadPool)
 	// Safety net only — the server's ordered shutdown (OnShutdown) is the
 	// primary close; Storage.Close is idempotent so this double-close is a
 	// no-op if shutdown already ran.
