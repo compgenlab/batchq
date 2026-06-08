@@ -145,12 +145,22 @@ func New(svc *service.Service, opts Options) (*Server, error) {
 // for a clean Shutdown, non-nil otherwise. Returns ErrAlreadyRunning if
 // another batchq server is already listening on Options.Listen.
 func (s *Server) Serve(ctx context.Context) error {
-	ln, err := s.listen()
+	ln, socketPath, err := Elect(s.opts.Listen, s.opts.SocketMode)
 	if err != nil {
 		return err
 	}
+	return s.ServeListener(ctx, ln, socketPath)
+}
+
+// ServeListener serves on a listener already acquired via Elect, skipping the
+// single-instance election. socketPath (empty for tcp://) is recorded so the
+// ownership monitor and socket cleanup work. It blocks until shutdown, like
+// Serve. Splitting the election out lets cmd/server.go win the election BEFORE
+// opening the database, so a losing server never touches the DB file.
+func (s *Server) ServeListener(ctx context.Context, ln net.Listener, socketPath string) error {
 	s.mu.Lock()
 	s.listener = ln
+	s.socketPath = socketPath
 	s.mu.Unlock()
 
 	// Shut down gracefully when the caller's context cancels.
@@ -202,7 +212,14 @@ func (s *Server) SocketPath() string {
 	return s.socketPath
 }
 
-// listen parses Options.Listen and binds the right kind of listener.
+// Elect acquires the single-instance election token (the listener) for the
+// given Listen URL WITHOUT constructing a Server or opening any storage. It
+// returns ErrAlreadyRunning if another batchq server already owns the address.
+// socketPath is the bound unix socket path (empty for tcp://).
+//
+// Doing the election before opening the database is the whole point: a server
+// that loses the election must never touch the DB file, otherwise concurrently
+// autospawned servers contend on it and the winner sees SQLITE_BUSY.
 //
 // Two schemes are supported:
 //   - unix:///path/to/sock — the default; access is gated by the socket's
@@ -213,26 +230,44 @@ func (s *Server) SocketPath() string {
 //     reverse proxy for network exposure. TCP carries no peer credentials,
 //     so a TCP-bound server should set [server] token (see cmd/server.go,
 //     which warns when it isn't).
-func (s *Server) listen() (net.Listener, error) {
-	u, err := url.Parse(s.opts.Listen)
+func Elect(listen string, socketMode os.FileMode) (ln net.Listener, socketPath string, err error) {
+	u, err := url.Parse(listen)
 	if err != nil {
-		return nil, fmt.Errorf("server: parse listen URL: %w", err)
+		return nil, "", fmt.Errorf("server: parse listen URL: %w", err)
 	}
 	switch u.Scheme {
 	case "unix":
-		return s.listenUnix(u.Path)
+		if socketMode == 0 {
+			socketMode = 0o600
+		}
+		ln, err = electUnix(u.Path, socketMode)
+		if err != nil {
+			return nil, "", err
+		}
+		return ln, u.Path, nil
 	case "tcp":
-		return s.listenTCP(u.Host)
+		ln, err = electTCP(u.Host)
+		if err != nil {
+			return nil, "", err
+		}
+		return ln, "", nil
 	default:
-		return nil, fmt.Errorf("server: unsupported listen scheme %q (want unix:// or tcp://)", u.Scheme)
+		return nil, "", fmt.Errorf("server: unsupported listen scheme %q (want unix:// or tcp://)", u.Scheme)
 	}
 }
 
-// listenTCP binds a plain-HTTP TCP listener at host:port. Unlike the unix
+// listen is a thin compatibility shim over Elect, kept so existing tests that
+// call srv.listen() directly still compile. Production code uses Elect.
+func (s *Server) listen() (net.Listener, error) {
+	ln, _, err := Elect(s.opts.Listen, s.opts.SocketMode)
+	return ln, err
+}
+
+// electTCP binds a plain-HTTP TCP listener at host:port. Unlike the unix
 // socket there is no election token or stale-file recovery: a port already
 // in use means another server owns it, so EADDRINUSE maps straight to
 // ErrAlreadyRunning.
-func (s *Server) listenTCP(hostport string) (net.Listener, error) {
+func electTCP(hostport string) (net.Listener, error) {
 	if hostport == "" {
 		return nil, errors.New("server: tcp:// URL has empty host:port")
 	}
@@ -246,7 +281,7 @@ func (s *Server) listenTCP(hostport string) (net.Listener, error) {
 	return ln, nil
 }
 
-// listenUnix binds the unix socket at path, using the socket itself as
+// electUnix binds the unix socket at path, using the socket itself as
 // the single-instance election mechanism. The flow:
 //
 //   1. Try bind().
@@ -261,7 +296,7 @@ func (s *Server) listenTCP(hostport string) (net.Listener, error) {
 // where two simultaneous recoveries could both decide a socket is
 // stale is acceptable — the loser's second bind still fails with
 // EADDRINUSE and the process exits cleanly.
-func (s *Server) listenUnix(path string) (net.Listener, error) {
+func electUnix(path string, socketMode os.FileMode) (net.Listener, error) {
 	if path == "" {
 		return nil, errors.New("server: unix:// URL has empty path")
 	}
@@ -292,14 +327,11 @@ func (s *Server) listenUnix(path string) (net.Listener, error) {
 			return nil, fmt.Errorf("server: listen unix: %w", err)
 		}
 	}
-	if err := os.Chmod(path, s.opts.SocketMode); err != nil {
+	if err := os.Chmod(path, socketMode); err != nil {
 		ln.Close()
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("server: chmod socket: %w", err)
 	}
-	s.mu.Lock()
-	s.socketPath = path
-	s.mu.Unlock()
 	return ln, nil
 }
 

@@ -107,20 +107,25 @@ func runServer(_ *cobra.Command, _ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL})
+	// Win the single-instance election BEFORE opening the database. A server
+	// that loses the election must never touch the DB file — otherwise
+	// concurrently autospawned servers contend on it and the winner sees
+	// SQLITE_BUSY. 0 socketMode lets Elect apply its 0600 default.
+	ln, socketPath, err := server.Elect(serverListen, 0)
 	if err != nil {
-		return fmt.Errorf("open storage: %w", err)
-	}
-	defer store.Close()
-
-	svc := service.New(store)
-	srv, err := server.New(svc, server.Options{
-		Listen:      serverListen,
-		IdleTimeout: serverIdleTimeout,
-		AuthToken:   Config.Server.Token,
-	})
-	if err != nil {
+		if errors.Is(err, server.ErrAlreadyRunning) {
+			fmt.Fprintln(os.Stderr, "batchq server: another instance is already running")
+			return nil
+		}
 		return err
+	}
+	// From here on we own the election token; release it if we bail before
+	// handing it to the server.
+	releaseToken := func() {
+		_ = ln.Close()
+		if socketPath != "" {
+			_ = os.Remove(socketPath)
+		}
 	}
 
 	fmt.Fprintf(os.Stderr, "batchq server listening on %s (db: %s)\n", serverListen, backend.Raw)
@@ -132,12 +137,24 @@ func runServer(_ *cobra.Command, _ []string) error {
 	} else if strings.HasPrefix(serverListen, "tcp://") {
 		fmt.Fprintln(os.Stderr, "batchq server: WARNING listening on a TCP port without [server] token — the API is unauthenticated (TCP carries no peer credentials). Set a token or front it with an authenticating proxy.")
 	}
-	if err := srv.Serve(ctx); err != nil {
-		if errors.Is(err, server.ErrAlreadyRunning) {
-			fmt.Fprintln(os.Stderr, "batchq server: another instance is already running")
-			return nil
-		}
+
+	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL})
+	if err != nil {
+		releaseToken()
+		return fmt.Errorf("open storage: %w", err)
+	}
+	defer store.Close()
+
+	svc := service.New(store)
+	srv, err := server.New(svc, server.Options{
+		Listen:      serverListen,
+		IdleTimeout: serverIdleTimeout,
+		AuthToken:   Config.Server.Token,
+	})
+	if err != nil {
+		releaseToken()
 		return err
 	}
-	return nil
+
+	return srv.ServeListener(ctx, ln, socketPath)
 }
