@@ -128,16 +128,9 @@ func runServer(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "batchq server listening on %s (db: %s)\n", serverListen, backend.Raw)
-	if serverIdleTimeout > 0 {
-		fmt.Fprintf(os.Stderr, "batchq server: idle timeout %s\n", serverIdleTimeout)
-	}
-	if Config.Server.Token != "" {
-		fmt.Fprintln(os.Stderr, "batchq server: shared-token auth enabled (Authorization: Bearer required)")
-	} else if strings.HasPrefix(serverListen, "tcp://") {
-		fmt.Fprintln(os.Stderr, "batchq server: WARNING listening on a TCP port without [server] token — the API is unauthenticated (TCP carries no peer credentials). Set a token or front it with an authenticating proxy.")
-	}
-
+	// Open the DB only after winning the election. storage.Open takes an
+	// exclusive lock on the DB, so this also fails fast (before we announce
+	// "listening") if another batchq process already owns the database.
 	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL})
 	if err != nil {
 		releaseToken()
@@ -154,6 +147,16 @@ func runServer(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		releaseToken()
 		return err
+	}
+
+	fmt.Fprintf(os.Stderr, "batchq server listening on %s (db: %s)\n", serverListen, backend.Raw)
+	if serverIdleTimeout > 0 {
+		fmt.Fprintf(os.Stderr, "batchq server: idle timeout %s\n", serverIdleTimeout)
+	}
+	if Config.Server.Token != "" {
+		fmt.Fprintln(os.Stderr, "batchq server: shared-token auth enabled (Authorization: Bearer required)")
+	} else if strings.HasPrefix(serverListen, "tcp://") {
+		fmt.Fprintln(os.Stderr, "batchq server: WARNING listening on a TCP port without [server] token — the API is unauthenticated (TCP carries no peer credentials). Set a token or front it with an authenticating proxy.")
 	}
 
 	return srv.ServeListener(ctx, ln, socketPath)

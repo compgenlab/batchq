@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1125,6 +1126,48 @@ func TestCleanupRemovesInputsOutputs(t *testing.T) {
 			t.Fatalf("%s after cleanup: %v", name, ids)
 		}
 	}
+}
+
+// --- DB single-owner lock ----------------------------------------------
+
+// TestSecondOpenIsRejected proves the exclusive DB lock: a second Open of the
+// same path while the first is still open fails fast with an actionable error
+// (instead of a later cryptic SQLITE_BUSY from two writers colliding).
+func TestSecondOpenIsRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "owned.db")
+	first, err := Open(context.Background(), path, Options{})
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	defer first.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = Open(ctx, path, Options{})
+	if err == nil {
+		t.Fatal("second Open succeeded; expected it to be rejected while the first holds the DB")
+	}
+	if !strings.Contains(err.Error(), "already open by another batchq process") {
+		t.Fatalf("second Open error = %q, want the single-owner message", err)
+	}
+}
+
+// TestReopenAfterCloseSucceeds proves the lock is released on Close so the
+// normal idle-shutdown-then-restart handoff still works.
+func TestReopenAfterCloseSucceeds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "handoff.db")
+	first, err := Open(context.Background(), path, Options{})
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	second, err := Open(context.Background(), path, Options{})
+	if err != nil {
+		t.Fatalf("reopen after close: %v", err)
+	}
+	defer second.Close()
 }
 
 // --- Transaction-poisoning regression ----------------------------------
