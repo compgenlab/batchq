@@ -121,7 +121,7 @@ func New(svc *service.Service, opts Options) (*Server, error) {
 	}
 
 	if opts.OwnershipCheckInterval == 0 {
-		opts.OwnershipCheckInterval = 30 * time.Second
+		opts.OwnershipCheckInterval = 3 * time.Second
 	}
 
 	s := &Server{
@@ -145,12 +145,22 @@ func New(svc *service.Service, opts Options) (*Server, error) {
 // for a clean Shutdown, non-nil otherwise. Returns ErrAlreadyRunning if
 // another batchq server is already listening on Options.Listen.
 func (s *Server) Serve(ctx context.Context) error {
-	ln, err := s.listen()
+	ln, socketPath, err := Elect(s.opts.Listen, s.opts.SocketMode)
 	if err != nil {
 		return err
 	}
+	return s.ServeListener(ctx, ln, socketPath)
+}
+
+// ServeListener serves on a listener already acquired via Elect, skipping the
+// single-instance election. socketPath (empty for tcp://) is recorded so the
+// ownership monitor and socket cleanup work. It blocks until shutdown, like
+// Serve. Splitting the election out lets cmd/server.go win the election BEFORE
+// opening the database, so a losing server never touches the DB file.
+func (s *Server) ServeListener(ctx context.Context, ln net.Listener, socketPath string) error {
 	s.mu.Lock()
 	s.listener = ln
+	s.socketPath = socketPath
 	s.mu.Unlock()
 
 	// Shut down gracefully when the caller's context cancels.
@@ -202,7 +212,14 @@ func (s *Server) SocketPath() string {
 	return s.socketPath
 }
 
-// listen parses Options.Listen and binds the right kind of listener.
+// Elect acquires the single-instance election token (the listener) for the
+// given Listen URL WITHOUT constructing a Server or opening any storage. It
+// returns ErrAlreadyRunning if another batchq server already owns the address.
+// socketPath is the bound unix socket path (empty for tcp://).
+//
+// Doing the election before opening the database is the whole point: a server
+// that loses the election must never touch the DB file, otherwise concurrently
+// autospawned servers contend on it and the winner sees SQLITE_BUSY.
 //
 // Two schemes are supported:
 //   - unix:///path/to/sock — the default; access is gated by the socket's
@@ -213,26 +230,44 @@ func (s *Server) SocketPath() string {
 //     reverse proxy for network exposure. TCP carries no peer credentials,
 //     so a TCP-bound server should set [server] token (see cmd/server.go,
 //     which warns when it isn't).
-func (s *Server) listen() (net.Listener, error) {
-	u, err := url.Parse(s.opts.Listen)
+func Elect(listen string, socketMode os.FileMode) (ln net.Listener, socketPath string, err error) {
+	u, err := url.Parse(listen)
 	if err != nil {
-		return nil, fmt.Errorf("server: parse listen URL: %w", err)
+		return nil, "", fmt.Errorf("server: parse listen URL: %w", err)
 	}
 	switch u.Scheme {
 	case "unix":
-		return s.listenUnix(u.Path)
+		if socketMode == 0 {
+			socketMode = 0o600
+		}
+		ln, err = electUnix(u.Path, socketMode)
+		if err != nil {
+			return nil, "", err
+		}
+		return ln, u.Path, nil
 	case "tcp":
-		return s.listenTCP(u.Host)
+		ln, err = electTCP(u.Host)
+		if err != nil {
+			return nil, "", err
+		}
+		return ln, "", nil
 	default:
-		return nil, fmt.Errorf("server: unsupported listen scheme %q (want unix:// or tcp://)", u.Scheme)
+		return nil, "", fmt.Errorf("server: unsupported listen scheme %q (want unix:// or tcp://)", u.Scheme)
 	}
 }
 
-// listenTCP binds a plain-HTTP TCP listener at host:port. Unlike the unix
+// listen is a thin compatibility shim over Elect, kept so existing tests that
+// call srv.listen() directly still compile. Production code uses Elect.
+func (s *Server) listen() (net.Listener, error) {
+	ln, _, err := Elect(s.opts.Listen, s.opts.SocketMode)
+	return ln, err
+}
+
+// electTCP binds a plain-HTTP TCP listener at host:port. Unlike the unix
 // socket there is no election token or stale-file recovery: a port already
 // in use means another server owns it, so EADDRINUSE maps straight to
 // ErrAlreadyRunning.
-func (s *Server) listenTCP(hostport string) (net.Listener, error) {
+func electTCP(hostport string) (net.Listener, error) {
 	if hostport == "" {
 		return nil, errors.New("server: tcp:// URL has empty host:port")
 	}
@@ -246,7 +281,7 @@ func (s *Server) listenTCP(hostport string) (net.Listener, error) {
 	return ln, nil
 }
 
-// listenUnix binds the unix socket at path, using the socket itself as
+// electUnix binds the unix socket at path, using the socket itself as
 // the single-instance election mechanism. The flow:
 //
 //   1. Try bind().
@@ -261,7 +296,7 @@ func (s *Server) listenTCP(hostport string) (net.Listener, error) {
 // where two simultaneous recoveries could both decide a socket is
 // stale is acceptable — the loser's second bind still fails with
 // EADDRINUSE and the process exits cleanly.
-func (s *Server) listenUnix(path string) (net.Listener, error) {
+func electUnix(path string, socketMode os.FileMode) (net.Listener, error) {
 	if path == "" {
 		return nil, errors.New("server: unix:// URL has empty path")
 	}
@@ -292,14 +327,11 @@ func (s *Server) listenUnix(path string) (net.Listener, error) {
 			return nil, fmt.Errorf("server: listen unix: %w", err)
 		}
 	}
-	if err := os.Chmod(path, s.opts.SocketMode); err != nil {
+	if err := os.Chmod(path, socketMode); err != nil {
 		ln.Close()
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("server: chmod socket: %w", err)
 	}
-	s.mu.Lock()
-	s.socketPath = path
-	s.mu.Unlock()
 	return ln, nil
 }
 
@@ -309,17 +341,31 @@ func isAddrInUse(err error) bool {
 	return errors.Is(err, syscall.EADDRINUSE)
 }
 
-// socketIsLive probes path with a short connect. Success means a
-// process is accepting connections — definitionally alive. Any error
-// (ECONNREFUSED on a stale socket file, ENOENT on a vanished path) is
-// treated as "not live".
+// socketIsLive probes path with a short connect, retried a few times. Success
+// on ANY attempt means a process is accepting connections — definitionally
+// alive. We only conclude "not live" (a stale file from a crashed process)
+// after every attempt fails, so a live-but-momentarily-unreachable server (a
+// loaded node, a briefly-full accept backlog) is never mistaken for dead and
+// have its socket unlinked. The common case — a socket that is actually live —
+// returns true on the first try with no added latency.
 func socketIsLive(path string) bool {
-	conn, err := net.DialTimeout("unix", path, 200*time.Millisecond)
-	if err != nil {
-		return false
+	return probeSocketLive(path, 3, 500*time.Millisecond, 100*time.Millisecond)
+}
+
+// probeSocketLive dials path up to attempts times (timeout each, gap between
+// tries), returning true as soon as one connect succeeds.
+func probeSocketLive(path string, attempts int, timeout, gap time.Duration) bool {
+	for i := 0; i < attempts; i++ {
+		conn, err := net.DialTimeout("unix", path, timeout)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
+		if i < attempts-1 {
+			time.Sleep(gap)
+		}
 	}
-	_ = conn.Close()
-	return true
+	return false
 }
 
 
@@ -492,26 +538,39 @@ func (s *Server) runOwnershipMonitor(ctx context.Context) {
 
 	ticker := time.NewTicker(s.opts.OwnershipCheckInterval)
 	defer ticker.Stop()
+	// Require several CONSECUTIVE failures before stepping down. A single
+	// failed self-dial under load (slow accept, transient hiccup) must not
+	// shut down a healthy server — that would itself create churn. A genuine
+	// takeover (a different instance now answers our path) fails every check,
+	// so it still evicts quickly: failThreshold × OwnershipCheckInterval.
+	const failThreshold = 3
+	consecutiveFails := 0
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if !s.confirmOwnership(ctx, httpClient) {
-				// If a shutdown is already in flight (idle monitor or
-				// caller-context cancel), the cleanupSocket path may
-				// have unlinked the socket already — this "failure"
-				// is just the tail end of a normal shutdown, not an
-				// orphan. Shutdown is idempotent so logging the line
-				// is harmless but noisy in that case.
-				log.Printf("server: ownership check failed (path %s no longer leads to instance %s); shutting down", sockPath, s.instanceID)
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				if err := s.httpSrv.Shutdown(shutdownCtx); err != nil {
-					log.Printf("server: ownership shutdown: %v", err)
-				}
-				cancel()
-				return
+			if s.confirmOwnership(ctx, httpClient) {
+				consecutiveFails = 0
+				continue
 			}
+			consecutiveFails++
+			if consecutiveFails < failThreshold {
+				continue
+			}
+			// If a shutdown is already in flight (idle monitor or
+			// caller-context cancel), the cleanupSocket path may
+			// have unlinked the socket already — this "failure"
+			// is just the tail end of a normal shutdown, not an
+			// orphan. Shutdown is idempotent so logging the line
+			// is harmless but noisy in that case.
+			log.Printf("server: ownership check failed %d× (path %s no longer leads to instance %s); shutting down", consecutiveFails, sockPath, s.instanceID)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := s.httpSrv.Shutdown(shutdownCtx); err != nil {
+				log.Printf("server: ownership shutdown: %v", err)
+			}
+			cancel()
+			return
 		}
 	}
 }

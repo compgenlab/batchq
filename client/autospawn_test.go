@@ -125,6 +125,53 @@ func TestAutospawnSpawnsWhenNoServer(t *testing.T) {
 	}
 }
 
+// TestAutospawnPrefersConnectingToSlowServer guards the SQLITE_BUSY fix: when a
+// live server is briefly unreachable at the first probe (here it binds a moment
+// later), DialAndConnect must retry and CONNECT to it rather than spawn a
+// duplicate (which would open the same DB and cause SQLITE_BUSY). spawnCount
+// must stay 0.
+func TestAutospawnPrefersConnectingToSlowServer(t *testing.T) {
+	dir := testsupport.ShortSockDir(t)
+	sock := filepath.Join(dir, "slow.sock")
+	dbPath := filepath.Join(dir, "slow.db")
+
+	st, err := storage.Open(context.Background(), dbPath, storage.Options{})
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	srv, err := server.New(service.New(st), server.Options{Listen: "unix://" + sock})
+	if err != nil {
+		t.Fatalf("server.New: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	// Bring the server up shortly AFTER DialAndConnect's first probe fails, but
+	// well within its connect-retry window (~3×300ms).
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		_ = srv.Serve(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	spawn, spawnCount := spawnInProcess(t)
+	c, err := DialAndConnect(context.Background(),
+		Options{URL: "unix://" + sock, Timeout: 2 * time.Second},
+		AutospawnConfig{Enabled: true, SpawnFunc: spawn, PollTimeout: 2 * time.Second})
+	if err != nil {
+		t.Fatalf("DialAndConnect: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if spawnCount.Load() != 0 {
+		t.Fatalf("spawned %d times, want 0 (should have connected to the slow-to-start server, not duplicated it)", spawnCount.Load())
+	}
+}
+
 func TestAutospawnRemovesStaleSocket(t *testing.T) {
 	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "stale.sock")
