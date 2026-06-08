@@ -445,7 +445,10 @@ var submitCmd = &cobra.Command{
 		c := mustDialClient()
 		defer c.Close()
 
-		ctx, cancel := cmdContext()
+		// Retryable budget: if the local server is mid-idle-cull, the client
+		// transparently reconnects (respawning a fresh server) and retries with
+		// a 5s/10s/30s backoff — submit must not be cut off by the 30s default.
+		ctx, cancel := cmdContextRetryable()
 		defer cancel()
 		if jobRunID != "" {
 			details["run_id"] = jobRunID

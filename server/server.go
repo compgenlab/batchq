@@ -75,6 +75,15 @@ type Options struct {
 	// (the default) disables in-band auth — the unix socket's filesystem
 	// permissions are then the only access control.
 	AuthToken string
+
+	// OnShutdown, if set, is called exactly once during shutdown to release
+	// the storage handle (typically Storage.Close). It is sequenced against
+	// the socket so the unix socket — the single-instance lock — is unlinked
+	// only AFTER the database is closed: a freshly-autospawned server cannot
+	// bind the socket (and therefore cannot open the DB) until the dying
+	// server has dropped it. This closes the idle-handoff window that
+	// otherwise lets two servers touch the DB at once and report SQLITE_BUSY.
+	OnShutdown func() error
 }
 
 // Server is a long-lived HTTP server over the batchq REST API.
@@ -99,7 +108,26 @@ type Server struct {
 	// before any client connects.
 	lastActivityNanos atomic.Int64
 	inFlight          atomic.Int64
+
+	// draining is set true once shutdown commits. While draining, the
+	// activity middleware rejects new requests with 503 + HeaderDraining
+	// (they never touch the closing DB) so the client can reconnect and
+	// retry. Paired with inFlight via a store-then-load / add-then-load
+	// handshake so a request and a committing shutdown can't both proceed.
+	draining atomic.Bool
+
+	// onShutdown releases storage; see Options.OnShutdown. shutdownMu guards
+	// shutdownStarted so the three shutdown triggers (idle, context-cancel,
+	// ownership) and the admin route run the ordered teardown at most once.
+	onShutdown      func() error
+	shutdownMu      sync.Mutex
+	shutdownStarted bool
 }
+
+// errCullAborted is returned by shutdown when an idle cull is abandoned
+// because a request arrived between the idle check and the drain commit.
+// The idle monitor treats it as "keep serving", not a failure.
+var errCullAborted = errors.New("server: idle cull aborted (request in flight)")
 
 // New wires a Service into an HTTP handler tree but does not start
 // listening. Call Serve to bind the socket and accept requests.
@@ -128,6 +156,7 @@ func New(svc *service.Service, opts Options) (*Server, error) {
 		svc:        svc,
 		opts:       opts,
 		instanceID: support.NewUUID(),
+		onShutdown: opts.OnShutdown,
 	}
 	mux := s.routes()
 	s.httpSrv = &http.Server{
@@ -168,7 +197,7 @@ func (s *Server) ServeListener(ctx context.Context, ln net.Listener, socketPath 
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = s.httpSrv.Shutdown(shutdownCtx)
+		_ = s.shutdown(shutdownCtx, "context-cancel", false)
 	}()
 
 	// Idle monitor: only spun up if a timeout is configured.
@@ -332,6 +361,15 @@ func electUnix(path string, socketMode os.FileMode) (net.Listener, error) {
 		_ = os.Remove(path)
 		return nil, fmt.Errorf("server: chmod socket: %w", err)
 	}
+	// Keep the socket file across listener.Close(): Go's UnixListener unlinks
+	// it by default, which would drop the lock at the START of shutdown —
+	// before the DB is closed. We make cleanupSocket the sole unlink point so
+	// the socket (the lock) is released only AFTER OnShutdown closes the DB.
+	// A lingering socket from a crash is handled by the stale-socket recovery
+	// above.
+	if ul, ok := ln.(*net.UnixListener); ok {
+		ul.SetUnlinkOnClose(false)
+	}
 	return ln, nil
 }
 
@@ -380,11 +418,71 @@ func (s *Server) cleanupSocket() {
 }
 
 // Shutdown stops accepting new connections, waits for in-flight requests
-// to finish (up to the given context's deadline), and unlinks the socket.
+// to finish (up to the given context's deadline), closes the database, and
+// unlinks the socket — in that order.
 func (s *Server) Shutdown(ctx context.Context) error {
-	err := s.httpSrv.Shutdown(ctx)
+	err := s.shutdown(ctx, "request", false)
 	s.cleanupSocket()
 	return err
+}
+
+// shutdown runs the ordered teardown, guaranteeing the unix socket (the
+// single-instance lock) is released only AFTER the database is closed:
+//
+//   - idle (nothing in flight): close the DB while the listener is still
+//     bound, then stop accepting. No other process can take the socket — and
+//     thus open the DB — until cleanupSocket unlinks it, which happens after
+//     Serve returns. Hard guarantee, zero writer overlap.
+//   - busy (a forced shutdown with requests in flight): drain first so
+//     in-flight handlers can finish their DB work, then close the DB. The
+//     listener closes during the drain, but the socket FILE lingers
+//     (SetUnlinkOnClose(false)) until cleanupSocket runs after the DB is
+//     closed, and a racing opener still hits EADDRINUSE + the ~1s liveness
+//     probe — so this path stays safe too.
+//
+// abortIfBusy (idle monitor only) abandons the cull if a request slipped in
+// between the idle check and the draining commit, returning errCullAborted.
+// shutdownStarted makes the committed teardown run at most once.
+func (s *Server) shutdown(ctx context.Context, reason string, abortIfBusy bool) error {
+	s.shutdownMu.Lock()
+	defer s.shutdownMu.Unlock()
+	if s.shutdownStarted {
+		return nil
+	}
+	// Set draining BEFORE reading inFlight. The activity middleware does the
+	// mirror (inFlight++ then read draining), so a request and this commit
+	// can never both decide to proceed against the DB.
+	s.draining.Store(true)
+	busy := s.inFlight.Load() > 0
+	if busy && abortIfBusy {
+		s.draining.Store(false)
+		return errCullAborted
+	}
+	s.shutdownStarted = true
+
+	var err error
+	if busy {
+		// In-flight handlers still need the DB: drain, then close.
+		err = s.httpSrv.Shutdown(ctx)
+		s.closeStorage(reason)
+	} else {
+		// Nothing in flight: close the DB while still bound, then stop
+		// accepting. New arrivals get 503 + HeaderDraining via the gate.
+		s.closeStorage(reason)
+		err = s.httpSrv.Shutdown(ctx)
+	}
+	return err
+}
+
+// closeStorage invokes the OnShutdown hook (Storage.Close) at most once via
+// shutdownStarted. Logged, not fatal — we are tearing down regardless.
+func (s *Server) closeStorage(reason string) {
+	if s.onShutdown == nil {
+		return
+	}
+	if err := s.onShutdown(); err != nil {
+		log.Printf("server: close storage on %s shutdown: %v", reason, err)
+	}
 }
 
 // routes builds the http.ServeMux for the API. It is split out so tests
@@ -450,7 +548,18 @@ func (s *Server) withActivity(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Add to inFlight BEFORE reading draining (shutdown does the mirror:
+		// store draining, then read inFlight). One side always observes the
+		// other, so a request never reaches the DB after a committed cull
+		// closed it. A draining server rejects with 503 + HeaderDraining; the
+		// request did no work, so the client safely reconnects and retries.
 		s.inFlight.Add(1)
+		if s.draining.Load() {
+			s.inFlight.Add(-1)
+			w.Header().Set(api.HeaderDraining, "1")
+			http.Error(w, "batchq: server is shutting down, retry", http.StatusServiceUnavailable)
+			return
+		}
 		s.lastActivityNanos.Store(time.Now().UnixNano())
 		defer func() {
 			s.lastActivityNanos.Store(time.Now().UnixNano())
@@ -493,10 +602,16 @@ func (s *Server) runIdleMonitor(ctx context.Context) {
 				go s.opts.OnIdleShutdown()
 			}
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := s.httpSrv.Shutdown(shutdownCtx); err != nil {
+			err := s.shutdown(shutdownCtx, "idle", true)
+			cancel()
+			if errors.Is(err, errCullAborted) {
+				// A request arrived between the idle check and the drain
+				// commit — keep serving and re-evaluate next tick.
+				continue
+			}
+			if err != nil {
 				log.Printf("server: idle shutdown: %v", err)
 			}
-			cancel()
 			return
 		}
 	}
@@ -566,7 +681,7 @@ func (s *Server) runOwnershipMonitor(ctx context.Context) {
 			// is harmless but noisy in that case.
 			log.Printf("server: ownership check failed %d× (path %s no longer leads to instance %s); shutting down", consecutiveFails, sockPath, s.instanceID)
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := s.httpSrv.Shutdown(shutdownCtx); err != nil {
+			if err := s.shutdown(shutdownCtx, "ownership", false); err != nil {
 				log.Printf("server: ownership shutdown: %v", err)
 			}
 			cancel()

@@ -176,6 +176,56 @@ func TestIdleShutdownFires(t *testing.T) {
 	}
 }
 
+// TestIdleShutdownClosesDBBeforeUnlinkingSocket is the regression guard for
+// the SQLITE_BUSY idle-handoff race: the unix socket (the single-instance
+// lock) must be released only AFTER the database is closed. We assert that
+// when OnShutdown (the DB closer) runs, the socket file is still present, and
+// that it is unlinked afterwards. If the order ever inverts, a respawned
+// server could open the DB while the dying one still holds it.
+func TestIdleShutdownClosesDBBeforeUnlinkingSocket(t *testing.T) {
+	dir := testsupport.ShortSockDir(t)
+	sock := filepath.Join(dir, "order.sock")
+	svc := newSvcForLifecycle(t)
+
+	var closeCalled, socketPresentAtClose bool
+	srv, err := New(svc, Options{
+		Listen:            "unix://" + sock,
+		IdleTimeout:       150 * time.Millisecond,
+		IdleCheckInterval: 30 * time.Millisecond,
+		OnShutdown: func() error {
+			closeCalled = true
+			_, statErr := os.Stat(sock)
+			socketPresentAtClose = statErr == nil
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(context.Background()) }()
+	waitForSocket(t, sock, 2*time.Second)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve returned: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Serve did not return after idle shutdown")
+	}
+
+	if !closeCalled {
+		t.Fatal("OnShutdown (DB close) was never called on idle shutdown")
+	}
+	if !socketPresentAtClose {
+		t.Fatal("socket was already unlinked when the DB closed — the lock was released before the DB (the SQLITE_BUSY handoff race)")
+	}
+	if _, err := os.Stat(sock); !os.IsNotExist(err) {
+		t.Fatalf("socket should be unlinked after shutdown; stat err = %v", err)
+	}
+}
+
 func TestIdleShutdownResetsOnRequest(t *testing.T) {
 	dir := testsupport.ShortSockDir(t)
 	sock := filepath.Join(dir, "active.sock")

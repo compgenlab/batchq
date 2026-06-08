@@ -35,6 +35,10 @@ type HTTPError struct {
 	StatusCode int
 	Body       string
 	APIError   *api.ErrorResponse
+	// Draining is true when the response carried api.HeaderDraining — the
+	// server rejected the request (503) because it is shutting down, BEFORE
+	// doing any work. That makes the request safe to reconnect-and-retry.
+	Draining bool
 }
 
 func (e *HTTPError) Error() string {
@@ -94,6 +98,12 @@ type Client struct {
 	httpC  *http.Client
 	base   string // URL prefix to prepend to every request (e.g. "http://batchq")
 	socket string // unix socket path, if applicable; empty for https
+
+	// auto is set by DialAndConnect for local autospawn-capable clients. When
+	// Enabled, do() transparently reconnects (respawning the server) and
+	// retries a request that hit an idle-server handoff. Zero value (the
+	// default for DialWithOptions clients) means no retry/respawn.
+	auto AutospawnConfig
 }
 
 // Dial parses the URL and returns a Client. No connection is made until
@@ -175,10 +185,63 @@ func (c *Client) SocketPath() string { return c.socket }
 
 // --- core HTTP plumbing ------------------------------------------------
 
-// do performs an HTTP request. Body is JSON-marshaled if non-nil. out, if
-// non-nil, is JSON-unmarshaled from the response. Non-2xx responses
-// produce a *HTTPError.
+// handoffBackoffs are the waits between reconnect-and-retry attempts when a
+// request hits an idle-server handoff (draining 503 or a connect failure). The
+// widening schedule (5s, 10s, 30s) gives a freshly-autospawned server room to
+// bind on a loaded NFS-backed host instead of hammering a still-spawning one.
+var handoffBackoffs = []time.Duration{5 * time.Second, 10 * time.Second, 30 * time.Second}
+
+// do performs a request, transparently surviving an idle-server handoff: if
+// the server is draining (503 + HeaderDraining) or unreachable (connect
+// failure) — both of which mean the request did NO work — it backs off,
+// reconnects (autospawning a fresh server via ensureUp), and retries, up to
+// len(handoffBackoffs) times. Retry only fires for local autospawn-capable
+// clients (c.auto.Enabled); everyone else gets a single shot. The caller's
+// context bounds the whole sequence, so callers that want the retries must
+// budget for the backoff (see cmd.cmdContextRetryable).
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	if !c.auto.Enabled {
+		return c.doOnce(ctx, method, path, body, out)
+	}
+	for attempt := 0; ; attempt++ {
+		err := c.doOnce(ctx, method, path, body, out)
+		if err == nil || attempt >= len(handoffBackoffs) || !retryableHandoff(err) {
+			return err
+		}
+		c.auto.logf("batchq: server handoff on %s %s (%v); reconnecting in %s (retry %d/%d)",
+			method, path, err, handoffBackoffs[attempt], attempt+1, len(handoffBackoffs))
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(handoffBackoffs[attempt]):
+		}
+		// Drop any keep-alive connection to the now-dead server inode, then
+		// ensure a fresh server is up before resending.
+		if t, ok := c.httpC.Transport.(*http.Transport); ok {
+			t.CloseIdleConnections()
+		}
+		ensureCtx, cancel := context.WithTimeout(context.Background(), c.opts.Timeout)
+		_ = c.ensureUp(ensureCtx)
+		cancel()
+	}
+}
+
+// retryableHandoff reports whether err is a clean idle-server-handoff signal:
+// a draining 503 (rejected before processing) or a connect failure (request
+// never sent). Both guarantee the server did no work, so retrying — even a
+// non-idempotent submit — cannot double-apply.
+func retryableHandoff(err error) bool {
+	var he *HTTPError
+	if errors.As(err, &he) {
+		return he.StatusCode == http.StatusServiceUnavailable && he.Draining
+	}
+	return isConnectFailure(err)
+}
+
+// doOnce performs a single HTTP request. Body is JSON-marshaled if non-nil.
+// out, if non-nil, is JSON-unmarshaled from the response. Non-2xx responses
+// produce a *HTTPError.
+func (c *Client) doOnce(ctx context.Context, method, path string, body, out any) error {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -212,7 +275,11 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	}
 
 	if resp.StatusCode >= 400 {
-		httpErr := &HTTPError{StatusCode: resp.StatusCode, Body: string(respBody)}
+		httpErr := &HTTPError{
+			StatusCode: resp.StatusCode,
+			Body:       string(respBody),
+			Draining:   resp.Header.Get(api.HeaderDraining) == "1",
+		}
 		if len(respBody) > 0 {
 			var apiErr api.ErrorResponse
 			if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Error != "" {
@@ -232,8 +299,10 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 
 // --- Jobs --------------------------------------------------------------
 
+// Health is a single-shot probe (no retry/respawn) — it is the primitive
+// ensureUp and the autospawn flow build on, so it must not recurse into them.
 func (c *Client) Health(ctx context.Context) error {
-	return c.do(ctx, http.MethodGet, "/healthz", nil, nil)
+	return c.doOnce(ctx, http.MethodGet, "/healthz", nil, nil)
 }
 
 // HealthStatus probes the server and returns its reported health (status,
@@ -241,7 +310,7 @@ func (c *Client) Health(ctx context.Context) error {
 // running and reachable.
 func (c *Client) HealthStatus(ctx context.Context) (*api.HealthResponse, error) {
 	var resp api.HealthResponse
-	if err := c.do(ctx, http.MethodGet, "/healthz", nil, &resp); err != nil {
+	if err := c.doOnce(ctx, http.MethodGet, "/healthz", nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -252,7 +321,7 @@ func (c *Client) HealthStatus(ctx context.Context) (*api.HealthResponse, error) 
 // (no such file or connection refused) as a successful no-op — there was
 // nothing to shut down.
 func (c *Client) Shutdown(ctx context.Context) error {
-	return c.do(ctx, http.MethodPost, api.Prefix+api.RouteShutdown, nil, nil)
+	return c.doOnce(ctx, http.MethodPost, api.Prefix+api.RouteShutdown, nil, nil)
 }
 
 func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api.JobDTO, error) {

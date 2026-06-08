@@ -119,6 +119,15 @@ func cmdContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
+// cmdContextRetryable returns a context budgeted to outlast the client's
+// reconnect-and-retry of an idle-server handoff: the graduated backoff
+// (5s+10s+30s) plus the per-attempt requests. Mutating CLI calls that must
+// survive a server cull/respawn (notably submit) use this instead of
+// cmdContext so the retries aren't cut off by the 30s default.
+func cmdContextRetryable() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 2*time.Minute)
+}
+
 // shutdownLocalServer probes the unix-socket server and, if it answers,
 // asks it to drain and exit. Returns nil on either "no server" or
 // "server confirmed down".

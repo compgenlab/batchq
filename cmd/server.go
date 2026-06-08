@@ -128,14 +128,20 @@ func runServer(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Open the DB only after winning the election. storage.Open takes an
-	// exclusive lock on the DB, so this also fails fast (before we announce
-	// "listening") if another batchq process already owns the database.
+	// Open the DB only after winning the election. We hold the socket (the
+	// single-instance lock) for the whole DB lifetime: the server's shutdown
+	// closes the DB BEFORE unlinking the socket (see Options.OnShutdown), so a
+	// freshly-autospawned server can't bind the socket — and thus can't open
+	// the DB — until this one has dropped it. That ordering is what prevents
+	// two servers contending on the DB and reporting SQLITE_BUSY.
 	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL})
 	if err != nil {
 		releaseToken()
 		return fmt.Errorf("open storage: %w", err)
 	}
+	// Safety net only — the server's ordered shutdown (OnShutdown) is the
+	// primary close; Storage.Close is idempotent so this double-close is a
+	// no-op if shutdown already ran.
 	defer store.Close()
 
 	svc := service.New(store)
@@ -143,6 +149,7 @@ func runServer(_ *cobra.Command, _ []string) error {
 		Listen:      serverListen,
 		IdleTimeout: serverIdleTimeout,
 		AuthToken:   Config.Server.Token,
+		OnShutdown:  store.Close,
 	})
 	if err != nil {
 		releaseToken()
