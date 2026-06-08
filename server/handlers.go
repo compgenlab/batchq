@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -82,6 +83,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, api.HealthResponse{
 		Status:     "ok",
 		InstanceID: s.instanceID,
+		PID:        os.Getpid(),
 	})
 }
 

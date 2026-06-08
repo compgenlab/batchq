@@ -122,6 +122,33 @@ func (s *sqliteStorage) Close() error {
 	return s.db.Close()
 }
 
+// beginTx starts a write transaction, decoupled from the request context's
+// cancellation and self-healing a poisoned connection.
+//
+// Why decouple from cancellation: there is a race in the SQLite driver between
+// context cancellation and BEGIN. If the request context is canceled the instant
+// BEGIN runs, the BEGIN commits inside SQLite but database/sql returns the
+// connection to the pool still inside a transaction. Because the pool is pinned
+// to a single connection (SetMaxOpenConns(1)), that one poisoned connection then
+// fails *every* later BeginTx with "cannot start a transaction within a
+// transaction" until the server restarts. Callers pass context.WithoutCancel
+// here (and use it for the whole transaction body) so a client disconnect can no
+// longer cancel a write mid-flight. SQLite still bounds blocking via busy_timeout.
+//
+// The retry is a backstop: if the connection was already poisoned by some other
+// path, clear the dangling transaction with a raw ROLLBACK and try once more.
+func (s *sqliteStorage) beginTx(ctx context.Context) (*sql.Tx, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err == nil {
+		return tx, nil
+	}
+	if strings.Contains(err.Error(), "within a transaction") {
+		_, _ = s.db.ExecContext(ctx, "ROLLBACK")
+		return s.db.BeginTx(ctx, nil)
+	}
+	return nil, err
+}
+
 // nowString returns the current UTC time formatted for the DB.
 func nowString() string {
 	return time.Now().UTC().Format(timeFormat)
@@ -154,6 +181,7 @@ func parseTime(s string) (time.Time, error) {
 // --- Submission ---------------------------------------------------------
 
 func (s *sqliteStorage) InsertJob(ctx context.Context, job *jobs.JobDef) error {
+	ctx = context.WithoutCancel(ctx)
 	if job == nil {
 		return errors.New("storage: nil job")
 	}
@@ -168,7 +196,7 @@ func (s *sqliteStorage) InsertJob(ctx context.Context, job *jobs.JobDef) error {
 
 	submitTime := nowString()
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -184,6 +212,7 @@ func (s *sqliteStorage) InsertJob(ctx context.Context, job *jobs.JobDef) error {
 // array appears atomically. The tasks already carry their array_id/array_index
 // details; they share submit_time. Dependencies are validated once up front.
 func (s *sqliteStorage) InsertArray(ctx context.Context, arrayID string, tasks []*jobs.JobDef) error {
+	ctx = context.WithoutCancel(ctx)
 	if arrayID == "" {
 		return errors.New("storage: empty array id")
 	}
@@ -204,7 +233,7 @@ func (s *sqliteStorage) InsertArray(ctx context.Context, arrayID string, tasks [
 
 	submitTime := nowString()
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -804,7 +833,8 @@ func (s *sqliteStorage) GetProxyJobs(ctx context.Context) ([]*jobs.JobDef, error
 // --- Dependency resolution ---------------------------------------------
 
 func (s *sqliteStorage) ResolveDependencies(ctx context.Context) (ResolveResult, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	ctx = context.WithoutCancel(ctx)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return ResolveResult{}, err
 	}
@@ -899,10 +929,11 @@ func (s *sqliteStorage) ResolveDependencies(ctx context.Context) (ResolveResult,
 // --- Atomic claim ------------------------------------------------------
 
 func (s *sqliteStorage) ClaimNextJob(ctx context.Context, runnerID, kind string, limits Limits) (ClaimResult, error) {
+	ctx = context.WithoutCancel(ctx)
 	if runnerID == "" {
 		return ClaimResult{}, errors.New("storage: empty runnerID")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return ClaimResult{}, err
 	}
@@ -995,10 +1026,11 @@ func (s *sqliteStorage) ClaimNextJob(ctx context.Context, runnerID, kind string,
 }
 
 func (s *sqliteStorage) ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, limits Limits, maxTasks int) (ArrayClaimResult, error) {
+	ctx = context.WithoutCancel(ctx)
 	if runnerID == "" {
 		return ArrayClaimResult{}, errors.New("storage: empty runnerID")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return ArrayClaimResult{}, err
 	}
@@ -1472,7 +1504,8 @@ func (s *sqliteStorage) txGetJob(ctx context.Context, tx *sql.Tx, jobID string) 
 // --- State transitions -------------------------------------------------
 
 func (s *sqliteStorage) MarkJobProxied(ctx context.Context, jobID, runnerID string, runningDetails map[string]string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	ctx = context.WithoutCancel(ctx)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -1504,10 +1537,11 @@ func (s *sqliteStorage) MarkJobProxied(ctx context.Context, jobID, runnerID stri
 }
 
 func (s *sqliteStorage) UpdateRunningDetails(ctx context.Context, jobID string, details map[string]string) error {
+	ctx = context.WithoutCancel(ctx)
 	if len(details) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -1523,7 +1557,8 @@ func (s *sqliteStorage) UpdateRunningDetails(ctx context.Context, jobID string, 
 }
 
 func (s *sqliteStorage) EndJob(ctx context.Context, jobID, runnerID string, returnCode int, notes string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	ctx = context.WithoutCancel(ctx)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -1561,7 +1596,8 @@ func (s *sqliteStorage) EndJob(ctx context.Context, jobID, runnerID string, retu
 }
 
 func (s *sqliteStorage) EndProxiedJob(ctx context.Context, jobID string, status jobs.StatusCode, startTime, endTime time.Time, returnCode int, notes string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	ctx = context.WithoutCancel(ctx)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -1591,7 +1627,8 @@ func (s *sqliteStorage) EndProxiedJob(ctx context.Context, jobID string, status 
 }
 
 func (s *sqliteStorage) CancelJob(ctx context.Context, jobID, reason string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	ctx = context.WithoutCancel(ctx)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -1753,6 +1790,7 @@ func (s *sqliteStorage) ReleaseArray(ctx context.Context, arrayID string) (int, 
 // in one transaction. Returns the number of tasks. ErrJobNotFound if the array
 // has no members.
 func (s *sqliteStorage) CancelArray(ctx context.Context, arrayID, reason string) (int, error) {
+	ctx = context.WithoutCancel(ctx)
 	ids, err := s.FindJobsByDetail(ctx, "array_id", arrayID)
 	if err != nil {
 		return 0, err
@@ -1760,7 +1798,7 @@ func (s *sqliteStorage) CancelArray(ctx context.Context, arrayID, reason string)
 	if len(ids) == 0 {
 		return 0, ErrJobNotFound
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -1796,7 +1834,8 @@ func (s *sqliteStorage) AdjustJobPriority(ctx context.Context, jobID string, del
 }
 
 func (s *sqliteStorage) CleanupJob(ctx context.Context, jobID string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	ctx = context.WithoutCancel(ctx)
+	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}

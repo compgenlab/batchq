@@ -236,6 +236,17 @@ func (c *Client) Health(ctx context.Context) error {
 	return c.do(ctx, http.MethodGet, "/healthz", nil, nil)
 }
 
+// HealthStatus probes the server and returns its reported health (status,
+// instance id, PID). Used by `batchq debug` to report whether a server is
+// running and reachable.
+func (c *Client) HealthStatus(ctx context.Context) (*api.HealthResponse, error) {
+	var resp api.HealthResponse
+	if err := c.do(ctx, http.MethodGet, "/healthz", nil, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // Shutdown asks the server to drain in-flight requests and exit. Callers
 // that want "ensure no server is running" should treat a connect failure
 // (no such file or connection refused) as a successful no-op — there was

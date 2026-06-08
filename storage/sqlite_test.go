@@ -1126,3 +1126,55 @@ func TestCleanupRemovesInputsOutputs(t *testing.T) {
 		}
 	}
 }
+
+// --- Transaction-poisoning regression ----------------------------------
+
+// TestBeginTxRecoversPoisonedConnection reproduces the "cannot start a
+// transaction within a transaction" failure: a dangling transaction on the
+// single shared connection (the state a context-canceled BEGIN leaves behind)
+// must not wedge every later write. beginTx's self-heal should clear it.
+func TestBeginTxRecoversPoisonedConnection(t *testing.T) {
+	s := newTestStore(t).(*sqliteStorage)
+	ctx := ctxT(t)
+
+	// Run a raw BEGIN that database/sql is unaware of. With MaxOpenConns(1) the
+	// connection returns to the pool still inside a transaction — poisoned.
+	if _, err := s.db.ExecContext(ctx, "BEGIN"); err != nil {
+		t.Fatalf("seed BEGIN: %v", err)
+	}
+
+	// A plain s.db.BeginTx would now fail; InsertJob (via beginTx) must recover.
+	job := mkJob("j-poison", map[string]string{"script": "echo hi"})
+	if err := s.InsertJob(ctx, job); err != nil {
+		t.Fatalf("InsertJob after poison: %v", err)
+	}
+	got, err := s.GetJob(ctx, "j-poison")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.JobId != "j-poison" || got.Status != jobs.QUEUED {
+		t.Fatalf("got %+v", got)
+	}
+
+	// And the connection is healthy for the next write.
+	if err := s.InsertJob(ctx, mkJob("j-after", nil)); err != nil {
+		t.Fatalf("InsertJob after recovery: %v", err)
+	}
+}
+
+// TestInsertJobIgnoresCanceledContext proves write transactions are decoupled
+// from request-context cancellation (context.WithoutCancel): a client that
+// disconnects mid-submit can no longer cancel the BEGIN and poison the
+// connection. The write completes despite an already-canceled context.
+func TestInsertJobIgnoresCanceledContext(t *testing.T) {
+	s := newTestStore(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // canceled before the call
+
+	if err := s.InsertJob(ctx, mkJob("j-canceled", map[string]string{"script": "echo hi"})); err != nil {
+		t.Fatalf("InsertJob with canceled ctx: %v", err)
+	}
+	if _, err := s.GetJob(context.Background(), "j-canceled"); err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+}

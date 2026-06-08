@@ -79,6 +79,16 @@ func TestHealth(t *testing.T) {
 	if resp.Header.Get(api.HeaderVersion) != api.Version {
 		t.Fatalf("missing API version header: %s", resp.Header.Get(api.HeaderVersion))
 	}
+	var hr api.HealthResponse
+	if err := json.Unmarshal(body, &hr); err != nil {
+		t.Fatalf("unmarshal health: %v", err)
+	}
+	if hr.Status != "ok" {
+		t.Fatalf("status: %q", hr.Status)
+	}
+	if hr.PID != os.Getpid() {
+		t.Fatalf("pid: got %d, want %d", hr.PID, os.Getpid())
+	}
 }
 
 // --- Submit / Get / List ----------------------------------------------
