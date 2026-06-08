@@ -42,6 +42,44 @@ func ctxT(t *testing.T) context.Context {
 	return ctx
 }
 
+// TestOperationsIgnoreRequestCancellation locks in the SQLITE_BUSY fix: storage
+// operations decouple from the request context's cancellation, so a client
+// disconnecting mid-request can never interrupt a query. That interruption is
+// what made the pool discard and reopen the single connection, briefly leaving
+// two connections holding locks on the same DB file (esp. on NFS) -> SQLITE_BUSY.
+// Here we drive reads AND writes with an already-canceled context and assert
+// they still succeed.
+func TestOperationsIgnoreRequestCancellation(t *testing.T) {
+	s := newTestStore(t)
+
+	job := mkJob("cancel-1", map[string]string{"script": "echo hi"})
+	if err := s.InsertJob(ctxT(t), job); err != nil {
+		t.Fatalf("InsertJob: %v", err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled before any call
+
+	// Read path (s.qRow / s.qRows) must complete despite the canceled context.
+	got, err := s.GetJob(canceled, "cancel-1")
+	if err != nil {
+		t.Fatalf("GetJob with canceled ctx should still succeed, got: %v", err)
+	}
+	if got == nil || got.JobId != "cancel-1" {
+		t.Fatalf("GetJob returned wrong/nil job: %+v", got)
+	}
+
+	// Standalone write path (s.qExec) must also complete.
+	if err := s.HoldJob(canceled, "cancel-1"); err != nil {
+		t.Fatalf("HoldJob with canceled ctx should still succeed, got: %v", err)
+	}
+
+	// Transactional write path (beginTx) must also complete.
+	if err := s.ReleaseJob(canceled, "cancel-1"); err != nil {
+		t.Fatalf("ReleaseJob with canceled ctx should still succeed, got: %v", err)
+	}
+}
+
 // --- Basic CRUD --------------------------------------------------------
 
 func TestInsertAndGet(t *testing.T) {
