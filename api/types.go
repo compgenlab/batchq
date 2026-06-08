@@ -133,6 +133,10 @@ func JobToDef(dto *JobDTO) *jobs.JobDef {
 type HealthResponse struct {
 	Status     string `json:"status"`
 	InstanceID string `json:"instance_id"`
+	// PID is the OS process id of the server, for diagnostics
+	// (`batchq debug`). For a local unix-socket server this is a PID on the
+	// same host; for a remote server it is the PID on the remote host.
+	PID int `json:"pid,omitempty"`
 }
 
 // SubmitJobRequest is the body for POST /jobs. Status is ignored on the

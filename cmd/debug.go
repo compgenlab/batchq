@@ -15,6 +15,7 @@ package cmd
 // supplied the final value.
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/mbreese/batchq/client"
 	"github.com/mbreese/batchq/support"
 )
 
@@ -83,6 +85,77 @@ func printDebugConfig(w io.Writer) {
 		}
 		tw.Flush()
 		fmt.Fprintln(w)
+	}
+
+	printServerStatus(w)
+}
+
+// printServerStatus probes the configured server endpoint (never autospawning)
+// and reports whether a server is running, its PID, and instance id — i.e. can
+// it be reached / PINGed. Mirrors dialClient's endpoint resolution.
+func printServerStatus(w io.Writer) {
+	fmt.Fprintln(w, "server status:")
+
+	remoteRaw := clientRemote
+	if remoteRaw == "" {
+		remoteRaw = Config.Batchq.Remote
+	}
+
+	dialURL := Config.Server.Listen
+	mode := "local"
+	if remoteRaw != "" {
+		u, err := support.ParseRemote(remoteRaw)
+		if err != nil {
+			fmt.Fprintf(w, "  endpoint:    %s   (remote, invalid: %v)\n", remoteRaw, err)
+			return
+		}
+		dialURL = u
+		mode = "remote"
+	}
+	fmt.Fprintf(w, "  endpoint:    %s   (%s)\n", dialURL, mode)
+
+	token := clientToken
+	if token == "" {
+		token = Config.Batchq.Token
+	}
+
+	c, err := client.DialWithOptions(client.Options{
+		URL:     dialURL,
+		Token:   token,
+		Timeout: 3 * time.Second,
+	})
+	if err != nil {
+		fmt.Fprintf(w, "  running:     unknown   (dial: %v)\n", err)
+		return
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	hr, err := c.HealthStatus(ctx)
+	if err != nil {
+		fmt.Fprintf(w, "  running:     no   (ping: %v)\n", err)
+		// For a local unix socket, distinguish "nothing there" from a stale
+		// socket file left by a crashed server.
+		if sock := c.SocketPath(); sock != "" {
+			if _, serr := os.Stat(sock); serr == nil {
+				fmt.Fprintf(w, "  socket file: %s   (present — likely stale)\n", sock)
+			} else {
+				fmt.Fprintf(w, "  socket file: %s   (absent)\n", sock)
+			}
+		}
+		return
+	}
+
+	fmt.Fprintf(w, "  running:     yes   (ping ok)\n")
+	if hr.PID != 0 {
+		fmt.Fprintf(w, "  pid:         %d\n", hr.PID)
+	} else {
+		fmt.Fprintf(w, "  pid:         (not reported)\n")
+	}
+	if hr.InstanceID != "" {
+		fmt.Fprintf(w, "  instance:    %s\n", hr.InstanceID)
 	}
 }
 
