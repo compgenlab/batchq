@@ -50,6 +50,24 @@ func TestOpenDebugLogEmptyPathDisables(t *testing.T) {
 	}
 }
 
+// A ~-prefixed path from the config file must resolve against the user's home
+// directory, both for the leading "~/..." form and a bare "~".
+func TestOpenDebugLogExpandsTilde(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	l, err := OpenDebugLog("~/logs/debug.log", "client")
+	if err != nil {
+		t.Fatalf("OpenDebugLog(~): %v", err)
+	}
+	l.Logf("hello")
+
+	want := filepath.Join(home, "logs", "debug.log")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("~ was not expanded to $HOME: expected %s, stat err = %v", want, err)
+	}
+}
+
 func TestOpenDebugLogAppendsConcurrently(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "debug.log")
 	l, err := OpenDebugLog(path, "client")

@@ -120,7 +120,12 @@ func dialClient() (*client.Client, error) {
 			"--db", Config.Server.DB,
 		}
 		// Spawned server logs to the SAME file so client+server PIDs interleave.
+		// Expand ~ / make absolute HERE so the child opens the exact same path
+		// regardless of its own $HOME or working directory.
 		if lp := resolveLogPath(); lp != "" {
+			if abs, err := support.ExpandPathAbs(lp); err == nil {
+				lp = abs
+			}
 			auto.ExtraArgs = append(auto.ExtraArgs, "--log", lp)
 		}
 	}
