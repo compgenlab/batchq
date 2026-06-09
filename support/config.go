@@ -52,6 +52,14 @@ type BatchqConfig struct {
 	// freshly-spawned local server to bind its socket. Bumping this is
 	// useful on slow filesystems (NFS, Lustre) where 5s is tight.
 	AutospawnWaitTimeout Duration `toml:"autospawn_wait_timeout"`
+
+	// Log, if set to a file path, turns on the lifecycle debug log: every
+	// client appends timestamped, PID-tagged lines when it spawns/connects to
+	// a server and when a request fails, and every (auto)spawned server logs
+	// its start, each request it serves, every shutdown (with reason), and any
+	// DB error (e.g. SQLITE_BUSY) — to the SAME file, so overlapping server
+	// PIDs are visible at a glance. Overridable per-invocation with --log.
+	Log string `toml:"log"`
 }
 
 // ServerConfig holds server-runtime knobs. None of these apply when
@@ -65,6 +73,14 @@ type ServerConfig struct {
 	DB          string   `toml:"db"`
 	IdleTimeout Duration `toml:"idle_timeout"`
 	SqliteWAL   bool     `toml:"sqlite_wal"`
+
+	// ReadPoolSize sets how many connections serve concurrent reads. Default
+	// (0/1) shares the single writer connection — historical behavior. A value
+	// > 1 opens a separate read pool of that size so status-poll bursts run
+	// concurrently. Trade-off: > 1 re-introduces reader↔writer SQLite lock
+	// contention (bounded by busy_timeout) and more fcntl locking on NFS; set
+	// back to 1 to revert. `--read-pool-size` overrides.
+	ReadPoolSize int `toml:"read_pool_size"`
 
 	// Token, if non-empty, turns on shared-token auth: every API request
 	// (except the health check) must carry `Authorization: Bearer <token>`

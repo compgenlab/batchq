@@ -25,6 +25,78 @@ func newTestStore(t *testing.T) Storage {
 	return s
 }
 
+// newTestStoreWithReadPool opens a Storage with a separate read pool of the
+// given size and returns the concrete impl so tests can inspect the pools.
+func newTestStoreWithReadPool(t *testing.T, readPool int) *sqliteStorage {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "batchq.db")
+	s, err := Open(context.Background(), path, Options{ReadPoolSize: readPool})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return s.(*sqliteStorage)
+}
+
+// Default (ReadPoolSize 0/1): reads share the single writer connection — no
+// second pool, byte-for-byte the historical behavior.
+func TestReadPoolDefaultSharesWriterConnection(t *testing.T) {
+	s := newTestStoreWithReadPool(t, 0)
+	if s.readDB != s.db {
+		t.Fatal("default ReadPoolSize must share the writer connection (readDB == db)")
+	}
+	if got := s.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("writer MaxOpenConnections = %d, want 1", got)
+	}
+}
+
+// ReadPoolSize > 1: a separate read pool of that size; reads reflect committed
+// writes and a write still succeeds afterward.
+func TestReadPoolSeparateAndConsistent(t *testing.T) {
+	const n = 4
+	s := newTestStoreWithReadPool(t, n)
+	if s.readDB == s.db {
+		t.Fatal("ReadPoolSize>1 must open a SEPARATE read pool (readDB != db)")
+	}
+	if got := s.readDB.Stats().MaxOpenConnections; got != n {
+		t.Fatalf("read pool MaxOpenConnections = %d, want %d", got, n)
+	}
+	if got := s.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("writer MaxOpenConnections = %d, want 1 (single writer)", got)
+	}
+
+	ctx := ctxT(t)
+	if err := s.InsertJob(ctx, mkJob("rp-1", map[string]string{"script": "echo hi"})); err != nil {
+		t.Fatalf("InsertJob: %v", err)
+	}
+	// Read back through the read pool: must see the committed write.
+	got, err := s.GetJob(ctx, "rp-1")
+	if err != nil || got == nil || got.JobId != "rp-1" {
+		t.Fatalf("GetJob via read pool: job=%+v err=%v", got, err)
+	}
+
+	// Concurrent reads (more than the pool size) all succeed while a write runs.
+	var wg sync.WaitGroup
+	errc := make(chan error, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := s.GetJob(ctx, "rp-1"); err != nil {
+				errc <- err
+			}
+		}()
+	}
+	if err := s.HoldJob(ctx, "rp-1"); err != nil {
+		t.Fatalf("HoldJob during concurrent reads: %v", err)
+	}
+	wg.Wait()
+	close(errc)
+	for err := range errc {
+		t.Fatalf("concurrent GetJob failed: %v", err)
+	}
+}
+
 // mkJob builds an in-memory JobDef ready to pass to InsertJob.
 func mkJob(id string, details map[string]string, deps ...string) *jobs.JobDef {
 	j := &jobs.JobDef{JobId: id, Name: id}
@@ -40,6 +112,44 @@ func ctxT(t *testing.T) context.Context {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 	return ctx
+}
+
+// TestOperationsIgnoreRequestCancellation locks in the SQLITE_BUSY fix: storage
+// operations decouple from the request context's cancellation, so a client
+// disconnecting mid-request can never interrupt a query. That interruption is
+// what made the pool discard and reopen the single connection, briefly leaving
+// two connections holding locks on the same DB file (esp. on NFS) -> SQLITE_BUSY.
+// Here we drive reads AND writes with an already-canceled context and assert
+// they still succeed.
+func TestOperationsIgnoreRequestCancellation(t *testing.T) {
+	s := newTestStore(t)
+
+	job := mkJob("cancel-1", map[string]string{"script": "echo hi"})
+	if err := s.InsertJob(ctxT(t), job); err != nil {
+		t.Fatalf("InsertJob: %v", err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel() // already canceled before any call
+
+	// Read path (s.qRow / s.qRows) must complete despite the canceled context.
+	got, err := s.GetJob(canceled, "cancel-1")
+	if err != nil {
+		t.Fatalf("GetJob with canceled ctx should still succeed, got: %v", err)
+	}
+	if got == nil || got.JobId != "cancel-1" {
+		t.Fatalf("GetJob returned wrong/nil job: %+v", got)
+	}
+
+	// Standalone write path (s.qExec) must also complete.
+	if err := s.HoldJob(canceled, "cancel-1"); err != nil {
+		t.Fatalf("HoldJob with canceled ctx should still succeed, got: %v", err)
+	}
+
+	// Transactional write path (beginTx) must also complete.
+	if err := s.ReleaseJob(canceled, "cancel-1"); err != nil {
+		t.Fatalf("ReleaseJob with canceled ctx should still succeed, got: %v", err)
+	}
 }
 
 // --- Basic CRUD --------------------------------------------------------

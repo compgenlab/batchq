@@ -36,6 +36,17 @@ type Options struct {
 	// BusyTimeoutMS controls how long SQLite waits on a locked DB before
 	// giving up. Default 5000ms.
 	BusyTimeoutMS int
+
+	// ReadPoolSize sets how many connections serve concurrent READS. Writes
+	// always go through one serialized connection. The default (0 or 1) shares
+	// the single writer connection for reads too — byte-for-byte the historical
+	// single-connection behavior. A value > 1 opens a SEPARATE read pool of
+	// that size so status-poll bursts aren't serialized behind one another or
+	// behind a write. Trade-off: > 1 re-introduces reader↔writer SQLite lock
+	// contention (bounded by busy_timeout) that the single connection avoided,
+	// and more open connections doing fcntl locking on NFS. Set back to 1 to
+	// revert. See the package docs and CLAUDE.md.
+	ReadPoolSize int
 }
 
 // Open returns a Storage backed by the SQLite file at path. The file (and
@@ -63,26 +74,47 @@ func Open(ctx context.Context, path string, opts Options) (Storage, error) {
 		"file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(%s)&_pragma=busy_timeout(%d)&_pragma=synchronous(FULL)",
 		path, journal, opts.BusyTimeoutMS,
 	)
-	conn, err := sql.Open("sqlite", dsn)
+	// writeDB is the single serialized WRITER. One writer process owns the file;
+	// a single connection gives safe transaction semantics for free and is the
+	// thing that makes "one server can't SQLITE_BUSY against itself" true.
+	writeDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("storage: open sqlite: %w", err)
 	}
-	// One writer process — the server owns the file exclusively. A single
-	// connection is sufficient and gives us safe transaction semantics for
-	// free.
-	conn.SetMaxOpenConns(1)
-	conn.SetMaxIdleConns(1)
+	writeDB.SetMaxOpenConns(1)
+	writeDB.SetMaxIdleConns(1)
 
-	if err := conn.PingContext(ctx); err != nil {
-		conn.Close()
+	if err := writeDB.PingContext(ctx); err != nil {
+		writeDB.Close()
 		return nil, fmt.Errorf("storage: ping: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, schemaSQL); err != nil {
-		conn.Close()
+	if _, err := writeDB.ExecContext(ctx, schemaSQL); err != nil {
+		writeDB.Close()
 		return nil, fmt.Errorf("storage: apply schema: %w", err)
 	}
 
-	return &sqliteStorage{db: conn, path: path}, nil
+	// readDB serves standalone reads (qRows/qRow). Default: share the writer
+	// connection — identical to the historical single-connection behavior. Only
+	// when ReadPoolSize > 1 do we open a SEPARATE pool so reads run concurrently
+	// (each takes a SHARED lock; readers never block readers). Same DSN: the
+	// read helpers only ever SELECT, so a read-only DSN isn't needed.
+	readDB := writeDB
+	if opts.ReadPoolSize > 1 {
+		readDB, err = sql.Open("sqlite", dsn)
+		if err != nil {
+			writeDB.Close()
+			return nil, fmt.Errorf("storage: open sqlite read pool: %w", err)
+		}
+		readDB.SetMaxOpenConns(opts.ReadPoolSize)
+		readDB.SetMaxIdleConns(opts.ReadPoolSize)
+		if err := readDB.PingContext(ctx); err != nil {
+			readDB.Close()
+			writeDB.Close()
+			return nil, fmt.Errorf("storage: ping read pool: %w", err)
+		}
+	}
+
+	return &sqliteStorage{db: writeDB, readDB: readDB, path: path}, nil
 }
 
 // Reset destroys any existing DB at path and creates a fresh one with the
@@ -105,8 +137,11 @@ func Reset(ctx context.Context, path string) error {
 }
 
 type sqliteStorage struct {
-	db   *sql.DB
-	path string
+	db   *sql.DB // single serialized WRITER (and reads when ReadPoolSize<=1)
+	// readDB serves standalone reads. Equals db when reads share the writer
+	// connection (ReadPoolSize<=1); a distinct pool when ReadPoolSize>1.
+	readDB *sql.DB
+	path   string
 
 	mu     sync.Mutex
 	closed bool
@@ -119,6 +154,11 @@ func (s *sqliteStorage) Close() error {
 		return nil
 	}
 	s.closed = true
+	// Close the distinct read pool first (if any), then the writer. When reads
+	// share the writer connection, readDB == db and we close it once.
+	if s.readDB != nil && s.readDB != s.db {
+		_ = s.readDB.Close()
+	}
 	return s.db.Close()
 }
 
@@ -138,6 +178,9 @@ func (s *sqliteStorage) Close() error {
 // The retry is a backstop: if the connection was already poisoned by some other
 // path, clear the dangling transaction with a raw ROLLBACK and try once more.
 func (s *sqliteStorage) beginTx(ctx context.Context) (*sql.Tx, error) {
+	// Decouple from request cancellation here too, so a canceled BEGIN can never
+	// leave the single shared connection poisoned/discarded (see qRows et al.).
+	ctx = context.WithoutCancel(ctx)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err == nil {
 		return tx, nil
@@ -147,6 +190,34 @@ func (s *sqliteStorage) beginTx(ctx context.Context) (*sql.Tx, error) {
 		return s.db.BeginTx(ctx, nil)
 	}
 	return nil, err
+}
+
+// qRows/qRow/qExec run a query on the single pooled connection with the
+// request's cancellation DECOUPLED (context.WithoutCancel). This is REQUIRED,
+// not an optimization, and the read paths must use these rather than s.db.*
+// directly.
+//
+// Why: the server owns one connection (SetMaxOpenConns(1)) and relies on it to
+// serialize all DB access. But if a client disconnects mid-request, database/sql
+// cancels the in-flight query and can DISCARD the connection, opening a fresh
+// one for the next request. On a networked filesystem (NFS/Lustre) the discarded
+// connection's SQLite file lock lingers while its teardown completes (slow), so
+// for a moment TWO connections hold locks on the same DB file — and the new
+// connection's write fails with SQLITE_BUSY even though only one server is
+// running. Decoupling cancellation means a query always runs to completion and
+// the connection is cleanly reused — never discarded, never replaced — so there
+// is only ever one connection and serialization holds. The mutating methods
+// already do the same via `ctx = context.WithoutCancel(ctx)` + beginTx.
+func (s *sqliteStorage) qRows(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return s.readDB.QueryContext(context.WithoutCancel(ctx), query, args...)
+}
+
+func (s *sqliteStorage) qRow(ctx context.Context, query string, args ...any) *sql.Row {
+	return s.readDB.QueryRowContext(context.WithoutCancel(ctx), query, args...)
+}
+
+func (s *sqliteStorage) qExec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return s.db.ExecContext(context.WithoutCancel(ctx), query, args...)
 }
 
 // nowString returns the current UTC time formatted for the DB.
@@ -368,7 +439,7 @@ func (s *sqliteStorage) GetJob(ctx context.Context, jobID string) (*jobs.JobDef,
 }
 
 func (s *sqliteStorage) fetchJob(ctx context.Context, jobID string) (*jobs.JobDef, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.qRow(ctx,
 		`SELECT id, status, priority, name, notes, submit_time, start_time, end_time, return_code
 		 FROM jobs WHERE id = ?`, jobID)
 	job, err := scanJob(row)
@@ -449,7 +520,7 @@ func (s *sqliteStorage) fetchPaths(ctx context.Context, table, jobID string) ([]
 	if table != "job_inputs" && table != "job_outputs" {
 		return nil, fmt.Errorf("storage: fetchPaths invalid table %q", table)
 	}
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.qRows(ctx,
 		"SELECT path FROM "+table+" WHERE job_id = ? ORDER BY path", jobID)
 	if err != nil {
 		return nil, err
@@ -488,7 +559,7 @@ func dedupNonEmpty(paths []string) []string {
 }
 
 func (s *sqliteStorage) fetchDeps(ctx context.Context, jobID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.qRows(ctx,
 		`SELECT afterok_id FROM job_deps WHERE job_id = ? ORDER BY afterok_id`, jobID)
 	if err != nil {
 		return nil, err
@@ -506,7 +577,7 @@ func (s *sqliteStorage) fetchDeps(ctx context.Context, jobID string) ([]string, 
 }
 
 func (s *sqliteStorage) fetchDetails(ctx context.Context, jobID string) ([]jobs.JobDefDetail, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.qRows(ctx,
 		`SELECT key, value FROM job_details WHERE job_id = ?`, jobID)
 	if err != nil {
 		return nil, err
@@ -524,7 +595,7 @@ func (s *sqliteStorage) fetchDetails(ctx context.Context, jobID string) ([]jobs.
 }
 
 func (s *sqliteStorage) fetchRunningDetails(ctx context.Context, jobID string) ([]jobs.JobRunningDetail, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.qRows(ctx,
 		`SELECT key, value FROM job_running_details WHERE job_id = ?`, jobID)
 	if err != nil {
 		return nil, err
@@ -634,7 +705,7 @@ func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses [
 // each job's relations. loadRelations=false is used for bulk views where
 // callers don't need details/running_details.
 func (s *sqliteStorage) queryJobs(ctx context.Context, query string, args []any, loadRelations bool) ([]*jobs.JobDef, error) {
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.qRows(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -662,7 +733,7 @@ func (s *sqliteStorage) queryJobs(ctx context.Context, query string, args []any,
 }
 
 func (s *sqliteStorage) GetJobDependents(ctx context.Context, jobID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.qRows(ctx,
 		`SELECT job_id FROM job_deps WHERE afterok_id = ? ORDER BY job_id`, jobID)
 	if err != nil {
 		return nil, err
@@ -698,7 +769,7 @@ func (s *sqliteStorage) GetJobStatusCounts(ctx context.Context, showAll bool) (m
 	}
 	query += ` GROUP BY status`
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.qRows(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -757,7 +828,7 @@ func (s *sqliteStorage) GetQueueJobs(ctx context.Context, showAll, sortByStatus 
 		query += ` ORDER BY j.id`
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.qRows(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1731,7 +1802,7 @@ func assertRunnerOwnsJob(ctx context.Context, tx *sql.Tx, jobID, runnerID string
 // --- User actions ------------------------------------------------------
 
 func (s *sqliteStorage) HoldJob(ctx context.Context, jobID string) error {
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.qExec(ctx,
 		`UPDATE jobs SET status = ? WHERE id = ? AND status IN (?, ?, ?)`,
 		jobs.USERHOLD, jobID, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
 	if err != nil {
@@ -1744,7 +1815,7 @@ func (s *sqliteStorage) HoldJob(ctx context.Context, jobID string) error {
 }
 
 func (s *sqliteStorage) ReleaseJob(ctx context.Context, jobID string) error {
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.qExec(ctx,
 		`UPDATE jobs SET status = ? WHERE id = ? AND status = ?`,
 		jobs.WAITING, jobID, jobs.USERHOLD)
 	if err != nil {
@@ -1759,7 +1830,7 @@ func (s *sqliteStorage) ReleaseJob(ctx context.Context, jobID string) error {
 // HoldArray holds every task of an array that is in a holdable state
 // (QUEUED/WAITING/USERHOLD), in one statement. Returns the number held.
 func (s *sqliteStorage) HoldArray(ctx context.Context, arrayID string) (int, error) {
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.qExec(ctx,
 		`UPDATE jobs SET status = ?
 		 WHERE id IN (SELECT job_id FROM job_details WHERE key = 'array_id' AND value = ?)
 		   AND status IN (?, ?, ?)`,
@@ -1774,7 +1845,7 @@ func (s *sqliteStorage) HoldArray(ctx context.Context, arrayID string) (int, err
 // ReleaseArray releases every held task of an array (USERHOLD -> WAITING).
 // Returns the number released.
 func (s *sqliteStorage) ReleaseArray(ctx context.Context, arrayID string) (int, error) {
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.qExec(ctx,
 		`UPDATE jobs SET status = ?
 		 WHERE id IN (SELECT job_id FROM job_details WHERE key = 'array_id' AND value = ?)
 		   AND status = ?`,
@@ -1821,7 +1892,7 @@ func (s *sqliteStorage) AdjustJobPriority(ctx context.Context, jobID string, del
 	if delta == 0 {
 		return nil
 	}
-	res, err := s.db.ExecContext(ctx,
+	res, err := s.qExec(ctx,
 		`UPDATE jobs SET priority = priority + ? WHERE id = ? AND status IN (?, ?, ?)`,
 		delta, jobID, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
 	if err != nil {
@@ -1860,7 +1931,7 @@ func (s *sqliteStorage) CleanupJob(ctx context.Context, jobID string) error {
 // --- Reverse lookups for run_id / inputs / outputs --------------------
 
 func (s *sqliteStorage) FindJobsByDetail(ctx context.Context, key, value string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.qRows(ctx,
 		`SELECT job_id FROM job_details WHERE key = ? AND value = ?`,
 		key, value)
 	if err != nil {
@@ -1873,7 +1944,7 @@ func (s *sqliteStorage) FindJobsByDetail(ctx context.Context, key, value string)
 func (s *sqliteStorage) FindArrayMembers(ctx context.Context, arrayID string) ([]ArrayMember, error) {
 	// One query: every job carrying array_id = ?, left-joined to its
 	// array_index detail. Replaces N+1 GetJob calls in dependency expansion.
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.qRows(ctx,
 		`SELECT a.job_id, COALESCE(i.value, '')
 		 FROM job_details a
 		 LEFT JOIN job_details i
@@ -1899,7 +1970,7 @@ func (s *sqliteStorage) FindArrayMembers(ctx context.Context, arrayID string) ([
 }
 
 func (s *sqliteStorage) FindJobsByInputPath(ctx context.Context, path string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.qRows(ctx,
 		`SELECT job_id FROM job_inputs WHERE path = ?`, path)
 	if err != nil {
 		return nil, err
@@ -1909,7 +1980,7 @@ func (s *sqliteStorage) FindJobsByInputPath(ctx context.Context, path string) ([
 }
 
 func (s *sqliteStorage) FindJobsByOutputPath(ctx context.Context, path string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.qRows(ctx,
 		`SELECT job_id FROM job_outputs WHERE path = ?`, path)
 	if err != nil {
 		return nil, err

@@ -511,6 +511,9 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		_ = s.httpSrv.Shutdown(ctx)
+		// Ordered teardown (DB closed before the socket is unlinked). This
+		// request is itself in flight, so shutdown takes the "busy" path:
+		// drain (this handler has already returned its response) then close.
+		_ = s.shutdown(ctx, "admin", false)
 	}()
 }

@@ -209,6 +209,7 @@ func batchqRows(raw *support.Config, d support.Defaults) []debugRow {
 		tokenRow(),
 		boolRow("multiuser", raw.Batchq.Multiuser),
 		durationRow("autospawn_wait_timeout", raw.Batchq.AutospawnWaitTimeout.AsDuration(), d.AutospawnWaitTimeout),
+		stringRow("log", clientLogPath, raw.Batchq.Log, ""),
 	}
 }
 
@@ -235,6 +236,7 @@ func serverRows(raw *support.Config, d support.Defaults) []debugRow {
 		stringRow("db", serverDB, raw.Server.DB, d.Backend),
 		durationRow("idle_timeout", raw.Server.IdleTimeout.AsDuration(), 0),
 		boolRow("sqlite_wal", raw.Server.SqliteWAL),
+		intRow("read_pool_size", raw.Server.ReadPoolSize),
 		serverTokenRow(raw),
 	}
 }

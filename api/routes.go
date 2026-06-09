@@ -23,6 +23,14 @@ const (
 	// requests with this header so the monitor's pings don't keep an
 	// otherwise-idle server alive.
 	HeaderInternalOwner = "X-Batchq-Internal-Owner"
+
+	// HeaderDraining is set (to "1") on the 503 response a server returns
+	// while it is shutting down (idle cull / drain). It marks the request
+	// as having been rejected BEFORE any processing, so the client knows it
+	// is safe to reconnect (autospawning a fresh server) and retry — turning
+	// the rare idle-handoff collision into a transparent reconnect instead
+	// of a hard error.
+	HeaderDraining = "X-Batchq-Draining"
 )
 
 // Route paths (relative to Prefix). Path parameters use {} markers in the

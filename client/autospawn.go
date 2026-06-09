@@ -75,37 +75,47 @@ func DialAndConnect(ctx context.Context, opts Options, auto AutospawnConfig) (*C
 	if err != nil {
 		return nil, err
 	}
+	// Remember the autospawn config so do() can reconnect-and-retry across an
+	// idle-server handoff later, not just at first dial.
+	c.auto = auto
+	if err := c.ensureUp(ctx); err != nil {
+		c.Close()
+		return nil, err
+	}
+	return c, nil
+}
 
-	// First probe: if the server's already up, we're done.
+// ensureUp makes sure a server is answering on the client's socket, spawning
+// one if this is a local autospawn-capable client and nothing is up. It is
+// idempotent and safe to call repeatedly — DialAndConnect calls it once at
+// startup, and do() calls it again to recover from an idle-server handoff.
+//
+// It probes with the single-shot Health (never the retrying do, which would
+// recurse). A live-but-briefly-unreachable server is always preferred over
+// spawning a duplicate (which would open the same DB and cause SQLITE_BUSY),
+// so the probe is retried before we conclude nothing is running.
+func (c *Client) ensureUp(ctx context.Context) error {
 	probeErr := c.Health(ctx)
 	if probeErr == nil {
-		return c, nil
+		return nil
 	}
+	auto := c.auto
 	if !auto.Enabled || c.SocketPath() == "" || !isConnectFailure(probeErr) {
-		c.Close()
-		return nil, probeErr
+		return probeErr
 	}
 
-	// The socket didn't answer — but a live server may just be briefly
-	// unreachable (loaded node, accept backlog momentarily full, mid-restart).
-	// Retry a few times before concluding nothing is running: connecting to the
-	// existing server is always preferable to spawning a duplicate, which would
-	// open the same DB and cause SQLITE_BUSY. Only after these fail do we treat
-	// the socket as truly down.
 	for i := 0; i < 3; i++ {
 		select {
 		case <-ctx.Done():
-			c.Close()
-			return nil, ctx.Err()
+			return ctx.Err()
 		case <-time.After(300 * time.Millisecond):
 		}
 		probeErr = c.Health(ctx)
 		if probeErr == nil {
-			return c, nil
+			return nil
 		}
 		if !isConnectFailure(probeErr) {
-			c.Close()
-			return nil, probeErr
+			return probeErr
 		}
 	}
 	auto.logf("batchq: no server on %s after retries, autospawning (%v)", c.SocketPath(), probeErr)
@@ -124,8 +134,7 @@ func DialAndConnect(ctx context.Context, opts Options, auto AutospawnConfig) (*C
 		spawn = func(sock string) error { return spawnServer(sock, auto) }
 	}
 	if err := spawn(c.SocketPath()); err != nil {
-		c.Close()
-		return nil, fmt.Errorf("autospawn: spawn server: %w", err)
+		return fmt.Errorf("autospawn: spawn server: %w", err)
 	}
 
 	pollTimeout := auto.PollTimeout
@@ -144,21 +153,19 @@ func DialAndConnect(ctx context.Context, opts Options, auto AutospawnConfig) (*C
 		err := c.Health(probeCtx)
 		cancel()
 		if err == nil {
-			return c, nil
+			return nil
 		}
 		lastErr = err
 		select {
 		case <-ctx.Done():
-			c.Close()
-			return nil, ctx.Err()
+			return ctx.Err()
 		case <-time.After(pollInterval):
 		}
 	}
-	c.Close()
 	if lastErr == nil {
 		lastErr = errors.New("server unreachable")
 	}
-	return nil, fmt.Errorf("autospawn: server did not come up within %s: %w", pollTimeout, lastErr)
+	return fmt.Errorf("autospawn: server did not come up within %s: %w", pollTimeout, lastErr)
 }
 
 // isConnectFailure returns true if err looks like "nothing is listening

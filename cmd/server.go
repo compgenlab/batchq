@@ -22,6 +22,7 @@ var (
 	serverDB          string
 	serverWAL         bool
 	serverIdleTimeout time.Duration
+	serverReadPool    int
 )
 
 var serverCmd = &cobra.Command{
@@ -55,6 +56,8 @@ func init() {
 		"Enable SQLite WAL journal mode. NOT SAFE on networked filesystems; only use when the DB file is on local disk.")
 	serverCmd.Flags().DurationVar(&serverIdleTimeout, "idle-timeout", 0,
 		"Auto-shut-down after this duration of no activity. Zero (default) disables.")
+	serverCmd.Flags().IntVar(&serverReadPool, "read-pool-size", 0,
+		"Connections serving concurrent reads. 0/1 (default) shares the single writer connection; >1 opens a separate read pool (re-introduces reader/writer lock contention on NFS).")
 
 	rootCmd.AddCommand(serverCmd)
 }
@@ -93,6 +96,9 @@ func runServer(_ *cobra.Command, _ []string) error {
 	if !serverWAL {
 		serverWAL = Config.Server.SqliteWAL
 	}
+	if serverReadPool == 0 {
+		serverReadPool = Config.Server.ReadPoolSize
+	}
 	if serverIdleTimeout == 0 {
 		serverIdleTimeout = Config.Server.IdleTimeout.AsDuration()
 	}
@@ -107,6 +113,10 @@ func runServer(_ *cobra.Command, _ []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	// Lifecycle debug log (shared with the client that spawned us via --log).
+	dlog := debugLog("server")
+	dlog.Logf("server start listen=%s db=%s idle=%s", serverListen, backend.Raw, serverIdleTimeout)
+
 	// Win the single-instance election BEFORE opening the database. A server
 	// that loses the election must never touch the DB file — otherwise
 	// concurrently autospawned servers contend on it and the winner sees
@@ -114,11 +124,14 @@ func runServer(_ *cobra.Command, _ []string) error {
 	ln, socketPath, err := server.Elect(serverListen, 0)
 	if err != nil {
 		if errors.Is(err, server.ErrAlreadyRunning) {
+			dlog.Logf("election lost: another instance already listening on %s; exiting", serverListen)
 			fmt.Fprintln(os.Stderr, "batchq server: another instance is already running")
 			return nil
 		}
+		dlog.Logf("election error on %s: %v", serverListen, err)
 		return err
 	}
+	dlog.Logf("election won socket=%s", socketPath)
 	// From here on we own the election token; release it if we bail before
 	// handing it to the server.
 	releaseToken := func() {
@@ -128,14 +141,22 @@ func runServer(_ *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Open the DB only after winning the election. storage.Open takes an
-	// exclusive lock on the DB, so this also fails fast (before we announce
-	// "listening") if another batchq process already owns the database.
-	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL})
+	// Open the DB only after winning the election. We hold the socket (the
+	// single-instance lock) for the whole DB lifetime: the server's shutdown
+	// closes the DB BEFORE unlinking the socket (see Options.OnShutdown), so a
+	// freshly-autospawned server can't bind the socket — and thus can't open
+	// the DB — until this one has dropped it. That ordering is what prevents
+	// two servers contending on the DB and reporting SQLITE_BUSY.
+	store, err := storage.Open(ctx, storagePath, storage.Options{WAL: serverWAL, ReadPoolSize: serverReadPool})
 	if err != nil {
+		dlog.Logf("db open error path=%s: %v", storagePath, err)
 		releaseToken()
 		return fmt.Errorf("open storage: %w", err)
 	}
+	dlog.Logf("db opened path=%s wal=%v read_pool=%d", storagePath, serverWAL, serverReadPool)
+	// Safety net only — the server's ordered shutdown (OnShutdown) is the
+	// primary close; Storage.Close is idempotent so this double-close is a
+	// no-op if shutdown already ran.
 	defer store.Close()
 
 	svc := service.New(store)
@@ -143,6 +164,8 @@ func runServer(_ *cobra.Command, _ []string) error {
 		Listen:      serverListen,
 		IdleTimeout: serverIdleTimeout,
 		AuthToken:   Config.Server.Token,
+		OnShutdown:  store.Close,
+		Logf:        dlog.Logf,
 	})
 	if err != nil {
 		releaseToken()
@@ -159,5 +182,7 @@ func runServer(_ *cobra.Command, _ []string) error {
 		fmt.Fprintln(os.Stderr, "batchq server: WARNING listening on a TCP port without [server] token — the API is unauthenticated (TCP carries no peer credentials). Set a token or front it with an authenticating proxy.")
 	}
 
-	return srv.ServeListener(ctx, ln, socketPath)
+	serveErr := srv.ServeListener(ctx, ln, socketPath)
+	dlog.Logf("serve exit err=%v", serveErr)
+	return serveErr
 }
