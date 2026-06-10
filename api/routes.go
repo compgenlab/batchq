@@ -64,4 +64,9 @@ const (
 	// stop. Intended for local-socket use; remote deployments should
 	// gate /admin/* at the reverse proxy.
 	RouteShutdown = "/admin/shutdown"
+
+	// RouteBackup asks the server to snapshot its database (VACUUM INTO) to
+	// a path on the SERVER's filesystem. Like RouteShutdown it lives under
+	// /admin/*; remote deployments should gate it at the reverse proxy.
+	RouteBackup = "/admin/backup"
 )

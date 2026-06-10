@@ -203,6 +203,19 @@ type StatusCountsResponse struct {
 	Counts map[string]int `json:"counts"`
 }
 
+// BackupRequest is the body of POST /admin/backup. Destination is a path on
+// the server's filesystem; empty asks the server to pick a timestamped
+// default under its $BATCHQ_HOME/backups/.
+type BackupRequest struct {
+	Destination string `json:"destination,omitempty"`
+}
+
+// BackupResponse is the body of POST /admin/backup. Path is the absolute
+// server-side path the snapshot was written to.
+type BackupResponse struct {
+	Path string `json:"path"`
+}
+
 // PriorityRequest is the body of POST /jobs/{id}/priority.
 type PriorityRequest struct {
 	Delta int `json:"delta"`
