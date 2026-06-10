@@ -697,7 +697,7 @@ func (s *Service) recordHost(ctx context.Context, host string, job *jobs.JobDef)
 
 // ClaimNextArrayBatch claims the next eligible plain job or array batch for a
 // batch-capable runner. See storage.ClaimNextArrayBatch.
-func (s *Service) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host string, limits storage.Limits, maxTasks int) (storage.ArrayClaimResult, error) {
+func (s *Service) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host string, limits storage.Limits, maxTasks, minTasks int, fullArray bool) (storage.ArrayClaimResult, error) {
 	if runnerID == "" {
 		return storage.ArrayClaimResult{}, fmt.Errorf("%w: runner_id required", ErrBadRequest)
 	}
@@ -705,7 +705,7 @@ func (s *Service) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host 
 		kind = "slurm"
 	}
 	_, _ = s.ResolveDependencies(ctx)
-	res, err := s.store.ClaimNextArrayBatch(ctx, runnerID, kind, limits, maxTasks)
+	res, err := s.store.ClaimNextArrayBatch(ctx, runnerID, kind, limits, maxTasks, minTasks, fullArray)
 	if err != nil {
 		return res, err
 	}

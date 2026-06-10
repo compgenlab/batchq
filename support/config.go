@@ -176,6 +176,21 @@ type SlurmRunnerConfig struct {
 	// the live count reaches this limit. Zero / unset means unlimited.
 	MaxSlurmJobs int `toml:"max_slurm_jobs"`
 
+	// MinArray is the minimum array batch size: the runner holds back an array
+	// batch smaller than this (submitting nothing) until enough SLURM-queue
+	// budget frees up to claim at least this many tasks at once, avoiding a
+	// flurry of tiny `sbatch --array` submissions. An array's final remainder
+	// (fewer than this many tasks left) is always submitted. A value larger
+	// than the effective job cap is clamped down to it. Zero / unset disables.
+	MinArray int `toml:"min_array"`
+
+	// FullArray enables all-or-nothing array submission: an array is submitted
+	// only when its entire remaining set of tasks fits the current budget in one
+	// pass, otherwise it is deferred. Overrides MinArray. An array larger than
+	// the effective job cap can never fit and will defer indefinitely. Mirrors
+	// the --slurm-full-array flag.
+	FullArray bool `toml:"full_array"`
+
 	// RunnerID is the stable identity this runner reports to the server.
 	// Empty / unset defaults to the hostname. Mirrors the --runner-id flag.
 	RunnerID string `toml:"runner_id"`

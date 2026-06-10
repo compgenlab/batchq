@@ -34,6 +34,15 @@ var runCmd = &cobra.Command{
 			if maxJobs < 0 && Config.SlurmRunner.MaxJobs > 0 {
 				maxJobs = Config.SlurmRunner.MaxJobs
 			}
+			if slurmMinArray < 0 && Config.SlurmRunner.MinArray > 0 {
+				slurmMinArray = Config.SlurmRunner.MinArray
+			}
+			// Bool flag > config: only fall back to the config value when the
+			// flag was not given, so `--slurm-full-array=false` can override a
+			// config default of true (and `--slurm-full-array` can override false).
+			if !cmd.Flags().Changed("slurm-full-array") {
+				slurmFullArray = Config.SlurmRunner.FullArray
+			}
 			if slurmAcct == "" {
 				slurmAcct = Config.SlurmRunner.Account
 			}
@@ -65,6 +74,8 @@ var runCmd = &cobra.Command{
 			runr = runner.NewSlurmRunner(c).
 				SetSlurmMaxUserJobs(slurmMaxJobs).
 				SetMaxJobCount(maxJobs).
+				SetSlurmMinArray(slurmMinArray).
+				SetSlurmFullArray(slurmFullArray).
 				SetSlurmUsername(slurmUser).
 				SetSlurmAccount(slurmAcct).
 				SetSlurmPartition(slurmPartition).
@@ -135,6 +146,8 @@ var slurmUser string
 var slurmAcct string
 var slurmPartition string
 var slurmMaxJobs int
+var slurmMinArray int
+var slurmFullArray bool
 var runResources []string
 var runHost string
 var runCluster string
@@ -218,6 +231,8 @@ func init() {
 	runCmd.Flags().StringVar(&slurmAcct, "slurm-account", "", "Use this SLURM account number")
 	runCmd.Flags().StringVar(&slurmPartition, "slurm-partition", "", "Use this SLURM partition")
 	runCmd.Flags().IntVar(&slurmMaxJobs, "slurm-max-jobs", -1, "Max jobs allowed for this user account")
+	runCmd.Flags().IntVar(&slurmMinArray, "slurm-min-array", -1, "Min array tasks to submit per sbatch; defer smaller batches (0/unset = submit whatever fits)")
+	runCmd.Flags().BoolVar(&slurmFullArray, "slurm-full-array", false, "Only submit an array when it fits entirely in one pass; defer any partial array (overrides --slurm-min-array)")
 	runCmd.Flags().StringVar(&slurmUser, "slurm-user", "", "SLURM user (used for calculating job-count)")
 	runCmd.Flags().StringArrayVar(&runResources, "resource", nil, "Advertise an available resource (name=value or name, repeatable)")
 	runCmd.Flags().StringVar(&runHost, "host", "", "Hostname this runner advertises on each claim (default: OS hostname)")

@@ -540,8 +540,10 @@ func (c *Client) ClaimNextJob(ctx context.Context, runnerID, kind, host string, 
 
 // ClaimNextArrayBatch claims the next plain job or array batch for a
 // batch-capable runner. maxTasks (<=0 = unbounded) caps how many tasks of one
-// array are claimed together. See api.ClaimArrayResponse for the shape.
-func (c *Client) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host string, maxProcs, maxMemMB, maxWalltimeSec int, resources map[string]string, maxTasks int) (*api.ClaimArrayResponse, error) {
+// array are claimed together; minTasks (<=0 = disabled) defers a batch smaller
+// than that (the min-array gate); fullArray defers any partial array (the
+// all-or-nothing gate). See api.ClaimArrayResponse for the shape.
+func (c *Client) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host string, maxProcs, maxMemMB, maxWalltimeSec int, resources map[string]string, maxTasks, minTasks int, fullArray bool) (*api.ClaimArrayResponse, error) {
 	req := api.ClaimArrayRequest{
 		Kind:           kind,
 		Host:           host,
@@ -550,6 +552,8 @@ func (c *Client) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host s
 		MaxWalltimeSec: maxWalltimeSec,
 		Resources:      resources,
 		MaxTasks:       maxTasks,
+		MinTasks:       minTasks,
+		FullArray:      fullArray,
 	}
 	var resp api.ClaimArrayResponse
 	if err := c.do(ctx, http.MethodPost,

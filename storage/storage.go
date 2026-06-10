@@ -79,6 +79,12 @@ type ArrayClaimResult struct {
 	// queued work that did not fit this runner's limits/resources.
 	MoreEligible bool
 	Blocked      bool
+	// Deferred is set when an array batch was intentionally held back because
+	// fewer than minTasks of it could be claimed this pass and more of its tasks
+	// remain QUEUED (the min-array-size gate). Nothing was claimed; the caller
+	// should stop this pass and retry on a later invocation once more budget is
+	// available. Distinct from "no work" (all flags false).
+	Deferred bool
 }
 
 // ResolveResult summarizes a ResolveDependencies pass.
@@ -154,7 +160,19 @@ type Storage interface {
 	// claimed together and returned as ArrayID+Tasks. maxTasks <= 0 means
 	// unbounded. This lets one array become one `sbatch --array`, drip-fed
 	// across passes when maxTasks bounds it.
-	ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, limits Limits, maxTasks int) (ArrayClaimResult, error)
+	//
+	// minTasks (<= 0 = disabled) is the minimum batch size: an array whose
+	// claimable count this pass falls below minTasks while more of its tasks
+	// remain QUEUED is deferred (claimed nothing, ArrayClaimResult.Deferred set)
+	// rather than submitted as a tiny batch. The final remainder of an array
+	// (when its entire remaining queued count is below minTasks) is always
+	// submitted, so an array never strands its tail.
+	//
+	// fullArray is the all-or-nothing mode: an array is claimed only if its
+	// entire remaining queued set fits this pass (claimable == available),
+	// otherwise it is deferred. It is the same gate as minTasks set to the
+	// array's own size, and overrides minTasks when both are given.
+	ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, limits Limits, maxTasks, minTasks int, fullArray bool) (ArrayClaimResult, error)
 
 	// MarkJobProxied transitions a RUNNING job (claimed by runnerID) to
 	// PROXYQUEUED and merges runningDetails. Used by the slurm runner after

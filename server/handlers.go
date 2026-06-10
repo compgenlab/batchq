@@ -376,7 +376,7 @@ func (s *Server) handleClaimArray(w http.ResponseWriter, r *http.Request) {
 		MaxMemoryMB:    req.MaxMemoryMB,
 		MaxWalltimeSec: req.MaxWalltimeSec,
 		Resources:      req.Resources,
-	}, req.MaxTasks)
+	}, req.MaxTasks, req.MinTasks, req.FullArray)
 	if err != nil {
 		writeError(w, httpStatus(err), err)
 		return
@@ -386,6 +386,7 @@ func (s *Server) handleClaimArray(w http.ResponseWriter, r *http.Request) {
 		Throttle:     result.Throttle,
 		MoreEligible: result.MoreEligible,
 		Blocked:      result.Blocked,
+		Deferred:     result.Deferred,
 	}
 	if result.Job != nil {
 		resp.Job = api.JobFromDef(result.Job)

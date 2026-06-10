@@ -303,6 +303,8 @@ func slurmRunnerRows(raw *support.Config) []debugRow {
 		stringRow("partition", "", raw.SlurmRunner.Partition, ""),
 		intRow("max_jobs", raw.SlurmRunner.MaxJobs),
 		intRow("max_slurm_jobs", raw.SlurmRunner.MaxSlurmJobs),
+		intRow("min_array", raw.SlurmRunner.MinArray),
+		boolRow("full_array", raw.SlurmRunner.FullArray),
 		stringRow("runner_id", "", raw.SlurmRunner.RunnerID, ""),
 		stringRow("host", "", raw.SlurmRunner.Host, ""),
 		stringRow("cluster", "", raw.SlurmRunner.Cluster, ""),
