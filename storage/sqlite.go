@@ -1096,7 +1096,7 @@ func (s *sqliteStorage) ClaimNextJob(ctx context.Context, runnerID, kind string,
 	return ClaimResult{MoreEligible: moreRace, Blocked: blocked}, nil
 }
 
-func (s *sqliteStorage) ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, limits Limits, maxTasks int) (ArrayClaimResult, error) {
+func (s *sqliteStorage) ClaimNextArrayBatch(ctx context.Context, runnerID, kind string, limits Limits, maxTasks, minTasks int, fullArray bool) (ArrayClaimResult, error) {
 	ctx = context.WithoutCancel(ctx)
 	if runnerID == "" {
 		return ArrayClaimResult{}, errors.New("storage: empty runnerID")
@@ -1129,6 +1129,8 @@ func (s *sqliteStorage) ClaimNextArrayBatch(ctx context.Context, runnerID, kind 
 
 	moreRace := false
 	blocked := false
+	deferred := false
+	deferredArrays := map[string]bool{}
 	for _, jobID := range queued {
 		fits, err := jobFitsLimits(ctx, tx, jobID, limits)
 		if err != nil {
@@ -1152,6 +1154,12 @@ func (s *sqliteStorage) ClaimNextArrayBatch(ctx context.Context, runnerID, kind 
 			return ArrayClaimResult{}, err
 		}
 
+		// An array already deferred this pass: skip its remaining tasks without
+		// re-evaluating the gate for each one.
+		if arrayID != "" && deferredArrays[arrayID] {
+			continue
+		}
+
 		if arrayID == "" {
 			// Plain job: claim just this one (single-job path).
 			claimed, err := claimJobTx(ctx, tx, jobID, runnerID, kind)
@@ -1172,10 +1180,19 @@ func (s *sqliteStorage) ClaimNextArrayBatch(ctx context.Context, runnerID, kind 
 			return ArrayClaimResult{Job: job, MoreEligible: moreRace, Blocked: blocked}, nil
 		}
 
-		// Array candidate: claim up to maxTasks of its still-QUEUED tasks.
-		res, err := claimArrayTasksTx(ctx, tx, arrayID, runnerID, kind, maxTasks)
+		// Array candidate: claim up to maxTasks of its still-QUEUED tasks,
+		// holding back batches smaller than minTasks (the min-array gate) or any
+		// partial batch (the full-array gate).
+		res, err := claimArrayTasksTx(ctx, tx, arrayID, runnerID, kind, maxTasks, minTasks, fullArray)
 		if err != nil {
 			return ArrayClaimResult{}, err
+		}
+		if res.Deferred {
+			// Too few tasks fit this pass and more remain QUEUED: skip this
+			// array and keep scanning for other claimable work.
+			deferred = true
+			deferredArrays[arrayID] = true
+			continue
 		}
 		if len(res.Tasks) == 0 {
 			// Every task raced away; keep scanning for other work.
@@ -1200,13 +1217,21 @@ func (s *sqliteStorage) ClaimNextArrayBatch(ctx context.Context, runnerID, kind 
 	if err := tx.Commit(); err != nil {
 		return ArrayClaimResult{}, err
 	}
-	return ArrayClaimResult{MoreEligible: moreRace, Blocked: blocked}, nil
+	return ArrayClaimResult{MoreEligible: moreRace, Blocked: blocked, Deferred: deferred}, nil
 }
 
 // claimArrayTasksTx claims up to maxTasks (<=0 = unbounded) of one array's
 // still-QUEUED tasks, in array-index order, inside an existing transaction.
 // Tasks that lose a claim race are skipped and flagged via MoreEligible.
-func claimArrayTasksTx(ctx context.Context, tx *sql.Tx, arrayID, runnerID, kind string, maxTasks int) (ArrayClaimResult, error) {
+//
+// minTasks (<=0 = disabled) is the min-array gate: if the number this pass could
+// claim (min(maxTasks, remaining)) is below minTasks AND more tasks remain than
+// can be claimed now (i.e. maxTasks is the limiter, not the array's tail), the
+// batch is deferred — nothing is claimed and Deferred is set. The array's final
+// remainder (remaining <= claimable) is always claimed so the tail is never
+// stranded. fullArray forces the strongest form of this gate (effective minimum
+// = the array's whole remaining size), so a partial batch is always deferred.
+func claimArrayTasksTx(ctx context.Context, tx *sql.Tx, arrayID, runnerID, kind string, maxTasks, minTasks int, fullArray bool) (ArrayClaimResult, error) {
 	rows, err := tx.QueryContext(ctx,
 		`SELECT d2.job_id, d2.value
 		   FROM job_details d1
@@ -1238,6 +1263,27 @@ func claimArrayTasksTx(ctx context.Context, tx *sql.Tx, arrayID, runnerID, kind 
 	}
 
 	res := ArrayClaimResult{ArrayID: arrayID}
+
+	// Min-array gate: defer a too-small batch, but never the array's tail.
+	// available = total remaining QUEUED tasks; claimable = what this pass could
+	// take. Defer only when the budget (maxTasks) is what holds us below the
+	// minimum (available > claimable) — if the whole remainder fits, submit it.
+	// fullArray raises the minimum to the array's whole size, so any partial
+	// batch is deferred.
+	available := len(cands)
+	claimable := available
+	if maxTasks > 0 && maxTasks < claimable {
+		claimable = maxTasks
+	}
+	effectiveMin := minTasks
+	if fullArray {
+		effectiveMin = available
+	}
+	if effectiveMin > 0 && claimable < effectiveMin && available > claimable {
+		res.Deferred = true
+		return res, nil
+	}
+
 	if len(cands) > 0 {
 		ts, err := jobDetailTx(ctx, tx, cands[0].id, "array_throttle")
 		if err != nil {

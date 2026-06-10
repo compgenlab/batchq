@@ -23,6 +23,8 @@ type slurmRunner struct {
 	runnerId    string
 	maxUserJobs int
 	maxJobs     int
+	minArray    int
+	fullArray   bool
 	availJobs   int
 	account     string
 	username    string
@@ -85,6 +87,7 @@ func NewSlurmRunner(c *client.Client) *slurmRunner {
 		client:      c,
 		maxUserJobs: -1,
 		maxJobs:     -1,
+		minArray:    -1,
 		account:     "",
 		username:    "",
 	}
@@ -97,6 +100,25 @@ func (r *slurmRunner) SetSlurmMaxUserJobs(maxUserJobs int) *slurmRunner {
 }
 func (r *slurmRunner) SetMaxJobCount(maxJobs int) *slurmRunner {
 	r.maxJobs = maxJobs
+	return r
+}
+
+// SetSlurmMinArray sets the minimum array batch size: the runner holds back an
+// array batch smaller than this (submitting nothing) until enough budget frees
+// up to claim at least this many tasks at once, rather than emitting many tiny
+// `sbatch --array` submissions. An array's final remainder (fewer than this many
+// tasks left in total) is always submitted. <=0 disables the gate.
+func (r *slurmRunner) SetSlurmMinArray(minArray int) *slurmRunner {
+	r.minArray = minArray
+	return r
+}
+
+// SetSlurmFullArray enables all-or-nothing array submission: an array is only
+// submitted when its entire remaining set of tasks fits the current budget in a
+// single pass, otherwise it is deferred. Overrides --slurm-min-array. An array
+// larger than the job cap can never fit and will defer indefinitely.
+func (r *slurmRunner) SetSlurmFullArray(full bool) *slurmRunner {
+	r.fullArray = full
 	return r
 }
 func (r *slurmRunner) SetSlurmAccount(account string) *slurmRunner {
@@ -136,9 +158,42 @@ func (r *slurmRunner) SetRunnerID(id string) *slurmRunner {
 	return r
 }
 
+// clampMinArray bounds the min-array gate to the effective per-pass job ceiling
+// (the smaller of the set caps maxUserJobs/maxJobs; <=0 = unset). A minimum
+// larger than the most tasks that could ever be claimed in a pass would defer an
+// array forever, so it is clamped down. Returns the (possibly clamped) minimum,
+// the ceiling used, and whether clamping occurred. With minArray or the ceiling
+// unset, the input is returned unchanged.
+func clampMinArray(minArray, maxUserJobs, maxJobs int) (min, ceiling int, clamped bool) {
+	ceiling = -1
+	if maxUserJobs > 0 {
+		ceiling = maxUserJobs
+	}
+	if maxJobs > 0 && (ceiling < 0 || maxJobs < ceiling) {
+		ceiling = maxJobs
+	}
+	if minArray > 0 && ceiling > 0 && minArray > ceiling {
+		return ceiling, ceiling, true
+	}
+	return minArray, ceiling, false
+}
+
 func (r *slurmRunner) Start() bool {
 	submittedOne := false
 	r.availJobs = r.maxJobs
+
+	// Array-batch gates. full-array (all-or-nothing) overrides min-array. For
+	// min-array, clamp to the effective per-pass ceiling (the smaller of the set
+	// caps): a minimum larger than the most tasks we could ever claim would defer
+	// the array forever, so cap it and warn.
+	minArray, ceiling, clamped := clampMinArray(r.minArray, r.maxUserJobs, r.maxJobs)
+	if r.fullArray {
+		if ceiling > 0 {
+			fmt.Printf("Note: --slurm-full-array is set; any array with more than %d tasks (the job cap) can never fit a single pass and will be deferred.\n", ceiling)
+		}
+	} else if clamped {
+		fmt.Printf("Warning: --slurm-min-array (%d) exceeds the job cap (%d); clamping to %d.\n", r.minArray, ceiling, ceiling)
+	}
 
 	ctx := context.Background()
 
@@ -178,7 +233,7 @@ func (r *slurmRunner) Start() bool {
 		// SLURM enforces them. An array candidate is claimed in a budget-bounded
 		// batch so it becomes one `sbatch --array`, drip-fed across passes.
 		claimCtx, claimCancel := context.WithTimeout(ctx, 30*time.Second)
-		resp, err := r.client.ClaimNextArrayBatch(claimCtx, r.runnerId, "slurm", r.host, -1, -1, -1, r.resources, maxTasks)
+		resp, err := r.client.ClaimNextArrayBatch(claimCtx, r.runnerId, "slurm", r.host, -1, -1, -1, r.resources, maxTasks, minArray, r.fullArray)
 		claimCancel()
 		if err != nil {
 			fmt.Printf("Error claiming job: %v\n", err)
@@ -190,6 +245,16 @@ func (r *slurmRunner) Start() bool {
 				// doesn't advertise — it will never satisfy them, so stop.
 				if resp.Blocked {
 					fmt.Println("Remaining queued jobs need resources this runner doesn't advertise; nothing to submit.")
+				}
+				if resp.Deferred {
+					// An array batch was held back by an array-batch gate: it
+					// didn't fit the current budget. Stop; a later pass with more
+					// freed SLURM slots will submit it.
+					if r.fullArray {
+						fmt.Println("Array batch deferred: the full array does not fit the current budget; waiting for more SLURM slots to free up.")
+					} else {
+						fmt.Printf("Array batch deferred: fewer than %d tasks fit the current budget; waiting for more SLURM slots to free up.\n", minArray)
+					}
 				}
 				break
 			}

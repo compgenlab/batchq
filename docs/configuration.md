@@ -78,6 +78,8 @@ account = "acct123"
 partition = "general"
 max_jobs = 0                      # zero / unset means unlimited
 max_slurm_jobs = 200
+min_array = 100                   # defer array batches smaller than this
+full_array = false                # only submit an array that fits one pass entirely
 
 [slurm_runner.resources]        # usually cluster/feature routing labels
 cluster = "biocluster"
@@ -177,6 +179,8 @@ Read by `batchq run --slurm` (or when `[batchq] runner = "slurm"`).
 | `partition` | string | (unset) | SLURM partition to pass to `sbatch`. |
 | `max_jobs` | int | `0` (unlimited) | Cap on how many jobs the runner submits in one `batchq run --slurm` invocation. |
 | `max_slurm_jobs` | int | `0` (unlimited) | Cap on this user's live SLURM-queue jobs. The runner polls `squeue` and pauses submission when this is reached. |
+| `min_array` | int | `0` (disabled) | Minimum array batch size. Defers an array batch smaller than this (rather than emitting many tiny `sbatch --array` submissions) until enough budget frees up — *except* the array's final remainder, which is always submitted so the tail is never stranded. Clamped down to the effective job cap (`min(max_slurm_jobs, max_jobs)`). `--slurm-min-array` overrides; `--slurm-min-array=0` disables a config default. |
+| `full_array` | bool | `false` | All-or-nothing array submission: only submit an array when its *entire* remaining set of tasks fits the current budget in one pass; defer any partial array. Overrides `min_array`. An array larger than the job cap can never fit and defers indefinitely (the runner warns at startup). `--slurm-full-array` / `--slurm-full-array=false` overrides this config value. |
 
 ### `[slurm_runner.resources]` — cluster routing labels
 

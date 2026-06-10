@@ -627,7 +627,7 @@ func TestClaimNextArrayBatch(t *testing.T) {
 		t.Fatalf("InsertArray: %v", err)
 	}
 
-	r1, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, 2)
+	r1, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, 2, 0, false)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -644,19 +644,172 @@ func TestClaimNextArrayBatch(t *testing.T) {
 		t.Fatalf("first batch tasks = %+v, want indices [0 1]", r1.Tasks)
 	}
 
-	r2, _ := s.ClaimNextArrayBatch(ctx, "slurm-2", "slurm", Limits{}, 2)
+	r2, _ := s.ClaimNextArrayBatch(ctx, "slurm-2", "slurm", Limits{}, 2, 0, false)
 	if len(r2.Tasks) != 2 || r2.Tasks[0].Index != 2 || r2.Tasks[1].Index != 3 {
 		t.Fatalf("second batch tasks = %+v, want indices [2 3]", r2.Tasks)
 	}
 
-	r3, _ := s.ClaimNextArrayBatch(ctx, "slurm-3", "slurm", Limits{}, 2)
+	r3, _ := s.ClaimNextArrayBatch(ctx, "slurm-3", "slurm", Limits{}, 2, 0, false)
 	if len(r3.Tasks) != 1 || r3.Tasks[0].Index != 4 {
 		t.Fatalf("third batch tasks = %+v, want index [4]", r3.Tasks)
 	}
 
-	r4, _ := s.ClaimNextArrayBatch(ctx, "slurm-4", "slurm", Limits{}, 2)
+	r4, _ := s.ClaimNextArrayBatch(ctx, "slurm-4", "slurm", Limits{}, 2, 0, false)
 	if r4.ArrayID != "" || r4.Job != nil || len(r4.Tasks) != 0 {
 		t.Fatalf("expected nothing left, got %+v", r4)
+	}
+}
+
+// The min-array gate defers a batch smaller than minTasks while more of the
+// array's tasks remain QUEUED, but always submits the final remainder so the
+// tail is never stranded.
+func TestClaimArrayMinTasks(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	var tasks []*jobs.JobDef
+	for idx := 0; idx < 10; idx++ {
+		tasks = append(tasks, mkArrayTask("t"+strconv.Itoa(idx), "arr", idx, 10, 0, nil))
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+
+	// (a) budget (maxTasks=3) >= min (min=3): claims a batch.
+	r1, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, 3, 3, false)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r1.Deferred || len(r1.Tasks) != 3 {
+		t.Fatalf("(a) want 3-task batch, got Deferred=%v tasks=%d", r1.Deferred, len(r1.Tasks))
+	}
+
+	// (b) budget (maxTasks=2) below min (min=3) with 7 tasks still QUEUED:
+	// defers — nothing claimed, Deferred set.
+	r2, err := s.ClaimNextArrayBatch(ctx, "slurm-2", "slurm", Limits{}, 2, 3, false)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if !r2.Deferred || len(r2.Tasks) != 0 || r2.Job != nil {
+		t.Fatalf("(b) want deferred/no claim, got Deferred=%v tasks=%d job=%v", r2.Deferred, len(r2.Tasks), r2.Job)
+	}
+
+	// (c) budget high enough to take the whole remaining 7 (>= min): the defer
+	// left every task QUEUED, so all 7 come back now.
+	r3, err := s.ClaimNextArrayBatch(ctx, "slurm-3", "slurm", Limits{}, 7, 3, false)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r3.Deferred || len(r3.Tasks) != 7 {
+		t.Fatalf("(c) want 7-task batch, got Deferred=%v tasks=%d", r3.Deferred, len(r3.Tasks))
+	}
+}
+
+// The final remainder of an array (fewer than minTasks left in total) is
+// submitted even though it is below the minimum — the tail is never stranded.
+func TestClaimArrayMinTasksTail(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	var tasks []*jobs.JobDef
+	for idx := 0; idx < 2; idx++ {
+		tasks = append(tasks, mkArrayTask("t"+strconv.Itoa(idx), "arr", idx, 2, 0, nil))
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+
+	// Only 2 tasks remain total, below min=5, with ample budget: submit the tail.
+	r, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, -1, 5, false)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r.Deferred || len(r.Tasks) != 2 {
+		t.Fatalf("want the 2-task tail submitted, got Deferred=%v tasks=%d", r.Deferred, len(r.Tasks))
+	}
+}
+
+// A deferred array does not block a claimable plain job behind it in the queue.
+func TestClaimArrayMinTasksFallsThroughToPlainJob(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	var tasks []*jobs.JobDef
+	for idx := 0; idx < 10; idx++ {
+		tasks = append(tasks, mkArrayTask("t"+strconv.Itoa(idx), "arr", idx, 10, 0, nil))
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+	// The id sorts after the array's task ids ("t…"), so with equal
+	// priority/submit_time it is scanned only after the array is reached and
+	// deferred — exercising the fall-through.
+	mustInsert(t, s, mkJob("zzz-plain", map[string]string{"procs": "1"}))
+
+	// min=5, budget=2: the array defers, but the plain job is still claimed.
+	r, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, 2, 5, false)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r.Job == nil || r.Job.JobId != "zzz-plain" {
+		t.Fatalf("want plain job claimed past the deferred array, got %+v", r.Job)
+	}
+}
+
+// fullArray submits an array only when its entire remaining set fits the pass;
+// any partial batch is deferred regardless of minTasks.
+func TestClaimArrayFullArray(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	var tasks []*jobs.JobDef
+	for idx := 0; idx < 10; idx++ {
+		tasks = append(tasks, mkArrayTask("t"+strconv.Itoa(idx), "arr", idx, 10, 0, nil))
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+
+	// (a) budget below the array size (9 < 10): the whole array doesn't fit, so
+	// fullArray defers even though 9 tasks could otherwise be claimed.
+	r1, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, 9, 0, true)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if !r1.Deferred || len(r1.Tasks) != 0 {
+		t.Fatalf("(a) want deferred, got Deferred=%v tasks=%d", r1.Deferred, len(r1.Tasks))
+	}
+
+	// (b) budget covers the whole array (>=10): claims all 10 at once. The defer
+	// left every task QUEUED, so all come back now.
+	r2, err := s.ClaimNextArrayBatch(ctx, "slurm-2", "slurm", Limits{}, 10, 0, true)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r2.Deferred || len(r2.Tasks) != 10 {
+		t.Fatalf("(b) want the full 10-task array, got Deferred=%v tasks=%d", r2.Deferred, len(r2.Tasks))
+	}
+}
+
+// fullArray with an unbounded budget (no caps) submits the array immediately.
+func TestClaimArrayFullArrayUnbounded(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	var tasks []*jobs.JobDef
+	for idx := 0; idx < 5; idx++ {
+		tasks = append(tasks, mkArrayTask("t"+strconv.Itoa(idx), "arr", idx, 5, 0, nil))
+	}
+	if err := s.InsertArray(ctx, "arr", tasks); err != nil {
+		t.Fatalf("InsertArray: %v", err)
+	}
+
+	r, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, -1, 0, true)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if r.Deferred || len(r.Tasks) != 5 {
+		t.Fatalf("want the full 5-task array, got Deferred=%v tasks=%d", r.Deferred, len(r.Tasks))
 	}
 }
 
@@ -667,7 +820,7 @@ func TestClaimNextArrayBatchPlainJob(t *testing.T) {
 	ctx := ctxT(t)
 
 	mustInsert(t, s, mkJob("plain", map[string]string{"procs": "1"}))
-	r, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, -1)
+	r, err := s.ClaimNextArrayBatch(ctx, "slurm-1", "slurm", Limits{}, -1, 0, false)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}

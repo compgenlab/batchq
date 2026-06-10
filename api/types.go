@@ -243,8 +243,10 @@ type ClaimJobResponse struct {
 
 // ClaimArrayRequest is the body of POST /runners/{runner_id}/claim-array. Like
 // ClaimJobRequest plus MaxTasks, the cap on how many tasks of one array may be
-// claimed in this batch (<=0 = unbounded). Used by the SLURM runner to honor
-// its live-queue budget.
+// claimed in this batch (<=0 = unbounded), MinTasks, the min-array gate that
+// defers a too-small batch (<=0 = disabled), and FullArray, the all-or-nothing
+// gate that defers any partial array. Used by the SLURM runner to honor its
+// live-queue budget.
 type ClaimArrayRequest struct {
 	Kind           string            `json:"kind"`
 	MaxProcs       int               `json:"max_procs,omitempty"`
@@ -253,6 +255,8 @@ type ClaimArrayRequest struct {
 	Host           string            `json:"host,omitempty"`
 	Resources      map[string]string `json:"resources,omitempty"`
 	MaxTasks       int               `json:"max_tasks,omitempty"`
+	MinTasks       int               `json:"min_tasks,omitempty"`
+	FullArray      bool              `json:"full_array,omitempty"`
 }
 
 // ArrayTaskDTO is one claimed array task (its job id and array index).
@@ -273,6 +277,10 @@ type ClaimArrayResponse struct {
 	Tasks        []ArrayTaskDTO `json:"tasks,omitempty"`
 	MoreEligible bool           `json:"more_eligible"`
 	Blocked      bool           `json:"blocked,omitempty"`
+	// Deferred is set when an array batch was held back by the min-array gate
+	// (fewer than MinTasks fit this pass and more of its tasks remain QUEUED).
+	// Nothing was claimed; retry on a later pass with more budget.
+	Deferred bool `json:"deferred,omitempty"`
 }
 
 // ArrayActionResponse is the body of an array-level cancel/hold/release; Count
