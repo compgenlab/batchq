@@ -215,6 +215,45 @@ func relativeAge(t *time.Time) string {
 	}
 }
 
+func statusTimeSuffix(dto *api.JobDTO) string {
+	var b strings.Builder
+	fmtTime := func(t *time.Time) string {
+		tv := timeOrZero(t)
+		if tv.IsZero() {
+			return ""
+		}
+		return tv.UTC().Format(time.RFC3339)
+	}
+	if statusShowSubmit {
+		fmt.Fprintf(&b, " SubmitTime:%s", fmtTime(dto.SubmitTime))
+	}
+	if statusShowStart {
+		fmt.Fprintf(&b, " StartTime:%s", fmtTime(dto.StartTime))
+	}
+	if statusShowEnd {
+		fmt.Fprintf(&b, " EndTime:%s", fmtTime(dto.EndTime))
+	}
+	if statusShowWall {
+		b.WriteString(" WallTime:" + statusWallString(dto))
+	}
+	return b.String()
+}
+
+func statusWallString(dto *api.JobDTO) string {
+	start := timeOrZero(dto.StartTime)
+	if start.IsZero() {
+		return ""
+	}
+	end := timeOrZero(dto.EndTime)
+	if end.IsZero() {
+		if dto.Status == jobs.RUNNING.String() {
+			return jobs.WalltimeToString(int(time.Now().UTC().Sub(start).Seconds()))
+		}
+		return ""
+	}
+	return jobs.WalltimeToString(int(end.Sub(start).Seconds()))
+}
+
 var statusCmd = &cobra.Command{
 	Use:   "status {job1 job2...}",
 	Short: "Status for a job",
@@ -250,7 +289,7 @@ var statusCmd = &cobra.Command{
 				if target.isArray {
 					printArraySummary(target.arrayID, target.members, false)
 				} else {
-					fmt.Printf("%s %s\n", target.dto.JobID, target.dto.Status)
+					fmt.Printf("%s %s%s\n", target.dto.JobID, target.dto.Status, statusTimeSuffix(target.dto))
 				}
 			}
 		}
@@ -283,6 +322,10 @@ var summaryCmd = &cobra.Command{
 }
 
 var jobShowAll bool
+var statusShowSubmit bool
+var statusShowStart bool
+var statusShowEnd bool
+var statusShowWall bool
 var queueRunID string
 var queueArrayID string
 var queueOutput string
@@ -299,6 +342,10 @@ func init() {
 	queueCmd.Flags().BoolVarP(&queueSortTime, "time", "t", false, "Sort by submit time (newest first)")
 	queueCmd.Flags().BoolVarP(&queueSortReverse, "reverse", "r", false, "Reverse sort order (use with -t)")
 	summaryCmd.Flags().BoolVar(&jobShowAll, "all", false, "Show all jobs (including completed)")
+	statusCmd.Flags().BoolVarP(&statusShowSubmit, "submit", "s", false, "Show submit time")
+	statusCmd.Flags().BoolVarP(&statusShowStart, "begin", "b", false, "Show start/begin time")
+	statusCmd.Flags().BoolVarP(&statusShowEnd, "end", "e", false, "Show end time")
+	statusCmd.Flags().BoolVarP(&statusShowWall, "walltime", "t", false, "Show wall time (end-start)")
 
 	rootCmd.AddCommand(detailsCmd)
 	rootCmd.AddCommand(queueCmd)
