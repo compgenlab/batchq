@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -652,6 +654,38 @@ func (s *Service) CleanupJob(ctx context.Context, jobID string) error {
 
 func isTerminal(s jobs.StatusCode) bool {
 	return s == jobs.SUCCESS || s == jobs.FAILED || s == jobs.CANCELED
+}
+
+// Backup snapshots the database to destPath and returns the absolute path
+// written. The path resolves against the SERVER's filesystem (the snapshot is
+// taken by the server's own connection). When destPath is empty a default is
+// chosen under the server's $BATCHQ_HOME/backups/ with a timestamped name.
+// The parent directory is created; an already-existing destination is rejected
+// (VACUUM INTO will not overwrite, and a clear error beats SQLite's raw one).
+func (s *Service) Backup(ctx context.Context, destPath string) (string, error) {
+	var path string
+	if strings.TrimSpace(destPath) == "" {
+		stamp := time.Now().Format("20060102-150405")
+		path = filepath.Join(support.GetBatchqHome(), "backups", "batchq-"+stamp+".db")
+	} else {
+		abs, err := support.ExpandPathAbs(destPath)
+		if err != nil {
+			return "", fmt.Errorf("%w: bad backup path: %v", ErrBadRequest, err)
+		}
+		path = abs
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("backup: create destination dir: %w", err)
+	}
+	if _, err := os.Stat(path); err == nil {
+		return "", fmt.Errorf("%w: backup destination already exists: %s", ErrBadRequest, path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("backup: stat destination: %w", err)
+	}
+	if err := s.store.Backup(ctx, path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // --- Runner endpoints --------------------------------------------------

@@ -323,6 +323,23 @@ func (s *Server) handleQueueCounts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.StatusCountsResponse{Counts: counts})
 }
 
+// handleBackup snapshots the DB via the service (VACUUM INTO on the server's
+// own connection) and returns the absolute server-side path written. Unlike
+// handleShutdown it runs synchronously so the response carries the result.
+func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
+	var req api.BackupRequest
+	if err := s.decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	path, err := s.svc.Backup(r.Context(), req.Destination)
+	if err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.BackupResponse{Path: path})
+}
+
 // --- runner handlers ---------------------------------------------------
 
 func (s *Server) handleClaim(w http.ResponseWriter, r *http.Request) {

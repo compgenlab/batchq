@@ -1950,6 +1950,18 @@ func (s *sqliteStorage) AdjustJobPriority(ctx context.Context, jobID string, del
 	return nil
 }
 
+// Backup snapshots the database to destPath via SQLite's VACUUM INTO, run
+// on the single writer connection (s.qExec → s.db) so no second process ever
+// holds a lock on the live file. VACUUM INTO produces a fully consistent,
+// defragmented copy and refuses a destination that already exists, so the
+// caller is responsible for choosing a fresh path. On a large DB this briefly
+// serializes other writers behind it (the 1-connection pool); that is the
+// price of taking the snapshot without a second connection.
+func (s *sqliteStorage) Backup(ctx context.Context, destPath string) error {
+	_, err := s.qExec(ctx, "VACUUM INTO ?", destPath)
+	return err
+}
+
 func (s *sqliteStorage) CleanupJob(ctx context.Context, jobID string) error {
 	ctx = context.WithoutCancel(ctx)
 	tx, err := s.beginTx(ctx)

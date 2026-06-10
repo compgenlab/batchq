@@ -222,6 +222,12 @@ type Storage interface {
 	// terminal state.
 	CleanupJob(ctx context.Context, jobID string) error
 
+	// Backup writes a consistent snapshot of the database to destPath on the
+	// server's filesystem, using the existing connection — no second process
+	// ever opens the live DB file (the property that keeps it safe on
+	// NFS/Lustre). destPath must be absolute and must not already exist.
+	Backup(ctx context.Context, destPath string) error
+
 	// FindJobsByDetail returns the job IDs that carry a particular
 	// (key, value) row in job_details. Used for the run_id filter on
 	// GET /jobs.

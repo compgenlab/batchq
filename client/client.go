@@ -344,6 +344,20 @@ func (c *Client) Shutdown(ctx context.Context) error {
 	return c.doOnce(ctx, http.MethodPost, api.Prefix+api.RouteShutdown, nil, nil)
 }
 
+// Backup asks the server to snapshot its database to dest (a path on the
+// SERVER's filesystem; empty lets the server pick a timestamped default under
+// its $BATCHQ_HOME/backups/). It returns the absolute server-side path the
+// snapshot was written to. Uses doOnce — an admin op that does real work, so
+// it is not auto-replayed across an idle-server handoff.
+func (c *Client) Backup(ctx context.Context, dest string) (string, error) {
+	var resp api.BackupResponse
+	if err := c.doOnce(ctx, http.MethodPost, api.Prefix+api.RouteBackup,
+		&api.BackupRequest{Destination: dest}, &resp); err != nil {
+		return "", err
+	}
+	return resp.Path, nil
+}
+
 func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api.JobDTO, error) {
 	var resp api.SubmitJobResponse
 	if err := c.do(ctx, http.MethodPost, api.Prefix+api.RouteJobs, req, &resp); err != nil {
