@@ -15,6 +15,42 @@ This is a Go module (Go 1.23). batchq is **pure Go** — `modernc.org/sqlite` re
 - The lifecycle debug log (`--log <file>` flag, or `[batchq] log` config) appends timestamped, PID-tagged lines from both clients and the servers they autospawn to one shared file: client `dial`/spawn/handoff-retry, server `start`/`election`/`db opened`/`req … -> status`/`shutdown begin|done`/`db closed`, and any 5xx with its error body. First stop when diagnosing "too many servers" / SQLITE_BUSY — overlapping server PIDs are visible at a glance. Implemented in `support/debuglog.go` (`DebugLogger`), wired via `cmd/clientconn.go:debugLog` (client + spawned-server `--log` passthrough) and `server` `Options.Logf` / `server/logging.go` (`withLogging`).
 - A Docker-based Go toolchain wrapper at `/tmp/dgo` is available in the dev environment when no host `go` is installed; it shells out to the `mcr.microsoft.com/devcontainers/go:1-1.23` image with the repo bind-mounted.
 
+## Running batchq (server, clients, runners)
+
+`batchq` is one binary that dispatches on its first argument (`batchq <subcommand>`). Three roles: the **server** (owns the DB), **clients** (submit/inspect/manage jobs), and **runners** (claim QUEUED jobs and execute them). Global client flags (persistent, on every subcommand): `--remote <https url>`, `--token <bearer>` (prefer `BATCHQ_TOKEN` env), `--no-autospawn`, `--restart-server`, `--log <file>`.
+
+### Server
+
+```
+batchq server [--listen unix:///path|tcp://host:port] [--db sqlite3:///path] \
+              [--idle-timeout 1m] [--sqlite-wal] [--read-pool-size N]
+```
+
+Owns the SQLite DB and serves the REST API on a unix socket (default `~/.batchq/batchq.sock`, mode `0600`) or a plain-HTTP TCP port (`tcp://host:port`, for containers — set `[server] token`). Refuses to start when `[batchq] remote` is set. Flags fall back to the `[server]` config section.
+
+**Autospawn:** on a workstation you normally never start the server by hand — any client fork-execs `batchq server --idle-timeout 1m` when the socket is unreachable, polls for it to come up, and the server idles out when traffic stops. So `batchq submit ./run.sh` Just Works. `batchq stop` shuts the local server down; `--no-autospawn` disables the autospawn; `--restart-server` forces a fresh one.
+
+### Clients
+
+All of these dial the server (local socket, or `--remote`/`[batchq] remote` for a remote one):
+
+- `batchq submit [flags] [script-path | -- inline cmd…]` (or pipe a script on stdin) — enqueue a job. Core flags: `--name`, `-p/--procs`, `-m/--mem`, `-t/--walltime`, `--wd`, `--stdout`, `--stderr`, `--deps afterok:<id>`, `--hold`, `--env`, `--slurm` (parse `#SBATCH` headers), `--array <spec>`, `--resource <name[=val]>`, `--run-id`, `--input`, `--output`. Prints the job id (or array id for `--array`).
+- `batchq queue` / `batchq summary` — list the queue / per-status rollup.
+- `batchq status <id…>` / `batchq details <id>` / `batchq search <term>` — inspect jobs (auto-resolve a job id, array id, or `<array_id>_<index>`).
+- `batchq hold <id…>` / `batchq release <id…>` / `batchq cancel <id…>` — state management (whole arrays via the array id).
+- `batchq top <id…>` / `batchq nice <id…>` — reprioritize.
+- `batchq cleanup` — remove completed jobs from the DB.
+- `batchq web [--socket <path> | --listen host:port] [--force]` — HTML UI over the same REST client.
+
+### Runners
+
+`batchq run` is the runner. The runner type comes from `[batchq] runner` (`simple` | `slurm`); `--slurm` forces the SLURM proxy.
+
+- **Simple runner** (`batchq run`): a long-lived loop that atomically claims QUEUED jobs and executes them locally via `os/exec`, enforcing limits. Without `--forever` it stops once the queue is drained (and nothing fits); `--forever` keeps waiting for new work. Flags: `--max-procs`, `--max-mem`, `--max-walltime`, `--max-jobs`, `--forever`, `--use-cgroupv1`/`--use-cgroupv2` (root), `--resource <name[=val]>` (advertise capacity), `--host`, `--runner-id`.
+- **SLURM proxy runner** (`batchq run --slurm`): one-shot reconciliation — claims jobs/arrays, hands them to `sbatch`, polls `squeue`/`sacct`, reports terminal state back, then exits. Run it periodically (cron / a `--forever`-style external loop). Flags: `--slurm-account`, `--slurm-partition`, `--slurm-user`, `--slurm-max-jobs` (live-queue cap), `--max-jobs` (per-invocation cap), `--slurm-min-array N` / `--slurm-full-array` (array batching gates — see below), `--resource`, `--cluster`, `--host`, `--runner-id`. Reads `[slurm_runner]` config. **The SLURM runner is the only component that talks to SLURM.**
+
+A typical single-host deployment is just: `batchq submit …` (autospawns the server) + a `batchq run` somewhere consuming the queue. A SLURM deployment replaces the runner with a cron'd `batchq run --slurm`, often on a different host that has `sbatch`, pointing at the server via `[batchq] remote`.
+
 ## Architecture (v2 client/server)
 
 `batchq` is a single binary that runs in two roles: a long-lived `batchq server` process that owns the SQLite database, and short-lived clients (`submit`, `run`, `queue`, `hold`, `cleanup`, `web`) that talk to it over an HTTP REST API on a unix domain socket (or, opt-in, a plain-HTTP TCP port — `tcp://host:port` — for containerized deployments). batchq never terminates TLS; network exposure (TLS, remote clients, runners on other hosts) is the reverse proxy's job. This split exists so the DB file can safely live on a networked filesystem (NFS / Lustre): only one process touches it, so SQLite's cross-process locking failure modes don't apply.
