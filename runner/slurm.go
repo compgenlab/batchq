@@ -520,6 +520,17 @@ func (r *slurmRunner) applySlurmState(ctx context.Context, job *api.JobDTO, slur
 	ecancel()
 }
 
+// slurmJobName builds the value for the `#SBATCH -J` directive from a batchq
+// id and the user-supplied job name. SLURM directives are not quoted, so any
+// whitespace in the name would make sbatch parse the next word as a new
+// directive and reject the script (an unquoted `-J Count reads per sample`
+// failed with "Invalid directive found in batch script: reads"). Names are
+// already normalized at submit time; we re-run jobs.NormalizeName here as a
+// defensive, idempotent guard so the directive is always a bare token.
+func slurmJobName(id, name string) string {
+	return fmt.Sprintf("bq-%s.%s", id, jobs.NormalizeName(name))
+}
+
 func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO) (string, error) {
 	// we only support a limited set of SBATCH arguments
 	// -c cpus_per_task (with -n 1 nodes)
@@ -549,7 +560,7 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO)
 
 	src += r.slurmResourceDirectives(jobdef)
 	if jobdef.Name != "" {
-		src += fmt.Sprintf("#SBATCH -J bq-%s.%s\n", jobdef.JobID, jobdef.Name)
+		src += fmt.Sprintf("#SBATCH -J %s\n", slurmJobName(jobdef.JobID, jobdef.Name))
 	}
 	if val := jobdef.Details["stdout"]; val != "" {
 		src += fmt.Sprintf("#SBATCH -o %s\n", val)
@@ -586,7 +597,7 @@ func (r *slurmRunner) buildArraySBatchScript(ctx context.Context, jobdef *api.Jo
 
 	src += r.slurmResourceDirectives(jobdef)
 	if jobdef.Name != "" {
-		src += fmt.Sprintf("#SBATCH -J bq-%s.%s\n", arrayID, jobdef.Name)
+		src += fmt.Sprintf("#SBATCH -J %s\n", slurmJobName(arrayID, jobdef.Name))
 	}
 	if throttle > 0 {
 		src += fmt.Sprintf("#SBATCH --array=%s%%%d\n", joinIntList(indices), throttle)
