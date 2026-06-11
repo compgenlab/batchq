@@ -88,7 +88,7 @@ func (s *Service) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*ap
 
 	job := &jobs.JobDef{
 		JobId:       support.NewUUID(),
-		Name:        req.Name,
+		Name:        jobs.NormalizeName(req.Name),
 		Notes:       req.Notes,
 		Priority:    req.Priority,
 		AfterOk:     afterOk,
@@ -282,7 +282,7 @@ func (s *Service) SubmitArray(ctx context.Context, req *api.SubmitArrayRequest) 
 		afterOk = append(afterOk, perTaskDeps[idx]...)
 		task := &jobs.JobDef{
 			JobId:       support.NewUUID(),
-			Name:        req.Name,
+			Name:        jobs.NormalizeName(req.Name),
 			Notes:       req.Notes,
 			Priority:    req.Priority,
 			AfterOk:     afterOk,

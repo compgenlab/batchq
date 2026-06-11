@@ -2,6 +2,7 @@ package jobs
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -115,6 +116,24 @@ func NewJobDef(name string, src string) *JobDef {
 // store. The runner-advertised resources a job is matched against live on the
 // claim request, not in the job; see storage.jobFitsResources.
 const ResourcePrefix = "resource."
+
+// nameUnsafe matches any character that isn't safe in a bare, unquoted job
+// name; nameUnderscores matches runs of underscores left after substitution.
+var (
+	nameUnsafe      = regexp.MustCompile(`[^a-zA-Z0-9\-_.]`)
+	nameUnderscores = regexp.MustCompile(`_+`)
+)
+
+// NormalizeName canonicalizes a job name to a bare, whitespace-free token:
+// every character outside [a-zA-Z0-9-_.] is replaced with '_', then runs of
+// underscores are collapsed to a single '_'. batchq stores only normalized
+// names, so a name never carries whitespace that would, for example, make
+// SLURM's sbatch parse a later word as a stray `#SBATCH` directive. Applied
+// at submit time (service.SubmitJob/SubmitArray); idempotent.
+func NormalizeName(name string) string {
+	s := nameUnsafe.ReplaceAllString(name, "_")
+	return nameUnderscores.ReplaceAllString(s, "_")
+}
 
 // IsReservedResourceName reports whether name is one of the resource names
 // expressed through dedicated flags (-p/-m/-t) rather than as a generic
