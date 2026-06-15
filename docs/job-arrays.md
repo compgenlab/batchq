@@ -171,7 +171,7 @@ propagates to the cluster, not just to batchq's own state.
 
 ## Dependencies between arrays
 
-Two dependency shapes apply to arrays:
+Three dependency shapes apply to arrays:
 
 - **`afterok:<array_id>`** — the dependent job waits for **all** tasks of
   the array to succeed. Works for any submit (single job or array).
@@ -179,6 +179,18 @@ Two dependency shapes apply to arrays:
   ```sh
   ARRAY=$(batchq submit --array 0-99 ./map.sh)
   batchq submit --deps "afterok:$ARRAY" ./reduce.sh   # runs after every task succeeds
+  ```
+
+- **`afterok:<array_id>_<index>`** — the dependent job waits for **one
+  specific task** of the array. The `<array_id>_<index>` task address is
+  resolved server-side to that task, so it is accepted anywhere a job id
+  is (the same address used by `status`/`cancel`/`hold`). A dependent
+  array can target a single task too (every dependent task then waits on
+  that one task).
+
+  ```sh
+  ARRAY=$(batchq submit --array 0-99 ./map.sh)
+  batchq submit --deps "afterok:${ARRAY}_0" ./reduce.sh   # runs after task 0 succeeds
   ```
 
 - **`aftercorr:<array_id>`** — element-wise: task *i* of the new array

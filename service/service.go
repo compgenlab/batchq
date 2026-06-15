@@ -152,24 +152,54 @@ func (s *Service) loadArrayMembers(ctx context.Context, arrayID string) ([]array
 	return members, nil
 }
 
+// resolveDepTarget resolves a dependency spec's target string. A task address
+// "<array_id>_<index>" resolves to that one task's job id (returned as singleID);
+// an array id returns its members; a plain job id returns (nil, "", nil) and the
+// caller uses the target verbatim. An unknown array or missing task index is a
+// bad request.
+func (s *Service) resolveDepTarget(ctx context.Context, target string) (members []arrayMember, singleID string, err error) {
+	if arrayID, idxStr, ok := support.SplitTaskAddr(target); ok {
+		ms, err := s.loadArrayMembers(ctx, arrayID)
+		if err != nil {
+			return nil, "", err
+		}
+		if ms == nil {
+			return nil, "", fmt.Errorf("%w: dependency %q references unknown array %s", ErrBadRequest, target, arrayID)
+		}
+		want, _ := strconv.Atoi(idxStr)
+		for _, m := range ms {
+			if m.index == want {
+				return nil, m.id, nil
+			}
+		}
+		return nil, "", fmt.Errorf("%w: dependency %q: array %s has no task %s", ErrBadRequest, target, arrayID, idxStr)
+	}
+	ms, err := s.loadArrayMembers(ctx, target)
+	return ms, "", err
+}
+
 // expandSingleDeps resolves dependency specs for a single (non-array) dependent.
-// afterok on an array fans out to all its members; aftercorr is invalid.
+// afterok on an array fans out to all its members; a task address resolves to one
+// member; aftercorr is invalid.
 func (s *Service) expandSingleDeps(ctx context.Context, specs []depSpec) ([]string, error) {
 	var afterok []string
 	for _, sp := range specs {
 		if sp.kind == "aftercorr" {
 			return nil, fmt.Errorf("%w: aftercorr requires an array dependent", ErrBadRequest)
 		}
-		members, err := s.loadArrayMembers(ctx, sp.target)
+		members, singleID, err := s.resolveDepTarget(ctx, sp.target)
 		if err != nil {
 			return nil, err
 		}
-		if members == nil {
+		switch {
+		case singleID != "":
+			afterok = append(afterok, singleID)
+		case members == nil:
 			afterok = append(afterok, sp.target)
-			continue
-		}
-		for _, m := range members {
-			afterok = append(afterok, m.id)
+		default:
+			for _, m := range members {
+				afterok = append(afterok, m.id)
+			}
 		}
 	}
 	return afterok, nil
@@ -196,6 +226,36 @@ func (s *Service) expandArrayDepsForTasks(ctx context.Context, specs []depSpec, 
 
 	perTask := map[int][]string{}
 	for _, sp := range specs {
+		// A task address "<array_id>_<index>" targets one specific task. For
+		// afterok every dependent task waits on that one task; aftercorr needs a
+		// whole array to pair index-wise, so a task address is invalid there.
+		if arrayID, idxStr, ok := support.SplitTaskAddr(sp.target); ok {
+			if sp.kind == "aftercorr" {
+				return nil, fmt.Errorf("%w: aftercorr target %s must be an array, not a single task", ErrBadRequest, sp.target)
+			}
+			ms, err := load(arrayID)
+			if err != nil {
+				return nil, err
+			}
+			if ms == nil {
+				return nil, fmt.Errorf("%w: dependency %q references unknown array %s", ErrBadRequest, sp.target, arrayID)
+			}
+			want, _ := strconv.Atoi(idxStr)
+			depID := ""
+			for _, m := range ms {
+				if m.index == want {
+					depID = m.id
+					break
+				}
+			}
+			if depID == "" {
+				return nil, fmt.Errorf("%w: dependency %q: array %s has no task %s", ErrBadRequest, sp.target, arrayID, idxStr)
+			}
+			for _, idx := range indices {
+				perTask[idx] = append(perTask[idx], depID)
+			}
+			continue
+		}
 		members, err := load(sp.target)
 		if err != nil {
 			return nil, err
