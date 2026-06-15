@@ -76,6 +76,18 @@ batchq status <job-id> <job-id>
 With an array id, `status` prints a per-status summary of the array's
 tasks instead of a single line.
 
+`--porcelain` switches to a stable, machine-readable form for scripts and
+external tools: one `<id>⇥<status>` line (tab-separated) per queried id,
+with the **queried token echoed verbatim** in the first field (so a task
+address or array id is unambiguous). An array collapses to a single
+aggregate status — an active state if any task is still live, otherwise
+`SUCCESS`/`FAILED`/`CANCELED`.
+
+```sh
+batchq status --porcelain "$ARRAY"       # ARRAY<tab>RUNNING
+batchq status --porcelain "${ARRAY}_3"   # ARRAY_3<tab>PROXYQUEUED
+```
+
 ### `details` — everything we know about a job
 
 ```sh

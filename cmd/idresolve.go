@@ -11,6 +11,7 @@ import (
 
 	"github.com/mbreese/batchq/api"
 	"github.com/mbreese/batchq/client"
+	"github.com/mbreese/batchq/support"
 )
 
 // jobTarget is what a CLI id argument resolves to: either a single job/task or
@@ -24,18 +25,10 @@ type jobTarget struct {
 }
 
 // splitTaskAddr parses a SLURM-style task address "<array_id>_<index>" into its
-// array id and index. Job/array ids are UUIDs (no underscores), so the last '_'
-// unambiguously separates the array id from the integer index.
+// array id and index. It delegates to support.SplitTaskAddr so the CLI and the
+// service layer share one implementation.
 func splitTaskAddr(arg string) (arrayID, index string, ok bool) {
-	i := strings.LastIndex(arg, "_")
-	if i <= 0 || i == len(arg)-1 {
-		return "", "", false
-	}
-	suffix := arg[i+1:]
-	if _, err := strconv.Atoi(suffix); err != nil {
-		return "", "", false
-	}
-	return arg[:i], suffix, true
+	return support.SplitTaskAddr(arg)
 }
 
 // resolveTarget interprets a CLI id argument:
