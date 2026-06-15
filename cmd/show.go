@@ -269,7 +269,11 @@ var statusCmd = &cobra.Command{
 				log.Fatalln(err)
 			}
 			for _, dto := range dtos {
-				fmt.Printf("%s %s\n", dto.JobID, dto.Status)
+				if statusPorcelain {
+					fmt.Printf("%s\t%s\n", dto.JobID, dto.Status)
+				} else {
+					fmt.Printf("%s %s\n", dto.JobID, dto.Status)
+				}
 			}
 			return
 		}
@@ -286,6 +290,18 @@ var statusCmd = &cobra.Command{
 					fmt.Fprintln(os.Stderr, err)
 					continue
 				}
+				// Porcelain: one stable, machine-readable line per queried id,
+				// "<queried-id>\t<STATUS>". The queried token is echoed verbatim in
+				// field 0 (so a task address or array id is unambiguous), and an
+				// array collapses to a single aggregate status.
+				if statusPorcelain {
+					if target.isArray {
+						fmt.Printf("%s\t%s\n", jobid, aggregateArrayStatus(target.members))
+					} else {
+						fmt.Printf("%s\t%s\n", jobid, target.dto.Status)
+					}
+					continue
+				}
 				if target.isArray {
 					printArraySummary(target.arrayID, target.members, false)
 				} else {
@@ -294,6 +310,29 @@ var statusCmd = &cobra.Command{
 			}
 		}
 	},
+}
+
+// aggregateArrayStatus rolls an array's per-task statuses into one word. It
+// reports the most-active non-terminal state if any task is still live (so an
+// external "is this array still active?" check sees activity), otherwise the
+// terminal state: FAILED/CANCELED if any task failed, else SUCCESS.
+func aggregateArrayStatus(members []*api.JobDTO) string {
+	counts := map[string]int{}
+	for _, m := range members {
+		counts[m.Status]++
+	}
+	for _, st := range []jobs.StatusCode{jobs.RUNNING, jobs.PROXYQUEUED, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD} {
+		if counts[st.String()] > 0 {
+			return st.String()
+		}
+	}
+	if counts[jobs.FAILED.String()] > 0 {
+		return jobs.FAILED.String()
+	}
+	if counts[jobs.CANCELED.String()] > 0 {
+		return jobs.CANCELED.String()
+	}
+	return jobs.SUCCESS.String()
 }
 
 var summaryCmd = &cobra.Command{
@@ -326,6 +365,7 @@ var statusShowSubmit bool
 var statusShowStart bool
 var statusShowEnd bool
 var statusShowWall bool
+var statusPorcelain bool
 var queueRunID string
 var queueArrayID string
 var queueOutput string
@@ -346,6 +386,7 @@ func init() {
 	statusCmd.Flags().BoolVarP(&statusShowStart, "begin", "b", false, "Show start/begin time")
 	statusCmd.Flags().BoolVarP(&statusShowEnd, "end", "e", false, "Show end time")
 	statusCmd.Flags().BoolVarP(&statusShowWall, "walltime", "t", false, "Show wall time (end-start)")
+	statusCmd.Flags().BoolVar(&statusPorcelain, "porcelain", false, "Machine-readable: one '<id>\\t<status>' line per queried id (arrays collapse to one status)")
 
 	rootCmd.AddCommand(detailsCmd)
 	rootCmd.AddCommand(queueCmd)

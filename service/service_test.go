@@ -191,6 +191,82 @@ func TestSubmitJobAfterOkArray(t *testing.T) {
 	}
 }
 
+// A single job with afterok on a task address "<arrayid>_<index>" waits for
+// exactly that one task, not the whole array.
+func TestSubmitJobAfterOkTaskAddr(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	a := submitArray(t, svc, ctx, []int{0, 1, 2}, nil)
+	aByIndex := map[int]string{}
+	for _, j := range a.Jobs {
+		idx, _ := strconv.Atoi(j.Details["array_index"])
+		aByIndex[idx] = j.JobID
+	}
+
+	b, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{
+		Details:   map[string]string{"script": "y"},
+		ArrayDeps: []string{"afterok:" + a.ArrayID + "_1"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitJob: %v", err)
+	}
+	job, err := svc.store.GetJob(ctx, b.JobID)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if len(job.AfterOk) != 1 || job.AfterOk[0] != aByIndex[1] {
+		t.Fatalf("B AfterOk = %v, want exactly task 1 (%s)", job.AfterOk, aByIndex[1])
+	}
+}
+
+// Bad task indices and unknown arrays are rejected, not silently passed through
+// as opaque job ids (which would 404 later in storage validation).
+func TestSubmitJobAfterOkTaskAddrErrors(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	a := submitArray(t, svc, ctx, []int{0, 1, 2}, nil)
+	for _, dep := range []string{
+		"afterok:" + a.ArrayID + "_99",                   // no such index
+		"afterok:00000000-0000-0000-0000-000000000000_1", // unknown array
+	} {
+		_, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{
+			Details:   map[string]string{"script": "y"},
+			ArrayDeps: []string{dep},
+		})
+		if err == nil {
+			t.Fatalf("dep %q: expected error, got nil", dep)
+		}
+	}
+}
+
+// An array dependent can also target a single task of another array; every
+// dependent task then waits on that one resolved task UUID.
+func TestSubmitArrayAfterOkTaskAddr(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	a := submitArray(t, svc, ctx, []int{0, 1, 2}, nil)
+	var want string
+	for _, j := range a.Jobs {
+		if j.Details["array_index"] == "2" {
+			want = j.JobID
+		}
+	}
+
+	b := submitArray(t, svc, ctx, []int{0, 1}, []string{"afterok:" + a.ArrayID + "_2"})
+	for _, bj := range b.Jobs {
+		job, err := svc.store.GetJob(ctx, bj.JobID)
+		if err != nil {
+			t.Fatalf("GetJob: %v", err)
+		}
+		if len(job.AfterOk) != 1 || job.AfterOk[0] != want {
+			t.Fatalf("B task AfterOk = %v, want exactly task 2 (%s)", job.AfterOk, want)
+		}
+	}
+}
+
 func newService(t *testing.T) *Service {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "batchq.db")
