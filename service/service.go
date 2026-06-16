@@ -819,7 +819,17 @@ func (s *Service) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host 
 }
 
 func (s *Service) MarkJobProxied(ctx context.Context, runnerID, jobID string, runningDetails map[string]string) error {
-	return s.store.MarkJobProxied(ctx, jobID, runnerID, runningDetails)
+	if err := s.store.MarkJobProxied(ctx, jobID, runnerID, runningDetails); err != nil {
+		return err
+	}
+	// Handing a job to SLURM (-> PROXYQUEUED) can satisfy a downstream afterok
+	// dependency, since ResolveDependencies treats PROXYQUEUED as met. Re-evaluate
+	// waiting jobs — mirrors EndProxiedJob/EndJob. Without this, a gather depending
+	// on an array stays WAITING until the next claim or a task completes, which the
+	// runner may never reach if the array saturates its live-queue budget and
+	// breaks out of the submit loop.
+	_, _ = s.ResolveDependencies(ctx)
+	return nil
 }
 
 func (s *Service) UpdateRunningDetails(ctx context.Context, jobID string, details map[string]string) error {
