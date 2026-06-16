@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -670,15 +671,42 @@ func (r *slurmRunner) slurmResourceDirectives(jobdef *api.JobDTO) string {
 	return src
 }
 
+// arrayTaskDep is one PROXYQUEUED/RUNNING array-task dependency, grouped under
+// its parent batchq array.
+type arrayTaskDep struct {
+	arrayIndex     int    // batchq array_index, for whole-array detection
+	slurmArrayID   string // the SLURM array job id this task was submitted under
+	slurmTaskIndex string // its index within that SLURM array submission
+}
+
+// arrayDepGroup accumulates the dependencies belonging to one parent batchq
+// array, plus that array's declared size.
+type arrayDepGroup struct {
+	size  int
+	tasks []arrayTaskDep
+}
+
 // slurmAfterOkDirective maps a job's batchq afterok deps to a SLURM
 // `-d afterok:` directive (plus --kill-on-invalid-dep). Returns "" when there
 // are no pending deps. Errors if a dep failed or isn't ready yet.
+//
+// A single batchq array is drip-fed as several `sbatch --array` submissions, each
+// with its own slurm_array_id, so the gather's per-task afterok edges span
+// multiple SLURM arrays. When the gather depends on the *whole* parent array we
+// collapse those edges to one `afterok:<slurm_array_id>` per SLURM sub-array (so
+// `afterok:12340:12341` rather than one entry per task) — compact and within
+// SLURM's dependency-string limits. A partial (task-address) dep, or one whose
+// array_size we can't read, falls back to per-element `afterok:<arrayid>_<index>`.
 func (r *slurmRunner) slurmAfterOkDirective(ctx context.Context, jobdef *api.JobDTO) (string, error) {
 	if len(jobdef.AfterOk) == 0 {
 		return "", nil
 	}
-	// remap sbatch job-ids to slurm job-ids (running_detail: slurm_job_id)
-	var slurmAfterOkId []string
+
+	// Phase 1: collect deps, preserving order. Plain jobs map straight to their
+	// slurm_job_id; array tasks group under their parent batchq array_id.
+	var plainIDs []string
+	groups := make(map[string]*arrayDepGroup)
+	var groupOrder []string // parent array_ids in first-seen order, for determinism
 	for _, depid := range jobdef.AfterOk {
 		dctx, dcancel := context.WithTimeout(ctx, 30*time.Second)
 		dep, err := r.client.GetJob(dctx, depid)
@@ -691,28 +719,84 @@ func (r *slurmRunner) slurmAfterOkDirective(ctx context.Context, jobdef *api.Job
 			return "", fmt.Errorf("dependency of job failed (depid: %s)", dep.JobID)
 		case jobs.UNKNOWN.String(), jobs.USERHOLD.String(), jobs.WAITING.String():
 			return "", fmt.Errorf("not ready to process dep job yet (depid: %s)", dep.JobID)
+		case jobs.SUCCESS.String():
+			// Already satisfied — contributes nothing to the directive.
+			continue
 		case jobs.RUNNING.String(), jobs.PROXYQUEUED.String():
-			// Trust the recorded slurm_job_id. SLURM itself, together with
+			// Trust the recorded slurm id. SLURM itself, together with
 			// --kill-on-invalid-dep=yes below, correctly handles a parent
 			// that is PENDING/RUNNING (wait), COMPLETED (satisfy now), or
 			// FAILED/CANCELLED (kill the child). Calling sacct/squeue here
 			// just to validate the parent's state opens a race window: if
 			// the parent was sbatch'd moments ago, its ID may not yet be
 			// visible to outside readers even though we hold the ID.
-			slurm_id := dep.RunningDetails["slurm_job_id"]
-			if slurm_id == "" {
-				return "", fmt.Errorf("missing slurm_job_id (depid: %s)", dep.JobID)
+			if sjid := dep.RunningDetails["slurm_job_id"]; sjid != "" {
+				plainIDs = append(plainIDs, sjid)
+				continue
 			}
-			slurmAfterOkId = append(slurmAfterOkId, slurm_id)
-		case jobs.SUCCESS.String():
-			// we're all good... no need to add it.
+			said := dep.RunningDetails["slurm_array_id"]
+			stidx := dep.RunningDetails["slurm_task_index"]
+			if said == "" || stidx == "" {
+				return "", fmt.Errorf("missing slurm job id (depid: %s)", dep.JobID)
+			}
+			arrayID := dep.Details["array_id"]
+			g := groups[arrayID]
+			if g == nil {
+				size, _ := strconv.Atoi(dep.Details["array_size"])
+				g = &arrayDepGroup{size: size}
+				groups[arrayID] = g
+				groupOrder = append(groupOrder, arrayID)
+			}
+			aidx, _ := strconv.Atoi(dep.Details["array_index"])
+			g.tasks = append(g.tasks, arrayTaskDep{
+				arrayIndex:     aidx,
+				slurmArrayID:   said,
+				slurmTaskIndex: stidx,
+			})
 		}
 	}
-	if len(slurmAfterOkId) == 0 {
+
+	// Phase 2: build the deduped id list — plain ids first, then each parent
+	// array (collapsed to its SLURM array id(s) when whole, else per-element).
+	var ids []string
+	seen := make(map[string]bool)
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			ids = append(ids, s)
+		}
+	}
+	for _, id := range plainIDs {
+		add(id)
+	}
+	for _, arrayID := range groupOrder {
+		g := groups[arrayID]
+		distinct := make(map[int]bool, len(g.tasks))
+		for _, t := range g.tasks {
+			distinct[t.arrayIndex] = true
+		}
+		whole := g.size > 0 && len(distinct) == g.size
+		// Emit in array-index order so the directive is deterministic regardless
+		// of the order the deps fanned out in.
+		sort.Slice(g.tasks, func(i, j int) bool { return g.tasks[i].arrayIndex < g.tasks[j].arrayIndex })
+		for _, t := range g.tasks {
+			if whole {
+				// Depending on the whole parent array ⇒ depending on every task
+				// of each of its SLURM sub-arrays, so afterok:<sub-array> is exact
+				// (it also covers any of that sub-array's tasks that already
+				// completed). Dedup collapses to one entry per distinct sub-array.
+				add(t.slurmArrayID)
+			} else {
+				add(t.slurmArrayID + "_" + t.slurmTaskIndex)
+			}
+		}
+	}
+
+	if len(ids) == 0 {
 		return "", nil
 	}
 	return "#SBATCH --kill-on-invalid-dep=yes\n" +
-		fmt.Sprintf("#SBATCH -d afterok:%s\n", strings.Join(slurmAfterOkId, ":")), nil
+		fmt.Sprintf("#SBATCH -d afterok:%s\n", strings.Join(ids, ":")), nil
 }
 
 // joinIntList renders a slice of ints as a comma-separated list.

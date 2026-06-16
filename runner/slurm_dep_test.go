@@ -17,11 +17,13 @@ package runner
 
 import (
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mbreese/batchq/api"
+	"github.com/mbreese/batchq/client"
 	"github.com/mbreese/batchq/jobs"
 )
 
@@ -110,6 +112,239 @@ func TestSlurmDepSkipsSucceeded(t *testing.T) {
 	if strings.Contains(src, "afterok") {
 		t.Fatalf("expected no afterok for a SUCCESS dep, got:\n%s", src)
 	}
+}
+
+// A gather depending on a whole array (afterok:<array_id>) must build a valid
+// afterok directive even though array tasks record slurm_array_id +
+// slurm_task_index (never slurm_job_id). Whole-array deps collapse to one
+// afterok:<slurm_array_id> per SLURM sub-array. Regression: this used to error
+// "missing slurm_job_id" and cancel the gather.
+func TestSlurmDepArrayWholeCollapses(t *testing.T) {
+	c, _ := startServerForRunner(t)
+	ctx := context.Background()
+
+	arr, err := c.SubmitArray(ctx, &api.SubmitArrayRequest{
+		SubmitJobRequest: api.SubmitJobRequest{
+			Name:    "fanout",
+			Details: map[string]string{"script": "#!/bin/sh\necho task\n"},
+		},
+		ArrayIndices: []int{0, 1, 2},
+	})
+	if err != nil {
+		t.Fatalf("SubmitArray: %v", err)
+	}
+
+	// Claim all tasks and proxy them under a single SLURM array id.
+	resp, err := c.ClaimNextArrayBatch(ctx, "test-runner", "slurm", "", -1, -1, -1, nil, -1, 0, false)
+	if err != nil {
+		t.Fatalf("ClaimNextArrayBatch: %v", err)
+	}
+	if resp.ArrayID == "" || len(resp.Tasks) != 3 {
+		t.Fatalf("expected 3-task array claim, got ArrayID=%q tasks=%d", resp.ArrayID, len(resp.Tasks))
+	}
+	for _, task := range resp.Tasks {
+		if err := c.MarkJobProxied(ctx, "test-runner", task.JobID, map[string]string{
+			"slurm_array_id":   "500",
+			"slurm_task_index": strconv.Itoa(task.Index),
+		}); err != nil {
+			t.Fatalf("MarkJobProxied task %d: %v", task.Index, err)
+		}
+	}
+
+	gather, err := c.SubmitJob(ctx, &api.SubmitJobRequest{
+		Name:      "gather",
+		ArrayDeps: []string{"afterok:" + arr.ArrayID},
+		Details:   map[string]string{"script": "#!/bin/sh\necho gather\n"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitJob gather: %v", err)
+	}
+
+	src := buildGatherScript(t, c, gather.JobID)
+	wantDep := "#SBATCH -d afterok:500\n"
+	if !strings.Contains(src, wantDep) {
+		t.Fatalf("script missing %q (whole-array collapse):\n%s", wantDep, src)
+	}
+	if strings.Contains(src, "500_") {
+		t.Fatalf("expected collapsed afterok:500, got per-element ids:\n%s", src)
+	}
+}
+
+// When a single batchq array is drip-fed as multiple SLURM arrays, a whole-array
+// gather collapses to one afterok entry per distinct slurm_array_id.
+func TestSlurmDepArraySpansMultipleSlurmArrays(t *testing.T) {
+	c, _ := startServerForRunner(t)
+	ctx := context.Background()
+
+	arr, err := c.SubmitArray(ctx, &api.SubmitArrayRequest{
+		SubmitJobRequest: api.SubmitJobRequest{
+			Name:    "fanout",
+			Details: map[string]string{"script": "#!/bin/sh\necho task\n"},
+		},
+		ArrayIndices: []int{0, 1, 2},
+	})
+	if err != nil {
+		t.Fatalf("SubmitArray: %v", err)
+	}
+
+	resp, err := c.ClaimNextArrayBatch(ctx, "test-runner", "slurm", "", -1, -1, -1, nil, -1, 0, false)
+	if err != nil {
+		t.Fatalf("ClaimNextArrayBatch: %v", err)
+	}
+	// Split the tasks across two SLURM arrays: indices 0,1 -> "500", 2 -> "501".
+	for _, task := range resp.Tasks {
+		slurmArray := "500"
+		if task.Index == 2 {
+			slurmArray = "501"
+		}
+		if err := c.MarkJobProxied(ctx, "test-runner", task.JobID, map[string]string{
+			"slurm_array_id":   slurmArray,
+			"slurm_task_index": strconv.Itoa(task.Index),
+		}); err != nil {
+			t.Fatalf("MarkJobProxied task %d: %v", task.Index, err)
+		}
+	}
+
+	gather, err := c.SubmitJob(ctx, &api.SubmitJobRequest{
+		Name:      "gather",
+		ArrayDeps: []string{"afterok:" + arr.ArrayID},
+		Details:   map[string]string{"script": "#!/bin/sh\necho gather\n"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitJob gather: %v", err)
+	}
+
+	src := buildGatherScript(t, c, gather.JobID)
+	wantDep := "#SBATCH -d afterok:500:501\n"
+	if !strings.Contains(src, wantDep) {
+		t.Fatalf("script missing %q (multi-sub-array collapse):\n%s", wantDep, src)
+	}
+}
+
+// A partial (task-address) array dep falls back to a per-element afterok id,
+// since the gather does not depend on the whole sub-array.
+func TestSlurmDepArrayPartialPerElement(t *testing.T) {
+	c, _ := startServerForRunner(t)
+	ctx := context.Background()
+
+	arr, err := c.SubmitArray(ctx, &api.SubmitArrayRequest{
+		SubmitJobRequest: api.SubmitJobRequest{
+			Name:    "fanout",
+			Details: map[string]string{"script": "#!/bin/sh\necho task\n"},
+		},
+		ArrayIndices: []int{0, 1, 2},
+	})
+	if err != nil {
+		t.Fatalf("SubmitArray: %v", err)
+	}
+
+	resp, err := c.ClaimNextArrayBatch(ctx, "test-runner", "slurm", "", -1, -1, -1, nil, -1, 0, false)
+	if err != nil {
+		t.Fatalf("ClaimNextArrayBatch: %v", err)
+	}
+	for _, task := range resp.Tasks {
+		if err := c.MarkJobProxied(ctx, "test-runner", task.JobID, map[string]string{
+			"slurm_array_id":   "500",
+			"slurm_task_index": strconv.Itoa(task.Index),
+		}); err != nil {
+			t.Fatalf("MarkJobProxied task %d: %v", task.Index, err)
+		}
+	}
+
+	// Depend on just task 1, not the whole array.
+	gather, err := c.SubmitJob(ctx, &api.SubmitJobRequest{
+		Name:      "gather",
+		ArrayDeps: []string{"afterok:" + arr.ArrayID + "_1"},
+		Details:   map[string]string{"script": "#!/bin/sh\necho gather\n"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitJob gather: %v", err)
+	}
+
+	src := buildGatherScript(t, c, gather.JobID)
+	wantDep := "#SBATCH -d afterok:500_1\n"
+	if !strings.Contains(src, wantDep) {
+		t.Fatalf("script missing %q (partial dep per-element):\n%s", wantDep, src)
+	}
+}
+
+// Handing the last array task to SLURM (MarkJobProxied -> PROXYQUEUED) must
+// promote a gather that depends on the whole array from WAITING to QUEUED, even
+// without a subsequent claim. Otherwise a runner that breaks out of its submit
+// loop on a saturated live-queue budget would strand the gather in WAITING.
+func TestMarkProxiedPromotesDependentGather(t *testing.T) {
+	c, _ := startServerForRunner(t)
+	ctx := context.Background()
+
+	arr, err := c.SubmitArray(ctx, &api.SubmitArrayRequest{
+		SubmitJobRequest: api.SubmitJobRequest{
+			Name:    "fanout",
+			Details: map[string]string{"script": "#!/bin/sh\necho task\n"},
+		},
+		ArrayIndices: []int{0, 1, 2},
+	})
+	if err != nil {
+		t.Fatalf("SubmitArray: %v", err)
+	}
+
+	// Submit the gather BEFORE the tasks are proxied, so it starts WAITING.
+	gather, err := c.SubmitJob(ctx, &api.SubmitJobRequest{
+		Name:      "gather",
+		ArrayDeps: []string{"afterok:" + arr.ArrayID},
+		Details:   map[string]string{"script": "#!/bin/sh\necho gather\n"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitJob gather: %v", err)
+	}
+	if got, _ := c.GetJob(ctx, gather.JobID); got.Status != jobs.WAITING.String() {
+		t.Fatalf("gather status = %s, want WAITING before deps are proxied", got.Status)
+	}
+
+	resp, err := c.ClaimNextArrayBatch(ctx, "test-runner", "slurm", "", -1, -1, -1, nil, -1, 0, false)
+	if err != nil {
+		t.Fatalf("ClaimNextArrayBatch: %v", err)
+	}
+	for i, task := range resp.Tasks {
+		if err := c.MarkJobProxied(ctx, "test-runner", task.JobID, map[string]string{
+			"slurm_array_id":   "500",
+			"slurm_task_index": strconv.Itoa(task.Index),
+		}); err != nil {
+			t.Fatalf("MarkJobProxied task %d: %v", task.Index, err)
+		}
+		// Gather should remain WAITING until the LAST task is proxied.
+		got, _ := c.GetJob(ctx, gather.JobID)
+		wantStatus := jobs.WAITING.String()
+		if i == len(resp.Tasks)-1 {
+			wantStatus = jobs.QUEUED.String()
+		}
+		if got.Status != wantStatus {
+			t.Fatalf("after proxying %d/%d tasks: gather status = %s, want %s",
+				i+1, len(resp.Tasks), got.Status, wantStatus)
+		}
+	}
+}
+
+// buildGatherScript fetches a job and builds its sbatch script, failing the test
+// if the build errors or returns empty (the regressed cancel path).
+func buildGatherScript(t *testing.T, c *client.Client, jobID string) string {
+	t.Helper()
+	ctx := context.Background()
+	dto, err := c.GetJob(ctx, jobID)
+	if err != nil {
+		t.Fatalf("GetJob %s: %v", jobID, err)
+	}
+	r := NewSlurmRunner(c)
+	src, err := r.buildSBatchScript(ctx, dto)
+	if err != nil {
+		t.Fatalf("buildSBatchScript: %v", err)
+	}
+	if src == "" {
+		t.Fatalf("buildSBatchScript returned empty src — gather would be canceled")
+	}
+	if !strings.Contains(src, "#SBATCH --kill-on-invalid-dep=yes") {
+		t.Fatalf("script missing --kill-on-invalid-dep=yes:\n%s", src)
+	}
+	return src
 }
 
 // EndJob with a non-empty notes argument should persist the reason into
