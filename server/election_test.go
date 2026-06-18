@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mbreese/batchq/internal/testsupport"
+	"github.com/compgenlab/batchq/internal/testsupport"
 )
 
 // TestConcurrentElectSingleWinner proves that N processes racing to start a

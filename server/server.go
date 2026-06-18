@@ -20,9 +20,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/service"
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/service"
+	"github.com/compgenlab/batchq/support"
 )
 
 // ErrAlreadyRunning is returned by Serve when another batchq server is

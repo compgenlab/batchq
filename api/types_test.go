@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbreese/batchq/jobs"
+	"github.com/compgenlab/batchq/jobs"
 )
 
 // TestParseStatusRoundTrip asserts every StatusCode's String() name parses back

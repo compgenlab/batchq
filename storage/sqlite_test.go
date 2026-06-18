@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbreese/batchq/jobs"
+	"github.com/compgenlab/batchq/jobs"
 )
 
 // newTestStore opens a fresh sqlite Storage in a temp directory and registers

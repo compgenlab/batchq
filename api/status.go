@@ -3,7 +3,7 @@ package api
 import (
 	"fmt"
 
-	"github.com/mbreese/batchq/jobs"
+	"github.com/compgenlab/batchq/jobs"
 )
 
 // statusByName lets the wire format use the readable status name. Kept in

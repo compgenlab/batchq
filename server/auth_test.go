@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/service"
-	"github.com/mbreese/batchq/storage"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/service"
+	"github.com/compgenlab/batchq/storage"
 )
 
 // newAuthTestServer mirrors newTestServer but sets a shared auth token so

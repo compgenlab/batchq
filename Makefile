@@ -13,7 +13,7 @@ SOURCES := $(shell find . -name '*.go')
 # (VERSION=foo make ...) if you need a specific string.
 VERSION ?= $(shell ./scripts/version.sh)
 
-LDFLAGS := -ldflags "-X github.com/mbreese/batchq/cmd.Version=$(VERSION)"
+LDFLAGS := -ldflags "-X github.com/compgenlab/batchq/cmd.Version=$(VERSION)"
 
 # Default target is just the host binary — fast iteration during dev.
 # `make all` cross-builds every supported target; that's what CI runs
