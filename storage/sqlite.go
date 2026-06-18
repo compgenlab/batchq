@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbreese/batchq/jobs"
+	"github.com/compgenlab/batchq/jobs"
 
 	_ "modernc.org/sqlite"
 )

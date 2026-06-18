@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/support"
 )
 
 type StatusCode int

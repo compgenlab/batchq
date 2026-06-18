@@ -21,10 +21,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/jobs"
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/client"
+	"github.com/compgenlab/batchq/jobs"
+	"github.com/compgenlab/batchq/support"
 )
 
 //go:embed templates/*.html

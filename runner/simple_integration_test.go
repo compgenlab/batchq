@@ -14,13 +14,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/internal/testsupport"
-	"github.com/mbreese/batchq/jobs"
-	"github.com/mbreese/batchq/server"
-	"github.com/mbreese/batchq/service"
-	"github.com/mbreese/batchq/storage"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/client"
+	"github.com/compgenlab/batchq/internal/testsupport"
+	"github.com/compgenlab/batchq/jobs"
+	"github.com/compgenlab/batchq/server"
+	"github.com/compgenlab/batchq/service"
+	"github.com/compgenlab/batchq/storage"
 )
 
 // jobDetails returns the standard details for a runner test job. When the

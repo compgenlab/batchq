@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mbreese/batchq/client"
+	"github.com/compgenlab/batchq/client"
 	"github.com/spf13/cobra"
 )
 

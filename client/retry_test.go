@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbreese/batchq/api"
+	"github.com/compgenlab/batchq/api"
 )
 
 type rtFunc func(*http.Request) (*http.Response, error)

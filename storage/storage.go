@@ -8,7 +8,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/mbreese/batchq/jobs"
+	"github.com/compgenlab/batchq/jobs"
 )
 
 // ErrJobNotFound is returned when a job ID does not exist.

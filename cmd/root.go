@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/support"
 
 	"github.com/spf13/cobra"
 )
