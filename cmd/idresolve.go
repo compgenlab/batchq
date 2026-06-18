@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/client"
+	"github.com/compgenlab/batchq/support"
 )
 
 // jobTarget is what a CLI id argument resolves to: either a single job/task or

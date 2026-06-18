@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/jobs"
-	"github.com/mbreese/batchq/service"
-	"github.com/mbreese/batchq/storage"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/jobs"
+	"github.com/compgenlab/batchq/service"
+	"github.com/compgenlab/batchq/storage"
 )
 
 // --- helpers -----------------------------------------------------------

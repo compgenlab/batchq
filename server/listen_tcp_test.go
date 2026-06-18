@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/service"
-	"github.com/mbreese/batchq/storage"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/client"
+	"github.com/compgenlab/batchq/service"
+	"github.com/compgenlab/batchq/storage"
 )
 
 // startTCPServer brings up a real server on an OS-assigned TCP port and

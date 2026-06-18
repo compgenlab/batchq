@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbreese/batchq/api"
+	"github.com/compgenlab/batchq/api"
 )
 
 // Typed errors. Callers can do `errors.Is(err, ErrNotFound)` etc.

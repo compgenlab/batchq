@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/support"
 )
 
 // ctxWithPeer attaches peer creds to the test's standard context.

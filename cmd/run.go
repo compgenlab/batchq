@@ -7,8 +7,8 @@ import (
 	"os/user"
 	"strings"
 
-	"github.com/mbreese/batchq/jobs"
-	"github.com/mbreese/batchq/runner"
+	"github.com/compgenlab/batchq/jobs"
+	"github.com/compgenlab/batchq/runner"
 	"github.com/spf13/cobra"
 )
 

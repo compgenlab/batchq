@@ -15,13 +15,13 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/internal/testsupport"
-	"github.com/mbreese/batchq/server"
-	"github.com/mbreese/batchq/service"
-	"github.com/mbreese/batchq/storage"
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/client"
+	"github.com/compgenlab/batchq/internal/testsupport"
+	"github.com/compgenlab/batchq/server"
+	"github.com/compgenlab/batchq/service"
+	"github.com/compgenlab/batchq/storage"
+	"github.com/compgenlab/batchq/support"
 )
 
 // startCompatServer spins up a real server over a unix socket and returns a

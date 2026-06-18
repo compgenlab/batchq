@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/mbreese/batchq/web"
+	"github.com/compgenlab/batchq/web"
 	"github.com/spf13/cobra"
 )
 

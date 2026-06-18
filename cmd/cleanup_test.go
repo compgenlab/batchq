@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/jobs"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/jobs"
 )
 
 type fakeCleanupDB struct {

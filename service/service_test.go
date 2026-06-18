@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/jobs"
-	"github.com/mbreese/batchq/storage"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/jobs"
+	"github.com/compgenlab/batchq/storage"
 )
 
 func submitArray(t *testing.T, svc *Service, ctx context.Context, indices []int, deps []string) *api.SubmitArrayResponse {

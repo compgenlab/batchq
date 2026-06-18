@@ -3,7 +3,7 @@ package main
 import (
 	_ "embed"
 
-	"github.com/mbreese/batchq/cmd"
+	"github.com/compgenlab/batchq/cmd"
 )
 
 //go:embed LICENSE

@@ -3,7 +3,7 @@ package api
 import (
 	"time"
 
-	"github.com/mbreese/batchq/jobs"
+	"github.com/compgenlab/batchq/jobs"
 )
 
 // ErrorResponse is the JSON body returned for any non-2xx response.

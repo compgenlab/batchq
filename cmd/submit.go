@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/jobs"
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/jobs"
+	"github.com/compgenlab/batchq/support"
 	"github.com/spf13/cobra"
 )
 

@@ -8,7 +8,7 @@ import (
 
 // Version is the batchq version string. Set at build time via:
 //
-//	-ldflags "-X github.com/mbreese/batchq/cmd.Version=v0.2.0-dev-abc1234"
+//	-ldflags "-X github.com/compgenlab/batchq/cmd.Version=v0.2.0-dev-abc1234"
 //
 // When unset (plain `go run`, `go build` without -ldflags, IDE
 // builds), defaults to "dev". The Makefile computes the real value

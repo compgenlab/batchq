@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbreese/batchq/server"
-	"github.com/mbreese/batchq/service"
-	"github.com/mbreese/batchq/storage"
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/server"
+	"github.com/compgenlab/batchq/service"
+	"github.com/compgenlab/batchq/storage"
+	"github.com/compgenlab/batchq/support"
 	"github.com/spf13/cobra"
 )
 

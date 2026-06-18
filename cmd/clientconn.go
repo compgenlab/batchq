@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbreese/batchq/client"
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/client"
+	"github.com/compgenlab/batchq/support"
 )
 
 // clientRemote overrides [batchq] remote from the config. Empty means
