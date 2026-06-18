@@ -3,8 +3,8 @@ package cmd
 import (
 	"testing"
 
-	"github.com/mbreese/batchq/api"
-	"github.com/mbreese/batchq/jobs"
+	"github.com/compgenlab/batchq/api"
+	"github.com/compgenlab/batchq/jobs"
 )
 
 func TestAggregateArrayStatus(t *testing.T) {

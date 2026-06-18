@@ -5,7 +5,7 @@ import (
 	"log"
 	"net"
 
-	"github.com/mbreese/batchq/support"
+	"github.com/compgenlab/batchq/support"
 )
 
 // connContextWithPeerCreds is the ConnContext callback wired into the

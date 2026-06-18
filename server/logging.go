@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbreese/batchq/api"
+	"github.com/compgenlab/batchq/api"
 )
 
 // logf forwards an event to Options.Logf if configured (no-op otherwise).

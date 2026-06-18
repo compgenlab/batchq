@@ -19,7 +19,7 @@ for any target.
 ## Building from source
 
 ```sh
-git clone https://github.com/mbreese/batchq.git
+git clone https://github.com/compgenlab/batchq.git
 cd batchq
 
 # Build for the current host
@@ -36,7 +36,7 @@ Cross-compilation is just `GOOS=… GOARCH=… go build`; there is no extra
 setup because there is no C toolchain in the build path.
 
 The version string visible in `batchq version`, `batchq --version`, and
-the help footer comes from `-ldflags '-X github.com/mbreese/batchq/cmd.Version=…'`
+the help footer comes from `-ldflags '-X github.com/compgenlab/batchq/cmd.Version=…'`
 that the Makefile fills in from `git describe`. A plain `go build` with
 no ldflags produces the literal string `"dev"`.
 

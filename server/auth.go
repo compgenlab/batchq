@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mbreese/batchq/api"
+	"github.com/compgenlab/batchq/api"
 )
 
 // withAuth enforces shared-token auth when Options.AuthToken is set. Every

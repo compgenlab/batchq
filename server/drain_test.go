@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mbreese/batchq/api"
+	"github.com/compgenlab/batchq/api"
 )
 
 func TestDrainingGateRejectsWithRetryableSignal(t *testing.T) {
