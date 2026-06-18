@@ -36,7 +36,7 @@ running one node anyway. batchq fills that gap: install a binary, set
 runner at the queue. No `slurmctld`, no `slurmd`, no munge, no
 database server.
 
-**A test queue for [cgpipe](https://github.com/mbreese/cgpipe).**
+**A test queue for [cgpipe](https://github.com/compgenlab/cgpipe).**
 cgpipe is a make-style tool for HPC pipelines — it figures out which
 jobs need to run and submits them to a scheduler. During pipeline
 development you usually don't want to test against a real cluster
