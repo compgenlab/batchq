@@ -72,25 +72,25 @@ jobs:
           done
 
       - name: Upload linux_amd64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: batchq.linux_amd64${{ env.BRANCH_SUFFIX }}
           path: bin/batchq.linux_amd64${{ env.BRANCH_SUFFIX }}
 
       - name: Upload linux_arm64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: batchq.linux_arm64${{ env.BRANCH_SUFFIX }}
           path: bin/batchq.linux_arm64${{ env.BRANCH_SUFFIX }}
 
       - name: Upload macos_amd64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: batchq.macos_amd64${{ env.BRANCH_SUFFIX }}
           path: bin/batchq.macos_amd64${{ env.BRANCH_SUFFIX }}
 
       - name: Upload macos_arm64
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: batchq.macos_arm64${{ env.BRANCH_SUFFIX }}
           path: bin/batchq.macos_arm64${{ env.BRANCH_SUFFIX }}
@@ -101,27 +101,27 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download linux_amd64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: batchq.linux_amd64
           path: ./artifacts/
       - name: Download linux_arm64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: batchq.linux_arm64
           path: ./artifacts/
       - name: Download macos_amd64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: batchq.macos_amd64
           path: ./artifacts/
       - name: Download macos_arm64
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: batchq.macos_arm64
           path: ./artifacts/
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ./artifacts/**
