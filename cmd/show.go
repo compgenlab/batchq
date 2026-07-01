@@ -68,9 +68,23 @@ var queueCmd = &cobra.Command{
 
 		ctx, cancel := cmdContext()
 		defer cancel()
+		var since, before time.Time
+		if queueSince != "" {
+			var perr error
+			if since, perr = resolveTimeBound(queueSince, time.Now()); perr != nil {
+				log.Fatalln(perr)
+			}
+		}
+		if queueBefore != "" {
+			var perr error
+			if before, perr = resolveTimeBound(queueBefore, time.Now()); perr != nil {
+				log.Fatalln(perr)
+			}
+		}
+
 		var dtos []*api.JobDTO
 		var err error
-		if queueRunID != "" || queueArrayID != "" || queueOutput != "" || queueInput != "" {
+		if queueRunID != "" || queueArrayID != "" || queueOutput != "" || queueInput != "" || !since.IsZero() || !before.IsZero() {
 			dtos, err = c.ListJobs(ctx, client.ListJobsOptions{
 				ShowAll:      jobShowAll,
 				SortByStatus: !queueSortTime,
@@ -78,6 +92,8 @@ var queueCmd = &cobra.Command{
 				ArrayID:      queueArrayID,
 				Output:       queueOutput,
 				Input:        queueInput,
+				Since:        since,
+				Before:       before,
 			})
 		} else {
 			dtos, err = c.GetQueueJobs(ctx, jobShowAll, !queueSortTime)
@@ -184,6 +200,23 @@ func printQueueTable(dtos []*api.JobDTO) {
 			fmt.Println("")
 		}
 	}
+}
+
+// resolveTimeBound turns a user-supplied --since/--before value into an
+// absolute time. It accepts an age-ago duration (1d/12h/1w/30m/90s, resolved
+// as now minus that duration), a local calendar date (2006-01-02, midnight
+// local), a local datetime (2006-01-02 15:04:05), or an RFC3339 timestamp.
+func resolveTimeBound(s string, now time.Time) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if d, err := parseAgeDuration(s); err == nil {
+		return now.Add(-d), nil
+	}
+	for _, layout := range []string{"2006-01-02", "2006-01-02 15:04:05", time.RFC3339} {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("cannot parse time %q (want a date, RFC3339, or age like 1d/12h)", s)
 }
 
 func timeOrZero(t *time.Time) time.Time {
@@ -370,6 +403,8 @@ var queueRunID string
 var queueArrayID string
 var queueOutput string
 var queueInput string
+var queueSince string
+var queueBefore string
 var queueSortTime bool
 var queueSortReverse bool
 
@@ -379,6 +414,8 @@ func init() {
 	queueCmd.Flags().StringVar(&queueArrayID, "array-id", "", "Only show tasks in this job array")
 	queueCmd.Flags().StringVar(&queueOutput, "output", "", "Only show jobs that list this file as an output")
 	queueCmd.Flags().StringVar(&queueInput, "input", "", "Only show jobs that list this file as an input")
+	queueCmd.Flags().StringVar(&queueSince, "since", "", "Only show jobs submitted at/after this time (date, RFC3339, or age like 1d/12h)")
+	queueCmd.Flags().StringVar(&queueBefore, "before", "", "Only show jobs submitted before this time (date, RFC3339, or age like 1d/12h)")
 	queueCmd.Flags().BoolVarP(&queueSortTime, "time", "t", false, "Sort by submit time (newest first)")
 	queueCmd.Flags().BoolVarP(&queueSortReverse, "reverse", "r", false, "Reverse sort order (use with -t)")
 	summaryCmd.Flags().BoolVar(&jobShowAll, "all", false, "Show all jobs (including completed)")

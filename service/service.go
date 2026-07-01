@@ -458,6 +458,12 @@ type ListJobsOptions struct {
 	ArrayID string
 	Output  string
 	Input   string
+
+	// Since and Before optionally bound the base listing by submit time:
+	// keep jobs with SubmitTime >= Since and SubmitTime < Before. Zero
+	// values are ignored.
+	Since  time.Time
+	Before time.Time
 }
 
 func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
@@ -514,6 +520,23 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 			}
 		}
 		out = filtered
+	}
+
+	if !opts.Since.IsZero() || !opts.Before.IsZero() {
+		kept := out[:0]
+		for _, j := range out {
+			if j.SubmitTime.IsZero() {
+				continue
+			}
+			if !opts.Since.IsZero() && j.SubmitTime.Before(opts.Since) {
+				continue
+			}
+			if !opts.Before.IsZero() && !j.SubmitTime.Before(opts.Before) {
+				continue
+			}
+			kept = append(kept, j)
+		}
+		out = kept
 	}
 
 	return toDTOs(out), nil

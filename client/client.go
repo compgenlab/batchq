@@ -398,6 +398,9 @@ type ListJobsOptions struct {
 	ArrayID string // tasks whose "array_id" detail equals this
 	Output  string // jobs that list this path in output_files
 	Input   string // jobs that list this path in input_files
+
+	Since  time.Time // jobs submitted at/after this time (inclusive)
+	Before time.Time // jobs submitted before this time (exclusive)
 }
 
 func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
@@ -431,6 +434,12 @@ func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Job
 	}
 	if opts.Input != "" {
 		q.Set("input", opts.Input)
+	}
+	if !opts.Since.IsZero() {
+		q.Set("since", opts.Since.UTC().Format(time.RFC3339))
+	}
+	if !opts.Before.IsZero() {
+		q.Set("before", opts.Before.UTC().Format(time.RFC3339))
 	}
 	path := api.Prefix + api.RouteJobs
 	if encoded := q.Encode(); encoded != "" {
