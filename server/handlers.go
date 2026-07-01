@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -124,6 +125,22 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		ArrayID:      r.URL.Query().Get("array_id"),
 		Output:       r.URL.Query().Get("output"),
 		Input:        r.URL.Query().Get("input"),
+	}
+	for _, p := range []struct {
+		key string
+		dst *time.Time
+	}{
+		{"since", &opts.Since},
+		{"before", &opts.Before},
+	} {
+		if v := r.URL.Query().Get(p.key); v != "" {
+			t, err := time.Parse(time.RFC3339, v)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Errorf("invalid %s time %q: %w", p.key, v, err))
+				return
+			}
+			*p.dst = t
+		}
 	}
 	if raw := r.URL.Query()["status"]; len(raw) > 0 {
 		// status may appear once with comma-separated values or multiple times.
