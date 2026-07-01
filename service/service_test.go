@@ -582,6 +582,71 @@ func TestListJobsFiltersByRunIDAndFiles(t *testing.T) {
 	}
 }
 
+// ListJobs bounds the base listing by submit time: Since is inclusive, Before
+// is exclusive. Submitted jobs get SubmitTime ~= now, so we bracket around it.
+func TestListJobsFiltersBySubmitTime(t *testing.T) {
+	svc := newService(t)
+	ctx := ctxT(t)
+
+	for _, name := range []string{"a", "b", "c"} {
+		if _, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{
+			Name:    name,
+			Details: map[string]string{"script": "echo " + name},
+		}); err != nil {
+			t.Fatalf("submit %s: %v", name, err)
+		}
+	}
+
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	// Since in the past keeps everything (all submitted at ~now >= past).
+	got, err := svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Since: past})
+	if err != nil {
+		t.Fatalf("ListJobs since past: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("since past: got %d, want 3", len(got))
+	}
+
+	// Since in the future excludes everything.
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Since: future})
+	if err != nil {
+		t.Fatalf("ListJobs since future: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("since future: got %d, want 0", len(got))
+	}
+
+	// Before in the future keeps everything (all submitted at ~now < future).
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Before: future})
+	if err != nil {
+		t.Fatalf("ListJobs before future: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("before future: got %d, want 3", len(got))
+	}
+
+	// Before in the past excludes everything.
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Before: past})
+	if err != nil {
+		t.Fatalf("ListJobs before past: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("before past: got %d, want 0", len(got))
+	}
+
+	// A window straddling now keeps everything.
+	got, err = svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, Since: past, Before: future})
+	if err != nil {
+		t.Fatalf("ListJobs window: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("window: got %d, want 3", len(got))
+	}
+}
+
 func names(dtos []*api.JobDTO) []string {
 	out := make([]string, len(dtos))
 	for i, d := range dtos {
