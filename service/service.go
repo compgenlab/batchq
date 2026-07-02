@@ -473,11 +473,11 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 	)
 	switch {
 	case opts.Query != "":
-		out, err = s.store.SearchJobs(ctx, opts.Query, opts.Statuses)
+		out, err = s.store.SearchJobs(ctx, opts.Query, opts.Statuses, opts.Since, opts.Before)
 	case len(opts.Statuses) > 0:
-		out, err = s.store.ListJobsByStatus(ctx, opts.Statuses, opts.SortByStatus)
+		out, err = s.store.ListJobsByStatus(ctx, opts.Statuses, opts.SortByStatus, opts.Since, opts.Before)
 	default:
-		out, err = s.store.ListJobs(ctx, opts.ShowAll, opts.SortByStatus)
+		out, err = s.store.ListJobs(ctx, opts.ShowAll, opts.SortByStatus, opts.Since, opts.Before)
 	}
 	if err != nil {
 		return nil, err
@@ -522,23 +522,7 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 		out = filtered
 	}
 
-	if !opts.Since.IsZero() || !opts.Before.IsZero() {
-		kept := out[:0]
-		for _, j := range out {
-			if j.SubmitTime.IsZero() {
-				continue
-			}
-			if !opts.Since.IsZero() && j.SubmitTime.Before(opts.Since) {
-				continue
-			}
-			if !opts.Before.IsZero() && !j.SubmitTime.Before(opts.Before) {
-				continue
-			}
-			kept = append(kept, j)
-		}
-		out = kept
-	}
-
+	// since/before are applied in SQL by the store methods above, not here.
 	return toDTOs(out), nil
 }
 
@@ -566,8 +550,8 @@ func intersect(allow map[string]struct{}, ids []string) map[string]struct{} {
 	return out
 }
 
-func (s *Service) GetQueueJobs(ctx context.Context, showAll, sortByStatus bool) ([]*api.JobDTO, error) {
-	out, err := s.store.GetQueueJobs(ctx, showAll, sortByStatus)
+func (s *Service) GetQueueJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time) ([]*api.JobDTO, error) {
+	out, err := s.store.GetQueueJobs(ctx, showAll, sortByStatus, since, before)
 	if err != nil {
 		return nil, err
 	}

@@ -288,7 +288,7 @@ func TestClientQueueAndCounts(t *testing.T) {
 	if counts["QUEUED"] != 1 {
 		t.Fatalf("queued: %d", counts["QUEUED"])
 	}
-	queue, err := c.GetQueueJobs(ctx, false, false)
+	queue, err := c.GetQueueJobs(ctx, false, false, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("queue: %v", err)
 	}
