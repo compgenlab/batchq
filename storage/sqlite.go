@@ -249,6 +249,25 @@ func parseTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("storage: cannot parse time %q", s)
 }
 
+// submitTimeConds builds SQL predicates bounding a submit_time column (named
+// by col — e.g. "submit_time" or the aliased "j.submit_time") to the
+// half-open window [since, before). Zero times are open bounds. Threshold
+// values are bound via formatTime, so they match the stored RFC3339 form
+// byte-for-byte; timeFormat is fixed-width UTC and therefore lexically
+// sortable, which the listing ORDER BY clauses already rely on — so a string
+// comparison here is a correct chronological bound, not a heuristic.
+func submitTimeConds(col string, since, before time.Time) (conds []string, args []any) {
+	if !since.IsZero() {
+		conds = append(conds, col+" >= ?")
+		args = append(args, formatTime(since))
+	}
+	if !before.IsZero() {
+		conds = append(conds, col+" < ?")
+		args = append(args, formatTime(before))
+	}
+	return conds, args
+}
+
 // --- Submission ---------------------------------------------------------
 
 func (s *sqliteStorage) InsertJob(ctx context.Context, job *jobs.JobDef) error {
@@ -612,29 +631,30 @@ func (s *sqliteStorage) fetchRunningDetails(ctx context.Context, jobID string) (
 	return details, rows.Err()
 }
 
-func (s *sqliteStorage) ListJobs(ctx context.Context, showAll, sortByStatus bool) ([]*jobs.JobDef, error) {
-	var query string
+func (s *sqliteStorage) ListJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error) {
+	query := `SELECT id, status, priority, name, notes, submit_time, start_time, end_time, return_code
+	          FROM jobs`
+	var conds []string
 	var args []any
-	switch {
-	case showAll && sortByStatus:
-		query = `SELECT id, status, priority, name, notes, submit_time, start_time, end_time, return_code
-		         FROM jobs ORDER BY status DESC, priority DESC, end_time, start_time, id`
-	case showAll && !sortByStatus:
-		query = `SELECT id, status, priority, name, notes, submit_time, start_time, end_time, return_code
-		         FROM jobs ORDER BY id`
-	case !showAll && sortByStatus:
-		query = `SELECT id, status, priority, name, notes, submit_time, start_time, end_time, return_code
-		         FROM jobs WHERE status <= ? ORDER BY status DESC, priority DESC, end_time, start_time, id`
-		args = []any{jobs.RUNNING}
-	default:
-		query = `SELECT id, status, priority, name, notes, submit_time, start_time, end_time, return_code
-		         FROM jobs WHERE status <= ? ORDER BY id`
-		args = []any{jobs.RUNNING}
+	if !showAll {
+		conds = append(conds, "status <= ?")
+		args = append(args, jobs.RUNNING)
+	}
+	tc, ta := submitTimeConds("submit_time", since, before)
+	conds = append(conds, tc...)
+	args = append(args, ta...)
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+	if sortByStatus {
+		query += " ORDER BY status DESC, priority DESC, end_time, start_time, id"
+	} else {
+		query += " ORDER BY id"
 	}
 	return s.queryJobs(ctx, query, args, true)
 }
 
-func (s *sqliteStorage) ListJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) ([]*jobs.JobDef, error) {
+func (s *sqliteStorage) ListJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error) {
 	if len(statuses) == 0 {
 		return nil, nil
 	}
@@ -644,8 +664,12 @@ func (s *sqliteStorage) ListJobsByStatus(ctx context.Context, statuses []jobs.St
 		placeholders[i] = "?"
 		args[i] = st
 	}
+	conds := []string{"status IN (" + strings.Join(placeholders, ",") + ")"}
+	tc, ta := submitTimeConds("submit_time", since, before)
+	conds = append(conds, tc...)
+	args = append(args, ta...)
 	query := `SELECT id, status, priority, name, notes, submit_time, start_time, end_time, return_code
-	          FROM jobs WHERE status IN (` + strings.Join(placeholders, ",") + `)`
+	          FROM jobs WHERE ` + strings.Join(conds, " AND ")
 	if sortByStatus {
 		query += ` ORDER BY status DESC, priority DESC, end_time, start_time, id`
 	} else {
@@ -657,7 +681,7 @@ func (s *sqliteStorage) ListJobsByStatus(ctx context.Context, statuses []jobs.St
 	return s.queryJobs(ctx, query, args, true)
 }
 
-func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode) ([]*jobs.JobDef, error) {
+func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode, since, before time.Time) ([]*jobs.JobDef, error) {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
 		return nil, nil
@@ -694,6 +718,10 @@ func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses [
 			args = append(args, st)
 		}
 		sqlQuery += ` AND j.status IN (` + strings.Join(placeholders, ",") + `)`
+	}
+	if tc, ta := submitTimeConds("j.submit_time", since, before); len(tc) > 0 {
+		sqlQuery += ` AND ` + strings.Join(tc, " AND ")
+		args = append(args, ta...)
 	}
 	sqlQuery += ` ORDER BY j.id`
 	// loadRelations=true: callers that filter by status (notably the
@@ -785,7 +813,7 @@ func (s *sqliteStorage) GetJobStatusCounts(ctx context.Context, showAll bool) (m
 	return counts, rows.Err()
 }
 
-func (s *sqliteStorage) GetQueueJobs(ctx context.Context, showAll, sortByStatus bool) ([]*jobs.JobDef, error) {
+func (s *sqliteStorage) GetQueueJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error) {
 	// Single-query version that pulls only the small subset of details the
 	// queue view cares about. Falls back to ListJobs / ListJobsByStatus if
 	// the fast query somehow returns zero rows but there are jobs in the DB
@@ -817,10 +845,17 @@ func (s *sqliteStorage) GetQueueJobs(ctx context.Context, showAll, sortByStatus 
 			GROUP BY job_id
 		) running ON running.job_id = j.id
 	`
+	var conds []string
 	var args []any
 	if !showAll {
-		query += ` WHERE j.status IN (?, ?, ?, ?)`
-		args = []any{jobs.WAITING, jobs.QUEUED, jobs.PROXYQUEUED, jobs.RUNNING}
+		conds = append(conds, "j.status IN (?, ?, ?, ?)")
+		args = append(args, jobs.WAITING, jobs.QUEUED, jobs.PROXYQUEUED, jobs.RUNNING)
+	}
+	tc, ta := submitTimeConds("j.submit_time", since, before)
+	conds = append(conds, tc...)
+	args = append(args, ta...)
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
 	}
 	if sortByStatus {
 		query += ` ORDER BY j.status DESC, j.priority DESC, j.end_time, j.start_time, j.id`

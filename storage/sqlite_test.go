@@ -1119,7 +1119,7 @@ func TestListAndCounts(t *testing.T) {
 	mustInsert(t, s, mkJob("b", nil))
 	mustInsert(t, s, mkJob("c", nil))
 
-	all, err := s.ListJobs(ctx, false, false)
+	all, err := s.ListJobs(ctx, false, false, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListJobs: %v", err)
 	}
@@ -1143,11 +1143,11 @@ func TestSearchJobs(t *testing.T) {
 	mustInsert(t, s, mkJob("alpha-1", map[string]string{"script": "echo hello"}))
 	mustInsert(t, s, mkJob("beta-1", map[string]string{"script": "rm -rf /"}))
 
-	results, _ := s.SearchJobs(ctx, "alpha", nil)
+	results, _ := s.SearchJobs(ctx, "alpha", nil, time.Time{}, time.Time{})
 	if len(results) != 1 || results[0].JobId != "alpha-1" {
 		t.Fatalf("results: %+v", results)
 	}
-	results, _ = s.SearchJobs(ctx, "rm -rf", nil)
+	results, _ = s.SearchJobs(ctx, "rm -rf", nil, time.Time{}, time.Time{})
 	if len(results) != 1 || results[0].JobId != "beta-1" {
 		t.Fatalf("script search: %+v", results)
 	}
@@ -1158,11 +1158,11 @@ func TestSearchJobs(t *testing.T) {
 	withInputs.OutputFiles = []string{"/data/clean/sample-A.bam"}
 	mustInsert(t, s, withInputs)
 
-	results, _ = s.SearchJobs(ctx, "sample-A.fastq", nil)
+	results, _ = s.SearchJobs(ctx, "sample-A.fastq", nil, time.Time{}, time.Time{})
 	if len(results) != 1 || results[0].JobId != "gamma-1" {
 		t.Fatalf("input-file search: %+v", results)
 	}
-	results, _ = s.SearchJobs(ctx, "clean/sample", nil)
+	results, _ = s.SearchJobs(ctx, "clean/sample", nil, time.Time{}, time.Time{})
 	if len(results) != 1 || results[0].JobId != "gamma-1" {
 		t.Fatalf("output-file search: %+v", results)
 	}
@@ -1172,7 +1172,7 @@ func TestSearchJobs(t *testing.T) {
 	mustInsert(t, s, mkJob("run-b", map[string]string{"run_id": "pipeline-2025-q2"}))
 	mustInsert(t, s, mkJob("run-c", map[string]string{"run_id": "pipeline-2024-q4"}))
 
-	results, _ = s.SearchJobs(ctx, "2025-q2", nil)
+	results, _ = s.SearchJobs(ctx, "2025-q2", nil, time.Time{}, time.Time{})
 	if len(results) != 2 {
 		t.Fatalf("run-id search returned %d results, want 2: %+v", len(results), results)
 	}
@@ -1195,7 +1195,7 @@ func TestGetQueueJobs(t *testing.T) {
 		"script": "x",
 		"run_id": "pipeline-x",
 	}))
-	queue, err := s.GetQueueJobs(ctx, false, false)
+	queue, err := s.GetQueueJobs(ctx, false, false, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("GetQueueJobs: %v", err)
 	}
@@ -1217,6 +1217,41 @@ func TestGetQueueJobs(t *testing.T) {
 	}
 	if gotRun != "pipeline-x" {
 		t.Fatalf("run_id missing from queue projection: %+v", queue[0].Details)
+	}
+}
+
+// GetQueueJobs bounds by submit_time in SQL (the queue view's fast path):
+// Since is inclusive, Before exclusive. mkJob rows are inserted at ~now, so
+// we bracket around it.
+func TestGetQueueJobsFiltersBySubmitTime(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	mustInsert(t, s, mkJob("q", map[string]string{"script": "x"}))
+
+	now := time.Now()
+	past := now.Add(-time.Hour)
+	future := now.Add(time.Hour)
+
+	cases := []struct {
+		name          string
+		since, before time.Time
+		want          int
+	}{
+		{"since past keeps", past, time.Time{}, 1},
+		{"since future drops", future, time.Time{}, 0},
+		{"before future keeps", time.Time{}, future, 1},
+		{"before past drops", time.Time{}, past, 0},
+		{"window straddling keeps", past, future, 1},
+	}
+	for _, tc := range cases {
+		got, err := s.GetQueueJobs(ctx, false, false, tc.since, tc.before)
+		if err != nil {
+			t.Fatalf("%s: GetQueueJobs: %v", tc.name, err)
+		}
+		if len(got) != tc.want {
+			t.Fatalf("%s: got %d, want %d", tc.name, len(got), tc.want)
+		}
 	}
 }
 
