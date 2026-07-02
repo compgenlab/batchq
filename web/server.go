@@ -811,9 +811,9 @@ func (s *webServer) jobsForFilter(ctx context.Context, statuses []jobs.StatusCod
 	)
 	switch {
 	case len(statuses) == 0:
-		dtos, err = s.client.GetQueueJobs(ctx, true, true)
+		dtos, err = s.client.GetQueueJobs(ctx, true, true, time.Time{}, time.Time{})
 	case isActiveStatusSet(statuses):
-		dtos, err = s.client.GetQueueJobs(ctx, false, true)
+		dtos, err = s.client.GetQueueJobs(ctx, false, true, time.Time{}, time.Time{})
 	default:
 		dtos, err = s.client.ListJobs(ctx, client.ListJobsOptions{
 			Statuses:     statusStrings(statuses),

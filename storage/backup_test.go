@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // Backup writes a consistent, queryable snapshot: every job in the source DB
@@ -30,7 +31,7 @@ func TestBackupSnapshotIsConsistent(t *testing.T) {
 	}
 	defer snap.Close()
 
-	jobs, err := snap.ListJobs(ctx, true, false)
+	jobs, err := snap.ListJobs(ctx, true, false, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("ListJobs on snapshot: %v", err)
 	}

@@ -116,16 +116,19 @@ type Storage interface {
 	GetJob(ctx context.Context, jobID string) (*jobs.JobDef, error)
 
 	// ListJobs returns every job, optionally restricted to active statuses
-	// only. sortByStatus controls the ORDER BY clause.
-	ListJobs(ctx context.Context, showAll, sortByStatus bool) ([]*jobs.JobDef, error)
+	// only. sortByStatus controls the ORDER BY clause. Non-zero since/before
+	// bound the results to submit_time in [since, before) via SQL.
+	ListJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error)
 
-	// ListJobsByStatus returns jobs whose status is in the given set.
-	ListJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool) ([]*jobs.JobDef, error)
+	// ListJobsByStatus returns jobs whose status is in the given set. Non-zero
+	// since/before bound submit_time to [since, before) via SQL.
+	ListJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error)
 
 	// SearchJobs returns jobs whose ID, name, or script content matches the
 	// query (substring). If statuses is non-empty, results are further
-	// restricted to those statuses.
-	SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode) ([]*jobs.JobDef, error)
+	// restricted to those statuses. Non-zero since/before bound submit_time
+	// to [since, before) via SQL.
+	SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode, since, before time.Time) ([]*jobs.JobDef, error)
 
 	// GetJobDependents returns the IDs of jobs that depend on the given job.
 	GetJobDependents(ctx context.Context, jobID string) ([]string, error)
@@ -136,7 +139,8 @@ type Storage interface {
 
 	// GetQueueJobs returns a minimal-detail listing suitable for the queue
 	// view. Includes deps and a small subset of job_details / running_details.
-	GetQueueJobs(ctx context.Context, showAll, sortByStatus bool) ([]*jobs.JobDef, error)
+	// Non-zero since/before bound submit_time to [since, before) via SQL.
+	GetQueueJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error)
 
 	// GetProxyJobs returns all jobs currently in PROXYQUEUED state. Used by
 	// the slurm runner to reconcile SLURM state.

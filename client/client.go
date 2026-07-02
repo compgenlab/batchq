@@ -507,13 +507,19 @@ func (c *Client) CleanupJob(ctx context.Context, jobID string) error {
 
 // --- Queue -------------------------------------------------------------
 
-func (c *Client) GetQueueJobs(ctx context.Context, showAll, sortByStatus bool) ([]*api.JobDTO, error) {
+func (c *Client) GetQueueJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time) ([]*api.JobDTO, error) {
 	q := url.Values{}
 	if showAll {
 		q.Set("all", "true")
 	}
 	if sortByStatus {
 		q.Set("sort_by_status", "true")
+	}
+	if !since.IsZero() {
+		q.Set("since", since.UTC().Format(time.RFC3339))
+	}
+	if !before.IsZero() {
+		q.Set("before", before.UTC().Format(time.RFC3339))
 	}
 	path := api.Prefix + api.RouteQueue
 	if encoded := q.Encode(); encoded != "" {
