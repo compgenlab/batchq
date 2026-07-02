@@ -126,21 +126,14 @@ func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 		Output:       r.URL.Query().Get("output"),
 		Input:        r.URL.Query().Get("input"),
 	}
-	for _, p := range []struct {
-		key string
-		dst *time.Time
-	}{
-		{"since", &opts.Since},
-		{"before", &opts.Before},
-	} {
-		if v := r.URL.Query().Get(p.key); v != "" {
-			t, err := time.Parse(time.RFC3339, v)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, fmt.Errorf("invalid %s time %q: %w", p.key, v, err))
-				return
-			}
-			*p.dst = t
-		}
+	var terr error
+	if opts.Since, terr = queryTime(r, "since"); terr != nil {
+		writeError(w, http.StatusBadRequest, terr)
+		return
+	}
+	if opts.Before, terr = queryTime(r, "before"); terr != nil {
+		writeError(w, http.StatusBadRequest, terr)
+		return
 	}
 	if raw := r.URL.Query()["status"]; len(raw) > 0 {
 		// status may appear once with comma-separated values or multiple times.
@@ -322,12 +315,36 @@ func (s *Server) handleCleanupJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleQueue(w http.ResponseWriter, r *http.Request) {
 	showAll := r.URL.Query().Get("all") == "true"
 	sortByStatus := r.URL.Query().Get("sort_by_status") == "true"
-	dtos, err := s.svc.GetQueueJobs(r.Context(), showAll, sortByStatus)
+	since, terr := queryTime(r, "since")
+	if terr != nil {
+		writeError(w, http.StatusBadRequest, terr)
+		return
+	}
+	before, terr := queryTime(r, "before")
+	if terr != nil {
+		writeError(w, http.StatusBadRequest, terr)
+		return
+	}
+	dtos, err := s.svc.GetQueueJobs(r.Context(), showAll, sortByStatus, since, before)
 	if err != nil {
 		writeError(w, httpStatus(err), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, api.ListJobsResponse{Jobs: dtos})
+}
+
+// queryTime parses an RFC3339 query parameter, returning the zero time when
+// the parameter is absent.
+func queryTime(r *http.Request, key string) (time.Time, error) {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid %s time %q: %w", key, v, err)
+	}
+	return t, nil
 }
 
 func (s *Server) handleQueueCounts(w http.ResponseWriter, r *http.Request) {

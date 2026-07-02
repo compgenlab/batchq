@@ -84,7 +84,11 @@ var queueCmd = &cobra.Command{
 
 		var dtos []*api.JobDTO
 		var err error
-		if queueRunID != "" || queueArrayID != "" || queueOutput != "" || queueInput != "" || !since.IsZero() || !before.IsZero() {
+		// Detail-based filters (run-id/array-id/output/input) need the
+		// general /jobs listing, which loads full relations to match them.
+		// A plain queue view — even with --since/--before, now bounded in
+		// SQL — uses the fast single-query /queue path.
+		if queueRunID != "" || queueArrayID != "" || queueOutput != "" || queueInput != "" {
 			dtos, err = c.ListJobs(ctx, client.ListJobsOptions{
 				ShowAll:      jobShowAll,
 				SortByStatus: !queueSortTime,
@@ -96,7 +100,7 @@ var queueCmd = &cobra.Command{
 				Before:       before,
 			})
 		} else {
-			dtos, err = c.GetQueueJobs(ctx, jobShowAll, !queueSortTime)
+			dtos, err = c.GetQueueJobs(ctx, jobShowAll, !queueSortTime, since, before)
 		}
 		if err != nil {
 			log.Fatalln(err)
