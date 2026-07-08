@@ -281,6 +281,25 @@ func (s *Server) handleReleaseArray(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, api.ArrayActionResponse{Count: n})
 }
 
+func (s *Server) handleArrayPriority(w http.ResponseWriter, r *http.Request) {
+	id, err := pathID(r, "array_id")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var req api.PriorityRequest
+	if err := s.decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	n, err := s.svc.AdjustArrayPriority(r.Context(), id, req.Delta)
+	if err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ArrayActionResponse{Count: n})
+}
+
 func (s *Server) handlePriority(w http.ResponseWriter, r *http.Request) {
 	id, err := pathID(r, "id")
 	if err != nil {

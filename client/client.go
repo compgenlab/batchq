@@ -544,6 +544,15 @@ func (c *Client) ReleaseArray(ctx context.Context, arrayID string) (int, error) 
 	return resp.Count, err
 }
 
+// AdjustArrayPriority applies delta to every eligible task of an array,
+// returning the number of affected tasks.
+func (c *Client) AdjustArrayPriority(ctx context.Context, arrayID string, delta int) (int, error) {
+	var resp api.ArrayActionResponse
+	err := c.do(ctx, http.MethodPost, api.Prefix+"/arrays/"+arrayID+"/priority",
+		api.PriorityRequest{Delta: delta}, &resp)
+	return resp.Count, err
+}
+
 // CleanupJob removes a terminal job from storage. The server returns
 // ErrInvalidState if the job is not in a terminal state.
 func (c *Client) CleanupJob(ctx context.Context, jobID string) error {

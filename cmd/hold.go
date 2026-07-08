@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/compgenlab/batchq/client"
 	"github.com/spf13/cobra"
 )
 
@@ -100,7 +101,7 @@ var cancelCmd = &cobra.Command{
 
 var topCmd = &cobra.Command{
 	Use:   "top job-id...",
-	Short: "Move job to the top of priority queue",
+	Short: "Move job (or whole array) to the top of priority queue",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 {
 			cmd.Help()
@@ -109,27 +110,13 @@ var topCmd = &cobra.Command{
 
 		c := mustDialClient()
 		defer c.Close()
-		jobIds, err := expandJobArgs(args)
-		if err != nil {
-			fmt.Printf("Bad job-id: %s\n", err.Error())
-			return
-		}
-		for _, jobid := range jobIds {
-			ctx, cancel := cmdContext()
-			err := c.AdjustJobPriority(ctx, jobid, 1)
-			cancel()
-			if err == nil {
-				fmt.Printf("Job: %s prioritized\n", jobid)
-			} else {
-				fmt.Printf("Error prioritizing job: %s\n", jobid)
-			}
-		}
+		adjustPriority(c, args, 1, "prioritized")
 	},
 }
 
 var niceCmd = &cobra.Command{
 	Use:   "nice job-id...",
-	Short: "Move job lower in priority",
+	Short: "Move job (or whole array) lower in priority",
 	Run: func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 {
 			cmd.Help()
@@ -138,22 +125,29 @@ var niceCmd = &cobra.Command{
 
 		c := mustDialClient()
 		defer c.Close()
-		jobIds, err := expandJobArgs(args)
-		if err != nil {
-			fmt.Printf("Bad job-id: %s\n", err.Error())
+		adjustPriority(c, args, -1, "de-prioritized")
+	},
+}
+
+// adjustPriority applies a priority delta to each target, dispatching whole
+// arrays to the atomic array endpoint and single jobs/tasks to the per-job one.
+// verb is the past-tense word used in the success message ("prioritized").
+func adjustPriority(c *client.Client, args []string, delta int, verb string) {
+	forEachTarget(c, args, func(ctx context.Context, t *jobTarget) {
+		if t.isArray {
+			if n, err := c.AdjustArrayPriority(ctx, t.arrayID, delta); err == nil {
+				fmt.Printf("Array: %s — %s %d task(s)\n", t.arrayID, verb, n)
+			} else {
+				fmt.Printf("Error %s array %s: %v\n", verb, t.arrayID, err)
+			}
 			return
 		}
-		for _, jobid := range jobIds {
-			ctx, cancel := cmdContext()
-			err := c.AdjustJobPriority(ctx, jobid, -1)
-			cancel()
-			if err == nil {
-				fmt.Printf("Job: %s de-prioritized\n", jobid)
-			} else {
-				fmt.Printf("Error de-prioritizing job: %s\n", jobid)
-			}
+		if err := c.AdjustJobPriority(ctx, t.jobID, delta); err == nil {
+			fmt.Printf("Job: %s %s\n", t.jobID, verb)
+		} else {
+			fmt.Printf("Error %s job: %s\n", verb, t.jobID)
 		}
-	},
+	})
 }
 
 var cancelReason string
