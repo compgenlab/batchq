@@ -44,6 +44,7 @@ const (
 	RouteArrayCancel    = "/arrays/{array_id}/cancel"
 	RouteArrayHold      = "/arrays/{array_id}/hold"
 	RouteArrayRelease   = "/arrays/{array_id}/release"
+	RouteArrayPriority  = "/arrays/{array_id}/priority"
 	RouteJobDependents  = "/jobs/{id}/dependents"
 	RouteJobHold        = "/jobs/{id}/hold"
 	RouteJobRelease     = "/jobs/{id}/release"
