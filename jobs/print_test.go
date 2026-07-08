@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,57 @@ func TestPrintShowsArrayForTask(t *testing.T) {
 
 	if !strings.Contains(out, "array    : arr-uuid (task 3)") {
 		t.Fatalf("Print output missing array line, got:\n%s", out)
+	}
+}
+
+// The [job details] block prints keys in a stable alphabetical order,
+// regardless of the order details were added.
+func TestPrintSortsDetailKeys(t *testing.T) {
+	job := &JobDef{Name: "s"}
+	// Add out of alphabetical order; "script" is extracted and printed last.
+	job.AddDetail("script", "echo hi")
+	job.AddDetail("walltime", "60")
+	job.AddDetail("gid", "1000")
+	job.AddDetail("procs", "4")
+	job.AddDetail("mem", "2000")
+	job.JobId = "uuid"
+
+	out := captureStdout(t, job.Print)
+
+	// Collect the detail keys in the order they were printed.
+	var keys []string
+	inBlock := false
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "---[job details]---") {
+			inBlock = true
+			continue
+		}
+		if strings.HasPrefix(line, "---[job script]") || strings.HasPrefix(line, "---[job running") {
+			break
+		}
+		if inBlock {
+			if k, _, ok := strings.Cut(line, " :"); ok {
+				keys = append(keys, strings.TrimSpace(k))
+			}
+		}
+	}
+
+	if !sort.StringsAreSorted(keys) {
+		t.Fatalf("detail keys not sorted: %v", keys)
+	}
+	// Sanity: the keys we added (minus script) are all present.
+	want := []string{"gid", "mem", "procs", "walltime"}
+	for _, w := range want {
+		found := false
+		for _, k := range keys {
+			if k == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("key %q missing from details: %v", w, keys)
+		}
 	}
 }
 
