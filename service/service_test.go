@@ -665,3 +665,68 @@ func TestValidateJobID(t *testing.T) {
 		}
 	}
 }
+
+// countingStore wraps a Storage to record how the base listing was invoked and
+// how many jobs were hydrated, so the detail-filter fast path can be guarded.
+type countingStore struct {
+	storage.Storage
+	listLoadRelations    bool
+	listLoadRelationsSet bool
+	hydrated             int
+}
+
+func (c *countingStore) ListJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time, loadRelations bool) ([]*jobs.JobDef, error) {
+	c.listLoadRelations = loadRelations
+	c.listLoadRelationsSet = true
+	return c.Storage.ListJobs(ctx, showAll, sortByStatus, since, before, loadRelations)
+}
+
+func (c *countingStore) HydrateJobs(ctx context.Context, list []*jobs.JobDef) error {
+	c.hydrated += len(list)
+	return c.Storage.HydrateJobs(ctx, list)
+}
+
+// A detail-filtered listing must not hydrate the whole table: the base list
+// runs with loadRelations=false and only the surviving array tasks are
+// hydrated. Guards the N+1-over-the-whole-DB regression that made
+// `details <array_id>` blow the client deadline.
+func TestListJobsByArrayIDDefersHydration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "batchq.db")
+	st, err := storage.Open(context.Background(), path, storage.Options{})
+	if err != nil {
+		t.Fatalf("storage.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	spy := &countingStore{Storage: st}
+	svc := New(spy)
+	ctx := ctxT(t)
+
+	a := submitArray(t, svc, ctx, []int{0, 1, 2}, nil)
+	_ = submitArray(t, svc, ctx, []int{0, 1}, nil) // unrelated array
+	for i := 0; i < 5; i++ {
+		if _, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{Details: map[string]string{"script": "x"}}); err != nil {
+			t.Fatalf("SubmitJob: %v", err)
+		}
+	}
+
+	got, err := svc.ListJobs(ctx, ListJobsOptions{ShowAll: true, ArrayID: a.ArrayID})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("array filter returned %d jobs, want 3", len(got))
+	}
+	if !spy.listLoadRelationsSet || spy.listLoadRelations {
+		t.Fatalf("base listing ran with loadRelations=%v, want false", spy.listLoadRelations)
+	}
+	// Only the 3 surviving array tasks are hydrated, not the whole table (10 jobs).
+	if spy.hydrated != 3 {
+		t.Fatalf("hydrated %d jobs, want 3 (the array's tasks only)", spy.hydrated)
+	}
+	// Survivors are still fully hydrated.
+	for _, j := range got {
+		if j.Details["array_id"] != a.ArrayID {
+			t.Fatalf("filtered job missing array_id detail: %v", j.Details)
+		}
+	}
+}

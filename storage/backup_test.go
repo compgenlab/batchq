@@ -31,7 +31,7 @@ func TestBackupSnapshotIsConsistent(t *testing.T) {
 	}
 	defer snap.Close()
 
-	jobs, err := snap.ListJobs(ctx, true, false, time.Time{}, time.Time{})
+	jobs, err := snap.ListJobs(ctx, true, false, time.Time{}, time.Time{}, true)
 	if err != nil {
 		t.Fatalf("ListJobs on snapshot: %v", err)
 	}
