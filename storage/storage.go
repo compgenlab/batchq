@@ -118,17 +118,25 @@ type Storage interface {
 	// ListJobs returns every job, optionally restricted to active statuses
 	// only. sortByStatus controls the ORDER BY clause. Non-zero since/before
 	// bound the results to submit_time in [since, before) via SQL.
-	ListJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error)
+	// loadRelations=false skips per-job detail/dep hydration (job rows only) —
+	// used when the caller will filter first and hydrate only the survivors.
+	ListJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time, loadRelations bool) ([]*jobs.JobDef, error)
 
 	// ListJobsByStatus returns jobs whose status is in the given set. Non-zero
-	// since/before bound submit_time to [since, before) via SQL.
-	ListJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error)
+	// since/before bound submit_time to [since, before) via SQL. See ListJobs
+	// for loadRelations.
+	ListJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool, since, before time.Time, loadRelations bool) ([]*jobs.JobDef, error)
 
 	// SearchJobs returns jobs whose ID, name, or script content matches the
 	// query (substring). If statuses is non-empty, results are further
 	// restricted to those statuses. Non-zero since/before bound submit_time
-	// to [since, before) via SQL.
-	SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode, since, before time.Time) ([]*jobs.JobDef, error)
+	// to [since, before) via SQL. See ListJobs for loadRelations.
+	SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode, since, before time.Time, loadRelations bool) ([]*jobs.JobDef, error)
+
+	// HydrateJobs loads relations (details, running details, deps, input and
+	// output paths) into each job in place. Used to hydrate only the jobs that
+	// survived a filter after a loadRelations=false listing.
+	HydrateJobs(ctx context.Context, jobs []*jobs.JobDef) error
 
 	// GetJobDependents returns the IDs of jobs that depend on the given job.
 	GetJobDependents(ctx context.Context, jobID string) ([]string, error)
