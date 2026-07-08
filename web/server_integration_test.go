@@ -76,6 +76,12 @@ func startBackendForWeb(t *testing.T) (*client.Client, string) {
 // blocking and installs signal handlers, so we drive the internals
 // directly instead — the test exercises the same handlers either way.
 func startWebForTest(t *testing.T, c *client.Client) *http.Client {
+	return startWebForTestWithOptions(t, c, Options{})
+}
+
+// startWebForTestWithOptions is startWebForTest with control over the auth/API
+// options, routed through the same newWebHandler that StartServer uses.
+func startWebForTestWithOptions(t *testing.T, c *client.Client, opts Options) *http.Client {
 	t.Helper()
 	dir := testsupport.ShortSockDir(t)
 	sockPath := filepath.Join(dir, "web.sock")
@@ -85,18 +91,13 @@ func startWebForTest(t *testing.T, c *client.Client) *http.Client {
 		t.Fatalf("loadWebTemplates: %v", err)
 	}
 	wsrv := &webServer{client: c, templates: templates, verbose: false}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /jobs/{id}/logs/{stream}", wsrv.handleJobLogs)
-	mux.HandleFunc("GET /jobs/{id}", wsrv.handleJob)
-	mux.HandleFunc("GET /jobs", wsrv.handleQueue)
-	mux.HandleFunc("GET /", wsrv.handleQueue)
+	opts.Client = c
 
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
 		t.Fatalf("listen unix: %v", err)
 	}
-	httpSrv := &http.Server{Handler: mux}
+	httpSrv := &http.Server{Handler: newWebHandler(wsrv, opts)}
 	go func() { _ = httpSrv.Serve(listener) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

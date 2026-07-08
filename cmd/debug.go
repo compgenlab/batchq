@@ -64,6 +64,7 @@ func printDebugConfig(w io.Writer) {
 	fmt.Fprintf(w, "  BATCHQ_HOME          = %s\n", envOrUnset("BATCHQ_HOME"))
 	fmt.Fprintf(w, "  BATCHQ_TOKEN         = %s\n", envOrRedacted("BATCHQ_TOKEN"))
 	fmt.Fprintf(w, "  BATCHQ_SERVER_TOKEN  = %s\n", envOrRedacted("BATCHQ_SERVER_TOKEN"))
+	fmt.Fprintf(w, "  BATCHQ_PASSWORD      = %s\n", envOrRedacted("BATCHQ_PASSWORD"))
 	fmt.Fprintln(w)
 
 	sections := []struct {
@@ -260,6 +261,23 @@ func webRows(raw *support.Config, d support.Defaults) []debugRow {
 	return []debugRow{
 		stringRow("socket", "", raw.Web.Socket, d.WebSocket),
 		stringRow("listen", "", raw.Web.Listen, ""),
+		boolRow("api", raw.Web.API),
+		stringRow("username", "", raw.Web.Username, d.WebUsername),
+		webPasswordRow(raw),
+	}
+}
+
+// webPasswordRow picks a source for [web] password following the resolution
+// order: BATCHQ_PASSWORD env > [web] password in config. Redacted like the
+// token rows so `batchq debug` doesn't print the secret.
+func webPasswordRow(raw *support.Config) debugRow {
+	switch {
+	case envOverrides.WebPassword != "":
+		return debugRow{"password", "(set, redacted)", "env BATCHQ_PASSWORD"}
+	case raw != nil && raw.Web.Password != "":
+		return debugRow{"password", "(set, redacted)", "config"}
+	default:
+		return debugRow{"password", "", "unset"}
 	}
 }
 
