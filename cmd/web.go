@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/compgenlab/batchq/support"
 	"github.com/compgenlab/batchq/web"
 	"github.com/spf13/cobra"
 )
@@ -29,15 +30,42 @@ var webCmd = &cobra.Command{
 		if apiToken == "" {
 			apiToken = Config.Batchq.Token
 		}
+		password := Config.Web.Password
 
-		// On a public TCP listener, warn loudly when a surface is unauthenticated
-		// (mirrors cmd/server.go's TCP-without-token warning).
+		// Secure-by-default on a public TCP listener: rather than serve an
+		// unauthenticated surface, generate any missing credential, print it to
+		// stderr, and persist it to the config file so restarts are stable.
 		if webListen != "" || Config.Web.Listen != "" {
-			if Config.Web.Password == "" {
-				fmt.Fprintln(os.Stderr, "WARNING: web UI is exposed on a TCP port without a password (set BATCHQ_PASSWORD or [web] password)")
+			toSave := rawConfig.Clone() // on-disk state; avoids baking defaults in
+			save := false
+			if password == "" {
+				p, err := support.RandomString(16)
+				if err != nil {
+					log.SetOutput(os.Stderr)
+					log.Fatalf("generate web password: %v", err)
+				}
+				password = p
+				toSave.Web.Password = p
+				save = true
+				fmt.Fprintf(os.Stderr, "Generated web UI password (user %q): %s\n", Config.Web.Username, p)
 			}
 			if apiEnabled && apiToken == "" {
-				fmt.Fprintln(os.Stderr, "WARNING: --api exposes the REST API on a TCP port without a token (set BATCHQ_TOKEN or [batchq] token)")
+				tok, err := support.RandomToken()
+				if err != nil {
+					log.SetOutput(os.Stderr)
+					log.Fatalf("generate API token: %v", err)
+				}
+				apiToken = tok
+				toSave.Batchq.Token = tok
+				save = true
+				fmt.Fprintf(os.Stderr, "Generated REST API token: %s\n", tok)
+			}
+			if save {
+				if err := support.SaveConfig(configFile, toSave); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not save generated credentials to %s: %v\n", configFile, err)
+				} else {
+					fmt.Fprintf(os.Stderr, "Saved generated credentials to %s\n", configFile)
+				}
 			}
 		}
 
@@ -51,7 +79,7 @@ var webCmd = &cobra.Command{
 			APIEnabled: apiEnabled,
 			APIToken:   apiToken,
 			Username:   Config.Web.Username,
-			Password:   Config.Web.Password,
+			Password:   password,
 		}
 		if err := web.StartServer(opts); err != nil {
 			log.SetOutput(os.Stderr)

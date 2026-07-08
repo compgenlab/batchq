@@ -8,6 +8,7 @@ package support
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -15,12 +16,12 @@ import (
 
 // Config is the in-memory shape of the batchq config file.
 type Config struct {
-	Batchq       BatchqConfig       `toml:"batchq"`
-	Server       ServerConfig       `toml:"server"`
-	Web          WebConfig          `toml:"web"`
-	JobDefaults  JobDefaultsConfig  `toml:"job_defaults"`
-	SimpleRunner SimpleRunnerConfig `toml:"simple_runner"`
-	SlurmRunner  SlurmRunnerConfig  `toml:"slurm_runner"`
+	Batchq       BatchqConfig       `toml:"batchq,omitempty"`
+	Server       ServerConfig       `toml:"server,omitempty"`
+	Web          WebConfig          `toml:"web,omitempty"`
+	JobDefaults  JobDefaultsConfig  `toml:"job_defaults,omitempty"`
+	SimpleRunner SimpleRunnerConfig `toml:"simple_runner,omitempty"`
+	SlurmRunner  SlurmRunnerConfig  `toml:"slurm_runner,omitempty"`
 }
 
 // BatchqConfig holds deployment-wide settings: which runner is in use,
@@ -28,7 +29,7 @@ type Config struct {
 type BatchqConfig struct {
 	// Runner selects the runner type when `batchq run` is invoked without
 	// an explicit --slurm / runner flag. "simple" | "slurm".
-	Runner string `toml:"runner"`
+	Runner string `toml:"runner,omitempty,omitzero"`
 
 	// Remote is the HTTPS URL of a remote batchq server (e.g.
 	// "https://host[:port]/subpath"). When set, all clients dial this
@@ -38,20 +39,20 @@ type BatchqConfig struct {
 	// Only https:// is accepted. Operators terminate TLS at a reverse
 	// proxy that fronts the remote server's unix socket. The default
 	// port is 443.
-	Remote string `toml:"remote"`
+	Remote string `toml:"remote,omitempty,omitzero"`
 
 	// Token is the bearer token used when Remote is set. Ignored for the
 	// purely local socket path.
-	Token string `toml:"token"`
+	Token string `toml:"token,omitempty,omitzero"`
 
 	// Multiuser triggers display modes that surface job owners. Set on
 	// shared deployments where many users share a batchq.
-	Multiuser bool `toml:"multiuser"`
+	Multiuser bool `toml:"multiuser,omitempty,omitzero"`
 
 	// AutospawnWaitTimeout caps how long a CLI client waits for a
 	// freshly-spawned local server to bind its socket. Bumping this is
 	// useful on slow filesystems (NFS, Lustre) where 5s is tight.
-	AutospawnWaitTimeout Duration `toml:"autospawn_wait_timeout"`
+	AutospawnWaitTimeout Duration `toml:"autospawn_wait_timeout,omitempty,omitzero"`
 
 	// Log, if set to a file path, turns on the lifecycle debug log: every
 	// client appends timestamped, PID-tagged lines when it spawns/connects to
@@ -59,20 +60,20 @@ type BatchqConfig struct {
 	// its start, each request it serves, every shutdown (with reason), and any
 	// DB error (e.g. SQLITE_BUSY) — to the SAME file, so overlapping server
 	// PIDs are visible at a glance. Overridable per-invocation with --log.
-	Log string `toml:"log"`
+	Log string `toml:"log,omitempty,omitzero"`
 }
 
 // ServerConfig holds server-runtime knobs. None of these apply when
 // [batchq] remote is set (no local server is running).
 type ServerConfig struct {
-	Listen string `toml:"listen"`
+	Listen string `toml:"listen,omitempty,omitzero"`
 
 	// DB is the database backend URL the server opens. Exactly one form:
 	//   sqlite3:///path/to/db                  — local SQLite
 	//   postgres://user:pass@host:5432/dbname  — local Postgres (future)
-	DB          string   `toml:"db"`
-	IdleTimeout Duration `toml:"idle_timeout"`
-	SqliteWAL   bool     `toml:"sqlite_wal"`
+	DB          string   `toml:"db,omitempty,omitzero"`
+	IdleTimeout Duration `toml:"idle_timeout,omitempty,omitzero"`
+	SqliteWAL   bool     `toml:"sqlite_wal,omitempty,omitzero"`
 
 	// ReadPoolSize sets how many connections serve concurrent reads. Default
 	// (0/1) shares the single writer connection — historical behavior. A value
@@ -80,7 +81,7 @@ type ServerConfig struct {
 	// concurrently. Trade-off: > 1 re-introduces reader↔writer SQLite lock
 	// contention (bounded by busy_timeout) and more fcntl locking on NFS; set
 	// back to 1 to revert. `--read-pool-size` overrides.
-	ReadPoolSize int `toml:"read_pool_size"`
+	ReadPoolSize int `toml:"read_pool_size,omitempty,omitzero"`
 
 	// Token, if non-empty, turns on shared-token auth: every API request
 	// (except the health check) must carry `Authorization: Bearer <token>`
@@ -90,33 +91,33 @@ type ServerConfig struct {
 	// floor for a self-hosted single-user server, not per-user auth.
 	// Prefer the BATCHQ_SERVER_TOKEN env var so the secret stays out of a
 	// checked-in config file.
-	Token string `toml:"token"`
+	Token string `toml:"token,omitempty,omitzero"`
 }
 
 type WebConfig struct {
-	Socket string `toml:"socket"`
-	Listen string `toml:"listen"`
+	Socket string `toml:"socket,omitempty,omitzero"`
+	Listen string `toml:"listen,omitempty,omitzero"`
 
 	// API mounts the REST API under /api/ on the web listener (combined
 	// UI + API gateway); the --api flag on `batchq web` also enables it.
-	API bool `toml:"api"`
+	API bool `toml:"api,omitempty,omitzero"`
 	// Username/Password gate the browser UI with HTTP Basic. Username
 	// defaults to "admin"; Password is env/config-only (prefer the
 	// BATCHQ_PASSWORD env var so it stays out of a checked-in config).
-	Username string `toml:"username"`
-	Password string `toml:"password"`
+	Username string `toml:"username,omitempty,omitzero"`
+	Password string `toml:"password,omitempty,omitzero"`
 }
 
 type JobDefaultsConfig struct {
-	Name     string `toml:"name"`
-	Procs    int    `toml:"procs"`
-	Mem      string `toml:"mem"`
-	Walltime string `toml:"walltime"`
-	Wd       string `toml:"wd"`
-	Stdout   string `toml:"stdout"`
-	Stderr   string `toml:"stderr"`
-	Hold     bool   `toml:"hold"`
-	Env      bool   `toml:"env"`
+	Name     string `toml:"name,omitempty,omitzero"`
+	Procs    int    `toml:"procs,omitempty,omitzero"`
+	Mem      string `toml:"mem,omitempty,omitzero"`
+	Walltime string `toml:"walltime,omitempty,omitzero"`
+	Wd       string `toml:"wd,omitempty,omitzero"`
+	Stdout   string `toml:"stdout,omitempty,omitzero"`
+	Stderr   string `toml:"stderr,omitempty,omitzero"`
+	Hold     bool   `toml:"hold,omitempty,omitzero"`
+	Env      bool   `toml:"env,omitempty,omitzero"`
 
 	// Cluster / Host are default required resources attached to every job this
 	// user submits — the submit-side counterpart to the runner's advertised
@@ -125,65 +126,65 @@ type JobDefaultsConfig struct {
 	// the matching cluster/host. Locally (one runner) they are redundant and
 	// usually left unset. Mirrored by submit's --cluster / --host flags;
 	// an explicit --resource (or #BATCHQ -resource) of the same name overrides.
-	Cluster string `toml:"cluster"`
-	Host    string `toml:"host"`
+	Cluster string `toml:"cluster,omitempty,omitzero"`
+	Host    string `toml:"host,omitempty,omitzero"`
 
 	// Resources is a map of additional default required resources attached to
 	// every submission (e.g. scratch = "500GB"), the submit-side counterpart to
 	// [*_runner.resources]. Overridable per-submit by --resource.
-	Resources map[string]string `toml:"resources"`
+	Resources map[string]string `toml:"resources,omitempty,omitzero"`
 }
 
 type SimpleRunnerConfig struct {
-	MaxProcs    int    `toml:"max_procs"`
-	MaxMem      string `toml:"max_mem"`
-	MaxWalltime string `toml:"max_walltime"`
-	UseCgroupV1 bool   `toml:"use_cgroup_v1"`
-	UseCgroupV2 bool   `toml:"use_cgroup_v2"`
-	Shell       string `toml:"shell"`
+	MaxProcs    int    `toml:"max_procs,omitempty,omitzero"`
+	MaxMem      string `toml:"max_mem,omitempty,omitzero"`
+	MaxWalltime string `toml:"max_walltime,omitempty,omitzero"`
+	UseCgroupV1 bool   `toml:"use_cgroup_v1,omitempty,omitzero"`
+	UseCgroupV2 bool   `toml:"use_cgroup_v2,omitempty,omitzero"`
+	Shell       string `toml:"shell,omitempty,omitzero"`
 
 	// MaxJobs caps how many jobs this runner runs concurrently. Zero / unset
 	// means unlimited (bounded only by max_procs/max_mem). Mirrors the
 	// --max-jobs flag.
-	MaxJobs int `toml:"max_jobs"`
+	MaxJobs int `toml:"max_jobs,omitempty,omitzero"`
 
 	// RunnerID is the stable identity this runner reports to the server, so the
 	// Runners view shows one row per runner that updates in place across
 	// restarts (rather than a new row per invocation). Empty / unset defaults
 	// to the hostname. Mirrors the --runner-id flag.
-	RunnerID string `toml:"runner_id"`
+	RunnerID string `toml:"runner_id,omitempty,omitzero"`
 
 	// Host is the hostname this runner advertises to the server on each claim
 	// (so a remote server's Runners view can show which machine ran a job).
 	// Empty / unset defaults to the OS hostname.
-	Host string `toml:"host"`
+	Host string `toml:"host,omitempty,omitzero"`
 
 	// Cluster is advertised as a "cluster" resource on every claim — a
 	// convenience for the common case of tagging a runner with the cluster it
 	// runs on, so jobs requiring that cluster are routed here. Equivalent to
 	// adding cluster = "..." under [simple_runner.resources].
-	Cluster string `toml:"cluster"`
+	Cluster string `toml:"cluster,omitempty,omitzero"`
 
 	// Resources advertises generic resources this runner provides, e.g.
 	// [simple_runner.resources] with gpu = "4", cluster = "xyz_cluster".
 	// Counts are integer strings; labels are plain or comma-separated sets.
-	Resources map[string]string `toml:"resources"`
+	Resources map[string]string `toml:"resources,omitempty,omitzero"`
 }
 
 type SlurmRunnerConfig struct {
-	User      string `toml:"user"`
-	Account   string `toml:"account"`
-	Partition string `toml:"partition"`
+	User      string `toml:"user,omitempty,omitzero"`
+	Account   string `toml:"account,omitempty,omitzero"`
+	Partition string `toml:"partition,omitempty,omitzero"`
 
 	// MaxJobs caps how many jobs a single `batchq run --slurm`
 	// invocation submits before exiting. Each submission decrements the
 	// available count. Zero / unset means unlimited.
-	MaxJobs int `toml:"max_jobs"`
+	MaxJobs int `toml:"max_jobs,omitempty,omitzero"`
 
 	// MaxSlurmJobs caps how many of this user's jobs may be in the SLURM
 	// queue at once. The runner polls `squeue` and pauses submitting when
 	// the live count reaches this limit. Zero / unset means unlimited.
-	MaxSlurmJobs int `toml:"max_slurm_jobs"`
+	MaxSlurmJobs int `toml:"max_slurm_jobs,omitempty,omitzero"`
 
 	// MinArray is the minimum array batch size: the runner holds back an array
 	// batch smaller than this (submitting nothing) until enough SLURM-queue
@@ -191,32 +192,32 @@ type SlurmRunnerConfig struct {
 	// flurry of tiny `sbatch --array` submissions. An array's final remainder
 	// (fewer than this many tasks left) is always submitted. A value larger
 	// than the effective job cap is clamped down to it. Zero / unset disables.
-	MinArray int `toml:"min_array"`
+	MinArray int `toml:"min_array,omitempty,omitzero"`
 
 	// FullArray enables all-or-nothing array submission: an array is submitted
 	// only when its entire remaining set of tasks fits the current budget in one
 	// pass, otherwise it is deferred. Overrides MinArray. An array larger than
 	// the effective job cap can never fit and will defer indefinitely. Mirrors
 	// the --slurm-full-array flag.
-	FullArray bool `toml:"full_array"`
+	FullArray bool `toml:"full_array,omitempty,omitzero"`
 
 	// RunnerID is the stable identity this runner reports to the server.
 	// Empty / unset defaults to the hostname. Mirrors the --runner-id flag.
-	RunnerID string `toml:"runner_id"`
+	RunnerID string `toml:"runner_id,omitempty,omitzero"`
 
 	// Host is the hostname this runner advertises to the server on each claim.
 	// Empty / unset defaults to the OS hostname.
-	Host string `toml:"host"`
+	Host string `toml:"host,omitempty,omitzero"`
 
 	// Cluster is advertised as a "cluster" resource on every claim (convenience
 	// for tagging this SLURM runner with its cluster). Equivalent to a
 	// cluster = "..." entry under [slurm_runner.resources].
-	Cluster string `toml:"cluster"`
+	Cluster string `toml:"cluster,omitempty,omitzero"`
 
 	// Resources advertises generic resources this SLURM runner provides
 	// (e.g. cluster = "xyz_cluster"), so resource-tagged jobs can be routed
 	// to the right cluster. procs/mem/walltime are still enforced by SLURM.
-	Resources map[string]string `toml:"resources"`
+	Resources map[string]string `toml:"resources,omitempty,omitzero"`
 }
 
 // LoadConfig parses a TOML config file from path. A missing file yields
@@ -242,6 +243,41 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
 	return cfg, nil
+}
+
+// SaveConfig writes c to path as TOML, atomically (temp file + rename) and with
+// mode 0600 since the file may hold secrets. Empty leaf fields are omitted
+// (the omitempty tags), so a config generated from a sparse struct records only
+// the values that are actually set. Pass the raw (pre-defaults) config so the
+// file doesn't get every built-in default baked into it.
+func SaveConfig(path string, c *Config) error {
+	if path == "" {
+		return fmt.Errorf("config: empty path")
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("config: mkdir %s: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".config-*")
+	if err != nil {
+		return fmt.Errorf("config: temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op after a successful rename
+	if err := toml.NewEncoder(tmp).Encode(c); err != nil {
+		tmp.Close()
+		return fmt.Errorf("config: encode: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("config: close temp: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return fmt.Errorf("config: chmod: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("config: rename into place: %w", err)
+	}
+	return nil
 }
 
 // Clone returns a deep copy of c. Used to retain the raw TOML-loaded
@@ -373,6 +409,13 @@ func (d *Duration) UnmarshalText(text []byte) error {
 	}
 	*d = Duration(parsed)
 	return nil
+}
+
+// MarshalText renders the duration as a Go-duration string (e.g. "1m") so it
+// round-trips through the TOML encoder as the same string form UnmarshalText
+// accepts, rather than a raw nanosecond integer.
+func (d Duration) MarshalText() ([]byte, error) {
+	return []byte(time.Duration(d).String()), nil
 }
 
 // AsDuration returns the underlying time.Duration value.
