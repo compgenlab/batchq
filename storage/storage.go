@@ -229,6 +229,11 @@ type Storage interface {
 	// negative). Only valid for QUEUED/WAITING/USERHOLD jobs.
 	AdjustJobPriority(ctx context.Context, jobID string, delta int) error
 
+	// AdjustArrayPriority applies delta to the priority of every eligible
+	// (QUEUED/WAITING/USERHOLD) task of an array in one statement. Returns the
+	// number of tasks adjusted.
+	AdjustArrayPriority(ctx context.Context, arrayID string, delta int) (int, error)
+
 	// CleanupJob removes a job and all associated rows (details, running
 	// details, deps, running claim). Caller must verify the job is in a
 	// terminal state.
