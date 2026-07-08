@@ -3,6 +3,7 @@ package jobs
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -298,10 +299,16 @@ func (job *JobDef) Print() {
 			maxKeyLen = len(detail.Key)
 		}
 	}
+	// Sort a copy by key so the details print in a stable, alphabetical order
+	// (the underlying slice order reflects insertion, which varies).
+	sortedDetails := append([]JobDefDetail(nil), job.Details...)
+	sort.SliceStable(sortedDetails, func(i, j int) bool {
+		return sortedDetails[i].Key < sortedDetails[j].Key
+	})
 	if len(job.Details) > 1 {
 		// there must be at least "script", so
 		// only do this if there are other details
-		for _, detail := range job.Details {
+		for _, detail := range sortedDetails {
 			switch detail.Key {
 			case "script":
 				script = detail.Value
@@ -326,7 +333,11 @@ func (job *JobDef) Print() {
 				maxKeyLen = len(detail.Key)
 			}
 		}
-		for _, detail := range job.RunningDetails {
+		sortedRunning := append([]JobRunningDetail(nil), job.RunningDetails...)
+		sort.SliceStable(sortedRunning, func(i, j int) bool {
+			return sortedRunning[i].Key < sortedRunning[j].Key
+		})
+		for _, detail := range sortedRunning {
 			switch detail.Key {
 			case "slurm_script":
 				slurmScript = detail.Value
