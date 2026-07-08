@@ -96,6 +96,15 @@ type ServerConfig struct {
 type WebConfig struct {
 	Socket string `toml:"socket"`
 	Listen string `toml:"listen"`
+
+	// API mounts the REST API under /api/ on the web listener (combined
+	// UI + API gateway); the --api flag on `batchq web` also enables it.
+	API bool `toml:"api"`
+	// Username/Password gate the browser UI with HTTP Basic. Username
+	// defaults to "admin"; Password is env/config-only (prefer the
+	// BATCHQ_PASSWORD env var so it stays out of a checked-in config).
+	Username string `toml:"username"`
+	Password string `toml:"password"`
 }
 
 type JobDefaultsConfig struct {
@@ -271,9 +280,11 @@ func cloneStringMap(m map[string]string) map[string]string {
 // expose them) and out of a checked-in config:
 //   - BATCHQ_TOKEN        — the client's bearer token ([batchq] token)
 //   - BATCHQ_SERVER_TOKEN — the server's required shared token ([server] token)
+//   - BATCHQ_PASSWORD     — the web UI's HTTP Basic password ([web] password)
 type EnvOverrides struct {
 	Token       string // BATCHQ_TOKEN
 	ServerToken string // BATCHQ_SERVER_TOKEN
+	WebPassword string // BATCHQ_PASSWORD
 }
 
 // ReadEnvOverrides snapshots the env vars that Config consumes. Calling
@@ -282,6 +293,7 @@ func ReadEnvOverrides() EnvOverrides {
 	return EnvOverrides{
 		Token:       os.Getenv("BATCHQ_TOKEN"),
 		ServerToken: os.Getenv("BATCHQ_SERVER_TOKEN"),
+		WebPassword: os.Getenv("BATCHQ_PASSWORD"),
 	}
 }
 
@@ -295,6 +307,9 @@ func (c *Config) ApplyEnv(e EnvOverrides) {
 	}
 	if e.ServerToken != "" {
 		c.Server.Token = e.ServerToken
+	}
+	if e.WebPassword != "" {
+		c.Web.Password = e.WebPassword
 	}
 }
 
@@ -318,8 +333,14 @@ func (c *Config) ApplyDefaults(d Defaults) {
 	if c.Server.DB == "" {
 		c.Server.DB = d.Backend
 	}
-	if c.Web.Socket == "" {
+	// Default the web socket only when no TCP listener is configured — a
+	// [web] listen means the operator wants TCP, and defaulting the socket
+	// too would make the two conflict.
+	if c.Web.Socket == "" && c.Web.Listen == "" {
 		c.Web.Socket = d.WebSocket
+	}
+	if c.Web.Username == "" {
+		c.Web.Username = d.WebUsername
 	}
 	if c.JobDefaults.Stdout == "" {
 		c.JobDefaults.Stdout = d.JobStdout

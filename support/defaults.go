@@ -18,6 +18,10 @@ const (
 	DefaultConfigFile    = "config"
 )
 
+// DefaultWebUsername is the HTTP Basic username for the web UI when none is
+// configured. Not home-relative, but kept here as the single source of truth.
+const DefaultWebUsername = "admin"
+
 // Defaults bundles the home-relative defaults plus a few constants used
 // across subcommands. Build it with NewDefaults; Home is resolved once
 // so every dependent path stays consistent.
@@ -27,6 +31,7 @@ type Defaults struct {
 	Backend      string // sqlite3://$HOME/batchq.db
 	ServerListen string // unix://$HOME/batchq.sock
 	WebSocket    string // $HOME/batchq-web.sock
+	WebUsername  string // web UI HTTP Basic username ("admin")
 	ConfigFile   string // $HOME/config
 
 	Shell                string        // job interpreter when none is configured
@@ -46,6 +51,7 @@ func NewDefaults() Defaults {
 		Backend:              "sqlite3://" + filepath.Join(home, DefaultDBFile),
 		ServerListen:         "unix://" + filepath.Join(home, DefaultSocketFile),
 		WebSocket:            filepath.Join(home, DefaultWebSocketFile),
+		WebUsername:          DefaultWebUsername,
 		ConfigFile:           filepath.Join(home, DefaultConfigFile),
 		Shell:                "/bin/bash",
 		AutospawnIdleTimeout: time.Minute,
