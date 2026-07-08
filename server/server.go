@@ -511,6 +511,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST "+p+api.RouteArrayCancel, s.handleCancelArray)
 	mux.HandleFunc("POST "+p+api.RouteArrayHold, s.handleHoldArray)
 	mux.HandleFunc("POST "+p+api.RouteArrayRelease, s.handleReleaseArray)
+	mux.HandleFunc("POST "+p+api.RouteArrayPriority, s.handleArrayPriority)
 	mux.HandleFunc("GET "+p+api.RouteJobs, s.handleListJobs)
 	mux.HandleFunc("GET "+p+api.RouteJobsByID, s.handleGetJob)
 	mux.HandleFunc("DELETE "+p+api.RouteJobsByID, s.handleCancelJob)

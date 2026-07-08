@@ -1999,6 +1999,24 @@ func (s *sqliteStorage) AdjustJobPriority(ctx context.Context, jobID string, del
 	return nil
 }
 
+// AdjustArrayPriority applies delta to every eligible task of an array
+// (QUEUED/WAITING/USERHOLD) in one statement. Returns the number adjusted.
+func (s *sqliteStorage) AdjustArrayPriority(ctx context.Context, arrayID string, delta int) (int, error) {
+	if delta == 0 {
+		return 0, nil
+	}
+	res, err := s.qExec(ctx,
+		`UPDATE jobs SET priority = priority + ?
+		 WHERE id IN (SELECT job_id FROM job_details WHERE key = 'array_id' AND value = ?)
+		   AND status IN (?, ?, ?)`,
+		delta, arrayID, jobs.QUEUED, jobs.WAITING, jobs.USERHOLD)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // Backup snapshots the database to destPath via SQLite's VACUUM INTO, run
 // on the single writer connection (s.qExec → s.db) so no second process ever
 // holds a lock on the live file. VACUUM INTO produces a fully consistent,

@@ -721,6 +721,18 @@ func (s *Service) AdjustJobPriority(ctx context.Context, jobID string, delta int
 	return s.store.AdjustJobPriority(ctx, jobID, delta)
 }
 
+// AdjustArrayPriority applies delta to every eligible task of an array in one
+// statement. Returns the number of tasks adjusted.
+func (s *Service) AdjustArrayPriority(ctx context.Context, arrayID string, delta int) (int, error) {
+	if err := s.authorizeArrayAction(ctx, arrayID); err != nil {
+		return 0, err
+	}
+	if delta == 0 {
+		return 0, nil
+	}
+	return s.store.AdjustArrayPriority(ctx, arrayID, delta)
+}
+
 func (s *Service) CleanupJob(ctx context.Context, jobID string) error {
 	job, err := s.store.GetJob(ctx, jobID)
 	if err != nil {
