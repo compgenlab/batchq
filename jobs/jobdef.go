@@ -3,6 +3,7 @@ package jobs
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -265,6 +266,15 @@ func (job *JobDef) Print() {
 	if v := job.RunID(); v != "" {
 		fmt.Printf("run-id   : %s\n", v)
 	}
+	// For an array task (resolved by its own job id, not <array>_<index>),
+	// surface which array it belongs to so it's easy to spot and copy.
+	if v := job.GetDetail("array_id", ""); v != "" {
+		if idx := job.GetDetail("array_index", ""); idx != "" {
+			fmt.Printf("array    : %s (task %s)\n", v, idx)
+		} else {
+			fmt.Printf("array    : %s\n", v)
+		}
+	}
 	if len(job.InputFiles) > 0 {
 		fmt.Printf("inputs   : %s\n", job.InputFiles[0])
 		for _, p := range job.InputFiles[1:] {
@@ -289,10 +299,16 @@ func (job *JobDef) Print() {
 			maxKeyLen = len(detail.Key)
 		}
 	}
+	// Sort a copy by key so the details print in a stable, alphabetical order
+	// (the underlying slice order reflects insertion, which varies).
+	sortedDetails := append([]JobDefDetail(nil), job.Details...)
+	sort.SliceStable(sortedDetails, func(i, j int) bool {
+		return sortedDetails[i].Key < sortedDetails[j].Key
+	})
 	if len(job.Details) > 1 {
 		// there must be at least "script", so
 		// only do this if there are other details
-		for _, detail := range job.Details {
+		for _, detail := range sortedDetails {
 			switch detail.Key {
 			case "script":
 				script = detail.Value
@@ -317,7 +333,11 @@ func (job *JobDef) Print() {
 				maxKeyLen = len(detail.Key)
 			}
 		}
-		for _, detail := range job.RunningDetails {
+		sortedRunning := append([]JobRunningDetail(nil), job.RunningDetails...)
+		sort.SliceStable(sortedRunning, func(i, j int) bool {
+			return sortedRunning[i].Key < sortedRunning[j].Key
+		})
+		for _, detail := range sortedRunning {
 			switch detail.Key {
 			case "slurm_script":
 				slurmScript = detail.Value

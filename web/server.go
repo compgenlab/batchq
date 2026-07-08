@@ -39,12 +39,56 @@ type Options struct {
 	ListenAddr string
 	Force      bool
 	Verbose    bool
+
+	// APIEnabled mounts the REST API as a reverse proxy under /api/, turning
+	// this process into a combined UI + API gateway. The proxy forwards to the
+	// same backend server the Client is connected to.
+	APIEnabled bool
+	// APIToken, when non-empty, is the bearer token required on /api/ requests.
+	APIToken string
+	// Username/Password gate the browser UI with HTTP Basic. An empty Password
+	// disables the gate (historical no-auth behavior).
+	Username string
+	Password string
 }
 
 type webServer struct {
 	client    *client.Client
 	templates *template.Template
 	verbose   bool
+}
+
+// newWebHandler builds the web server's HTTP handler: the HTML routes, an
+// optional /api/ reverse proxy (opts.APIEnabled), and the auth wrappers. It is
+// the single construction point shared by StartServer and the test harness so
+// the two can't drift.
+func newWebHandler(s *webServer, opts Options) http.Handler {
+	mux := http.NewServeMux()
+	// Go 1.22+ path patterns — {id} captured via r.PathValue.
+	mux.HandleFunc("GET /jobs/{id}/logs/{stream}", s.handleJobLogs)
+	mux.HandleFunc("GET /jobs/{id}", s.handleJob)
+	mux.HandleFunc("GET /jobs", s.handleQueue)
+	mux.HandleFunc("GET /", s.handleQueue)
+
+	var root http.Handler = mux
+	if opts.APIEnabled {
+		// Dispatch /api/* to the reverse proxy (all methods — REST needs
+		// POST/DELETE) and everything else to the HTML mux. A top-level split
+		// avoids ServeMux's method-vs-path conflict between "/api/" and
+		// "GET /". The proxy forwards to the same backend the client is
+		// connected to; requireBearer gates it with the API token.
+		api := requireBearer(opts.APIToken, s.client.NewReverseProxy())
+		root = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasPrefix(r.URL.Path, apiPrefix) {
+				api.ServeHTTP(w, r)
+				return
+			}
+			mux.ServeHTTP(w, r)
+		})
+	}
+
+	// Basic auth wraps everything but lets /api/ through (bearer-gated above).
+	return requireBasic(opts.Username, opts.Password, root)
 }
 
 type detailRow struct {
@@ -135,11 +179,11 @@ func StartServer(opts Options) error {
 	if opts.Client == nil {
 		return errors.New("web: client required")
 	}
-	socketPath, err := resolveSocketPath(opts)
+	socketPath, listenAddr, err := chooseTransport(opts)
 	if err != nil {
 		return err
 	}
-	listener, kind, address, cleanup, err := createListener(socketPath, resolveListenAddress(opts), opts.Force)
+	listener, kind, address, cleanup, err := createListener(socketPath, listenAddr, opts.Force)
 	if err != nil {
 		return err
 	}
@@ -151,15 +195,9 @@ func StartServer(opts Options) error {
 	}
 
 	server := &webServer{client: opts.Client, templates: templates, verbose: opts.Verbose}
-	mux := http.NewServeMux()
-	// Go 1.22+ path patterns — {id} captured via r.PathValue.
-	mux.HandleFunc("GET /jobs/{id}/logs/{stream}", server.handleJobLogs)
-	mux.HandleFunc("GET /jobs/{id}", server.handleJob)
-	mux.HandleFunc("GET /jobs", server.handleQueue)
-	mux.HandleFunc("GET /", server.handleQueue)
 
 	httpServer := &http.Server{
-		Handler:      mux,
+		Handler:      newWebHandler(server, opts),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 	}
@@ -201,24 +239,42 @@ func StartServer(opts Options) error {
 	return httpServer.Shutdown(ctx)
 }
 
-func resolveSocketPath(opts Options) (string, error) {
-	if opts.SocketPath != "" {
-		return normalizeSocketPath(opts.SocketPath)
+// chooseTransport resolves exactly one listener from flags, config, and the
+// built-in socket default, honoring flag > config > default. A listen address
+// (flag or config) takes precedence over the socket *default*; only when a
+// socket and a listen are set at the same layer is it an error. Exactly one of
+// the returned socketPath / listenAddr is non-empty.
+func chooseTransport(opts Options) (socketPath, listenAddr string, err error) {
+	socketFlag := opts.SocketPath
+	listenFlag := strings.TrimSpace(opts.ListenAddr)
+	var cfgSocket, cfgListen string
+	if opts.Config != nil {
+		cfgSocket = opts.Config.Web.Socket
+		cfgListen = strings.TrimSpace(opts.Config.Web.Listen)
 	}
-	if opts.Config != nil && opts.Config.Web.Socket != "" {
-		return normalizeSocketPath(opts.Config.Web.Socket)
-	}
-	return normalizeSocketPath(support.NewDefaults().WebSocket)
-}
 
-func resolveListenAddress(opts Options) string {
-	if opts.ListenAddr != "" {
-		return opts.ListenAddr
+	switch {
+	// Flag layer wins; --socket and --listen are mutually exclusive.
+	case socketFlag != "" && listenFlag != "":
+		return "", "", errors.New("configure only one of --socket or --listen")
+	case listenFlag != "":
+		return "", listenFlag, nil
+	case socketFlag != "":
+		sp, err := normalizeSocketPath(socketFlag)
+		return sp, "", err
+	// Config layer. ApplyDefaults only defaults the socket when no listen is
+	// configured, so both being set here means the operator configured both.
+	case cfgSocket != "" && cfgListen != "":
+		return "", "", errors.New("configure only one of [web] socket or [web] listen")
+	case cfgListen != "":
+		return "", cfgListen, nil
+	case cfgSocket != "":
+		sp, err := normalizeSocketPath(cfgSocket)
+		return sp, "", err
+	default:
+		sp, err := normalizeSocketPath(support.NewDefaults().WebSocket)
+		return sp, "", err
 	}
-	if opts.Config == nil {
-		return ""
-	}
-	return opts.Config.Web.Listen
 }
 
 func normalizeSocketPath(path string) (string, error) {
