@@ -531,6 +531,18 @@ func (s *sqliteStorage) loadJobRelations(ctx context.Context, job *jobs.JobDef) 
 	return nil
 }
 
+// HydrateJobs loads relations into each job in place. Used after a
+// loadRelations=false listing to hydrate only the jobs that survived a filter,
+// avoiding the N+1 relation loads for the whole table.
+func (s *sqliteStorage) HydrateJobs(ctx context.Context, list []*jobs.JobDef) error {
+	for _, j := range list {
+		if err := s.loadJobRelations(ctx, j); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // fetchPaths returns the paths from job_inputs or job_outputs for a job.
 // table must be one of those two literal names (never user input) — it's
 // interpolated directly because parameter binding doesn't work for table
@@ -631,7 +643,7 @@ func (s *sqliteStorage) fetchRunningDetails(ctx context.Context, jobID string) (
 	return details, rows.Err()
 }
 
-func (s *sqliteStorage) ListJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error) {
+func (s *sqliteStorage) ListJobs(ctx context.Context, showAll, sortByStatus bool, since, before time.Time, loadRelations bool) ([]*jobs.JobDef, error) {
 	query := `SELECT id, status, priority, name, notes, submit_time, start_time, end_time, return_code
 	          FROM jobs`
 	var conds []string
@@ -651,10 +663,10 @@ func (s *sqliteStorage) ListJobs(ctx context.Context, showAll, sortByStatus bool
 	} else {
 		query += " ORDER BY id"
 	}
-	return s.queryJobs(ctx, query, args, true)
+	return s.queryJobs(ctx, query, args, loadRelations)
 }
 
-func (s *sqliteStorage) ListJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool, since, before time.Time) ([]*jobs.JobDef, error) {
+func (s *sqliteStorage) ListJobsByStatus(ctx context.Context, statuses []jobs.StatusCode, sortByStatus bool, since, before time.Time, loadRelations bool) ([]*jobs.JobDef, error) {
 	if len(statuses) == 0 {
 		return nil, nil
 	}
@@ -675,13 +687,14 @@ func (s *sqliteStorage) ListJobsByStatus(ctx context.Context, statuses []jobs.St
 	} else {
 		query += ` ORDER BY id`
 	}
-	// loadRelations must be true: the slurm runner calls this with
-	// Statuses=[PROXYQUEUED] and relies on RunningDetails["slurm_job_id"]
-	// to reconcile against sacct.
-	return s.queryJobs(ctx, query, args, true)
+	// The slurm runner calls this with Statuses=[PROXYQUEUED] and relies on
+	// RunningDetails["slurm_job_id"] to reconcile against sacct, so it passes
+	// loadRelations=true; only the detail-filter path (which hydrates the
+	// survivors itself) passes false.
+	return s.queryJobs(ctx, query, args, loadRelations)
 }
 
-func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode, since, before time.Time) ([]*jobs.JobDef, error) {
+func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses []jobs.StatusCode, since, before time.Time, loadRelations bool) ([]*jobs.JobDef, error) {
 	trimmed := strings.TrimSpace(query)
 	if trimmed == "" {
 		return nil, nil
@@ -724,9 +737,10 @@ func (s *sqliteStorage) SearchJobs(ctx context.Context, query string, statuses [
 		args = append(args, ta...)
 	}
 	sqlQuery += ` ORDER BY j.id`
-	// loadRelations=true: callers that filter by status (notably the
-	// slurm runner) depend on RunningDetails for slurm_job_id.
-	return s.queryJobs(ctx, sqlQuery, args, true)
+	// Callers that filter by status (notably the slurm runner) depend on
+	// RunningDetails for slurm_job_id and pass loadRelations=true; the
+	// detail-filter path passes false and hydrates the survivors itself.
+	return s.queryJobs(ctx, sqlQuery, args, loadRelations)
 }
 
 // queryJobs runs a SELECT that produces full job rows and (optionally) loads

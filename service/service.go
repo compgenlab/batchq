@@ -467,23 +467,30 @@ type ListJobsOptions struct {
 }
 
 func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
+	// A detail filter (array/run/output/input) narrows the base listing to a
+	// small set. Skip per-job relation hydration in the base query and hydrate
+	// only the survivors — otherwise listing e.g. one array's tasks would
+	// N+1-hydrate every job in the database first, then throw most away.
+	detailFilter := opts.RunID != "" || opts.ArrayID != "" || opts.Output != "" || opts.Input != ""
+	loadRelations := !detailFilter
+
 	var (
 		out []*jobs.JobDef
 		err error
 	)
 	switch {
 	case opts.Query != "":
-		out, err = s.store.SearchJobs(ctx, opts.Query, opts.Statuses, opts.Since, opts.Before)
+		out, err = s.store.SearchJobs(ctx, opts.Query, opts.Statuses, opts.Since, opts.Before, loadRelations)
 	case len(opts.Statuses) > 0:
-		out, err = s.store.ListJobsByStatus(ctx, opts.Statuses, opts.SortByStatus, opts.Since, opts.Before)
+		out, err = s.store.ListJobsByStatus(ctx, opts.Statuses, opts.SortByStatus, opts.Since, opts.Before, loadRelations)
 	default:
-		out, err = s.store.ListJobs(ctx, opts.ShowAll, opts.SortByStatus, opts.Since, opts.Before)
+		out, err = s.store.ListJobs(ctx, opts.ShowAll, opts.SortByStatus, opts.Since, opts.Before, loadRelations)
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	if opts.RunID != "" || opts.ArrayID != "" || opts.Output != "" || opts.Input != "" {
+	if detailFilter {
 		var allow map[string]struct{}
 		if opts.RunID != "" {
 			ids, err := s.store.FindJobsByDetail(ctx, "run_id", opts.RunID)
@@ -520,6 +527,12 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 			}
 		}
 		out = filtered
+
+		// The base listing ran with loadRelations=false; hydrate only the
+		// jobs that survived the detail filter.
+		if err := s.store.HydrateJobs(ctx, out); err != nil {
+			return nil, err
+		}
 	}
 
 	// since/before are applied in SQL by the store methods above, not here.
