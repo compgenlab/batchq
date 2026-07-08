@@ -356,12 +356,17 @@ func (r *slurmRunner) submitArrayBatch(ctx context.Context, resp *api.ClaimArray
 	submitted := 0
 	for _, t := range resp.Tasks {
 		pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
-		// slurm_script is intentionally omitted per task (it is identical across
-		// the array; storing N copies would bloat job_running_details).
+		// slurm_script is stored per task so `details <task>` shows the exact
+		// sbatch script this task went out in. It's identical across a single
+		// batch, but a drip-fed array is submitted as several batches (e.g. 1-5
+		// then 6), each a distinct script/slurm_array_id — so the script belongs
+		// with the task, not the logical array. Duplication is bounded by the
+		// batch size (the live-queue budget), not the array size.
 		perr := r.client.MarkJobProxied(pctx, r.runnerId, t.JobID, map[string]string{
 			"slurm_array_id":    slurmArrayId,
 			"slurm_task_index":  strconv.Itoa(t.Index),
 			"slurm_submit_time": submitTime,
+			"slurm_script":      src,
 		})
 		pcancel()
 		if perr != nil {
