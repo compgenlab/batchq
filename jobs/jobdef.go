@@ -265,6 +265,15 @@ func (job *JobDef) Print() {
 	if v := job.RunID(); v != "" {
 		fmt.Printf("run-id   : %s\n", v)
 	}
+	// For an array task (resolved by its own job id, not <array>_<index>),
+	// surface which array it belongs to so it's easy to spot and copy.
+	if v := job.GetDetail("array_id", ""); v != "" {
+		if idx := job.GetDetail("array_index", ""); idx != "" {
+			fmt.Printf("array    : %s (task %s)\n", v, idx)
+		} else {
+			fmt.Printf("array    : %s\n", v)
+		}
+	}
 	if len(job.InputFiles) > 0 {
 		fmt.Printf("inputs   : %s\n", job.InputFiles[0])
 		for _, p := range job.InputFiles[1:] {

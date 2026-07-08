@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"strconv"
 	"strings"
@@ -187,6 +188,50 @@ func (c *Client) Close() error {
 
 // SocketPath returns the unix socket path, or "" if not using unix.
 func (c *Client) SocketPath() string { return c.socket }
+
+// NewReverseProxy returns an httputil.ReverseProxy that forwards requests to
+// this client's backend server over the client's own transport — unix socket,
+// tcp, or https, whichever this client was dialed with. It reuses c.base (the
+// scheme/host and any mount-point subpath) and injects the client's bearer
+// token so proxied requests authenticate exactly like the client's own calls.
+//
+// Used by `batchq web --api` to expose the REST API through the web gateway
+// without giving the web process direct database access.
+func (c *Client) NewReverseProxy() *httputil.ReverseProxy {
+	target, _ := url.Parse(c.base) // c.base is always a well-formed URL we built
+	token := c.opts.Token
+	return &httputil.ReverseProxy{
+		Transport: c.httpC.Transport,
+		Director: func(req *http.Request) {
+			req.URL.Scheme = target.Scheme
+			req.URL.Host = target.Host
+			req.Host = target.Host
+			// Honor a mount-point subpath (empty for unix/tcp/https without one).
+			req.URL.Path = singleJoiningSlash(target.Path, req.URL.Path)
+			if token != "" {
+				req.Header.Set(api.HeaderAuthorization, "Bearer "+token)
+			}
+		},
+	}
+}
+
+// singleJoiningSlash joins two URL path segments with exactly one slash,
+// matching net/http/httputil's own (unexported) helper. When a is empty the
+// path is returned unchanged.
+func singleJoiningSlash(a, b string) string {
+	if a == "" {
+		return b
+	}
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
+}
 
 // logf forwards a debug event to Options.Log if configured (no-op otherwise).
 func (c *Client) logf(format string, args ...any) {
