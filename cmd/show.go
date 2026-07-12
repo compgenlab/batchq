@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -20,6 +21,11 @@ var detailsCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		c := mustDialClient()
 		defer c.Close()
+
+		if statusJSON {
+			emitJSON(c, args)
+			return
+		}
 
 		for _, ids := range args {
 			for _, spl := range strings.Split(ids, ",") {
@@ -42,6 +48,42 @@ var detailsCmd = &cobra.Command{
 			}
 		}
 	},
+}
+
+// emitJSON resolves each id argument and prints a single JSON array of the
+// per-job DTOs to stdout — one element per resolved job, in argument order.
+// An array id contributes all its member task DTOs (in array-index order).
+// Unknown ids are omitted (no error, exit 0), matching --porcelain.
+func emitJSON(c *client.Client, args []string) {
+	out := make([]*api.JobDTO, 0, len(args))
+	for _, ids := range args {
+		for _, spl := range strings.Split(ids, ",") {
+			jobid := strings.TrimSpace(spl)
+			if jobid == "" {
+				continue
+			}
+			ctx, cancel := cmdContext()
+			target, err := resolveTarget(ctx, c, jobid)
+			cancel()
+			if err != nil {
+				continue // unknown id -> omit (matches --porcelain)
+			}
+			if target.isArray {
+				members := append([]*api.JobDTO{}, target.members...)
+				sort.Slice(members, func(i, j int) bool {
+					return arrayIndexOf(members[i]) < arrayIndexOf(members[j])
+				})
+				out = append(out, members...)
+			} else {
+				out = append(out, target.dto)
+			}
+		}
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(out); err != nil {
+		log.Fatalln(err)
+	}
 }
 
 // printJobDetails renders the long-form view of a single job (used by
@@ -298,6 +340,11 @@ var statusCmd = &cobra.Command{
 		c := mustDialClient()
 		defer c.Close()
 
+		if statusJSON {
+			emitJSON(c, args)
+			return
+		}
+
 		if len(args) == 0 {
 			ctx, cancel := cmdContext()
 			defer cancel()
@@ -403,6 +450,7 @@ var statusShowStart bool
 var statusShowEnd bool
 var statusShowWall bool
 var statusPorcelain bool
+var statusJSON bool
 var queueRunID string
 var queueArrayID string
 var queueOutput string
@@ -428,6 +476,8 @@ func init() {
 	statusCmd.Flags().BoolVarP(&statusShowEnd, "end", "e", false, "Show end time")
 	statusCmd.Flags().BoolVarP(&statusShowWall, "walltime", "t", false, "Show wall time (end-start)")
 	statusCmd.Flags().BoolVar(&statusPorcelain, "porcelain", false, "Machine-readable: one '<id>\\t<status>' line per queried id (arrays collapse to one status)")
+	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "Machine-readable: a JSON array of job objects")
+	detailsCmd.Flags().BoolVar(&statusJSON, "json", false, "Machine-readable: a JSON array of job objects")
 
 	rootCmd.AddCommand(detailsCmd)
 	rootCmd.AddCommand(queueCmd)
