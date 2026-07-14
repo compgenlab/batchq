@@ -32,6 +32,13 @@ type slurmRunner struct {
 	partition   string
 	host        string
 	resources   map[string]string
+	// Resource-to-SLURM-directive mapping (by resource kind). See
+	// slurmResourceRequests. Empty gresAllow means "infer" (any integer-valued
+	// resource is a gres candidate).
+	gresAllow       map[string]bool
+	gresExclude     map[string]bool
+	constraintNames map[string]bool
+	nodelistNames   map[string]bool
 }
 
 type SlurmJobState struct {
@@ -141,6 +148,36 @@ func (r *slurmRunner) SetSlurmPartition(partition string) *slurmRunner {
 func (r *slurmRunner) SetResources(resources map[string]string) *slurmRunner {
 	r.resources = resources
 	return r
+}
+
+// SetResourceMapping configures how a job's generic resource.* requirements are
+// translated into SLURM allocation directives. gres is an allowlist of resource
+// kinds eligible to become --gres (empty = infer from value type); gresExclude
+// bars kinds from --gres; constraint kinds emit as --constraint features; and
+// nodelist kinds emit as --nodelist. See slurmResourceRequests.
+func (r *slurmRunner) SetResourceMapping(gres, gresExclude, constraint, nodelist []string) *slurmRunner {
+	r.gresAllow = stringSet(gres)
+	r.gresExclude = stringSet(gresExclude)
+	r.constraintNames = stringSet(constraint)
+	r.nodelistNames = stringSet(nodelist)
+	return r
+}
+
+// stringSet builds a lookup set from a slice, trimming entries and dropping
+// blanks; nil for an empty input.
+func stringSet(xs []string) map[string]bool {
+	var set map[string]bool
+	for _, x := range xs {
+		x = strings.TrimSpace(x)
+		if x == "" {
+			continue
+		}
+		if set == nil {
+			set = map[string]bool{}
+		}
+		set[x] = true
+	}
+	return set
 }
 
 // SetHost sets the hostname advertised on each claim (the SLURM submit host).
@@ -686,7 +723,86 @@ func (r *slurmRunner) slurmResourceDirectives(jobdef *api.JobDTO) string {
 	if val := jobdef.Details["wd"]; val != "" {
 		src += fmt.Sprintf("#SBATCH -D %s\n", val)
 	}
+	src += r.slurmResourceRequests(jobdef)
 	return src
+}
+
+// slurmResourceRequests translates a job's generic resource.* requirements into
+// SLURM allocation directives (--gres / --constraint / --nodelist). Mapping, by
+// resource kind (the part before any ':'):
+//   - a kind in nodelistNames    -> --nodelist=<value>
+//   - a kind in constraintNames  -> --constraint feature (value if set, else name)
+//   - otherwise infer from the value type:
+//   - integer value, gres-eligible -> --gres=<name>:<count>
+//   - empty value                  -> --constraint feature (round-trips -C)
+//   - non-integer label            -> routing only, emits nothing
+//
+// Entries of one directive kind are combined into a single line (sbatch honors
+// only the last of repeated --gres/--constraint/--nodelist). Keys are sorted so
+// the output is deterministic.
+func (r *slurmRunner) slurmResourceRequests(jobdef *api.JobDTO) string {
+	var keys []string
+	for k := range jobdef.Details {
+		if strings.HasPrefix(k, jobs.ResourcePrefix) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+
+	var gres, constraints, nodes []string
+	for _, k := range keys {
+		name := strings.TrimPrefix(k, jobs.ResourcePrefix)
+		val := jobdef.Details[k]
+		kind := name
+		if i := strings.Index(kind, ":"); i >= 0 {
+			kind = kind[:i]
+		}
+		switch {
+		case r.nodelistNames[kind]:
+			if val != "" {
+				nodes = append(nodes, val)
+			}
+		case r.constraintNames[kind]:
+			if val != "" {
+				constraints = append(constraints, val)
+			} else {
+				constraints = append(constraints, name)
+			}
+		default:
+			n, err := strconv.Atoi(val)
+			switch {
+			case err == nil && n > 0 && r.gresEligible(kind):
+				gres = append(gres, name+":"+val)
+			case val == "":
+				constraints = append(constraints, name)
+			}
+		}
+	}
+
+	var src string
+	if len(gres) > 0 {
+		src += fmt.Sprintf("#SBATCH --gres=%s\n", strings.Join(gres, ","))
+	}
+	if len(constraints) > 0 {
+		src += fmt.Sprintf("#SBATCH --constraint=%s\n", strings.Join(constraints, "&"))
+	}
+	if len(nodes) > 0 {
+		src += fmt.Sprintf("#SBATCH --nodelist=%s\n", strings.Join(nodes, ","))
+	}
+	return src
+}
+
+// gresEligible reports whether a resource kind may become a --gres request: it
+// must not be in the denylist, and — when an allowlist is configured — must be
+// in it. With no allowlist, every non-denied kind is eligible.
+func (r *slurmRunner) gresEligible(kind string) bool {
+	if r.gresExclude[kind] {
+		return false
+	}
+	if len(r.gresAllow) > 0 {
+		return r.gresAllow[kind]
+	}
+	return true
 }
 
 // arrayTaskDep is one PROXYQUEUED/RUNNING array-task dependency, grouped under

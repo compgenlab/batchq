@@ -218,6 +218,32 @@ type SlurmRunnerConfig struct {
 	// (e.g. cluster = "xyz_cluster"), so resource-tagged jobs can be routed
 	// to the right cluster. procs/mem/walltime are still enforced by SLURM.
 	Resources map[string]string `toml:"resources,omitempty,omitzero"`
+
+	// The lists below control how a job's generic resource.* requirements are
+	// translated into SLURM directives on the generated sbatch script. By
+	// default the runner infers from the value type: an integer-valued resource
+	// becomes --gres=<name>:<count>, an empty-valued one becomes a --constraint
+	// feature, and a non-integer label (cluster/host) is routing-only and
+	// emitted as nothing. These lists override that inference by resource kind
+	// (the part before any ':').
+
+	// GresResources, when non-empty, is an allowlist: only these resource kinds
+	// may become --gres (other integer-valued resources stay routing-only).
+	// Empty means "infer" (every integer-valued resource is a gres candidate).
+	GresResources []string `toml:"gres_resources,omitempty,omitzero"`
+
+	// GresExclude is a denylist: these resource kinds never become --gres even
+	// when integer-valued (they stay routing-only).
+	GresExclude []string `toml:"gres_exclude,omitempty,omitzero"`
+
+	// ConstraintResources names resource kinds whose value is emitted as a
+	// --constraint feature (the value when set, else the name). Use for labels
+	// that are really SLURM node features rather than routing tags.
+	ConstraintResources []string `toml:"constraint_resources,omitempty,omitzero"`
+
+	// NodelistResources names resource kinds whose value is emitted as
+	// --nodelist=<value> (a specific-node request, SLURM's -w).
+	NodelistResources []string `toml:"nodelist_resources,omitempty,omitzero"`
 }
 
 // LoadConfig parses a TOML config file from path. A missing file yields
