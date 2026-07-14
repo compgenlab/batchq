@@ -59,3 +59,45 @@ func TestParseResourceEntry(t *testing.T) {
 		}
 	}
 }
+
+func TestParseCustomEntry(t *testing.T) {
+	tests := []struct {
+		entry     string
+		wantKey   string
+		wantValue string
+		wantErr   bool
+	}{
+		{"account=proj123", "account", "proj123", false},
+		{"partition=gpu", "partition", "gpu", false},
+		// whitespace is trimmed on both halves
+		{"  account = proj123 ", "account", "proj123", false},
+		// value is required (unlike a resource label)
+		{"account", "", "", true},
+		{"account=", "", "", true},
+		// bad keys rejected
+		{"", "", "", true},
+		{"=proj", "", "", true},
+		{"a b=proj", "", "", true},
+		// reserved names rejected
+		{"procs=4", "", "", true},
+		{"mem=8G", "", "", true},
+		{"walltime=1:00", "", "", true},
+	}
+	for _, tt := range tests {
+		key, value, err := ParseCustomEntry(tt.entry)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("ParseCustomEntry(%q): expected error, got key=%q value=%q", tt.entry, key, value)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseCustomEntry(%q): unexpected error %v", tt.entry, err)
+			continue
+		}
+		if key != tt.wantKey || value != tt.wantValue {
+			t.Errorf("ParseCustomEntry(%q) = (%q, %q), want (%q, %q)",
+				tt.entry, key, value, tt.wantKey, tt.wantValue)
+		}
+	}
+}

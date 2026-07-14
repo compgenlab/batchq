@@ -636,11 +636,24 @@ func (r *slurmRunner) buildArraySBatchScript(ctx context.Context, jobdef *api.Jo
 // jobs (account, partition, cpus, env, uid, gid, mem, walltime, wd).
 func (r *slurmRunner) slurmResourceDirectives(jobdef *api.JobDTO) string {
 	var src string
-	if r.account != "" {
-		src += fmt.Sprintf("#SBATCH -A %s\n", r.account)
+	// Account/partition are generic scheduler-passthrough hints: a job's own
+	// custom.account/custom.partition wins, falling back to this runner's
+	// configured default (--slurm-account/--slurm-partition) when the job omits
+	// them. Other custom.* keys have no generic sbatch flag, so they're stored
+	// but not emitted here.
+	account := jobdef.Details[jobs.CustomPrefix+"account"]
+	if account == "" {
+		account = r.account
 	}
-	if r.partition != "" {
-		src += fmt.Sprintf("#SBATCH -p %s\n", r.partition)
+	if account != "" {
+		src += fmt.Sprintf("#SBATCH -A %s\n", account)
+	}
+	partition := jobdef.Details[jobs.CustomPrefix+"partition"]
+	if partition == "" {
+		partition = r.partition
+	}
+	if partition != "" {
+		src += fmt.Sprintf("#SBATCH -p %s\n", partition)
 	}
 	if val := jobdef.Details["procs"]; val != "" {
 		if procN, err := strconv.Atoi(val); err == nil && procN > 0 {

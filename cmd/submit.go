@@ -118,6 +118,12 @@ var submitCmd = &cobra.Command{
 		// #BATCHQ -input  path   (repeatable; accumulates)
 		// #BATCHQ -output path   (repeatable; accumulates)
 
+		// Scheduler-passthrough entries sourced from in-script directives
+		// (#BATCHQ -custom, #SBATCH -A/-p). Kept separate from the --custom flag
+		// so the flag can override a directive for the same key: directives are
+		// applied first below, then flag entries last (last write wins).
+		var customDirectives []string
+
 		incomment := true
 		for _, line := range strings.Split(scriptSrc, "\n") {
 			if incomment && strings.TrimSpace(line) != "" {
@@ -218,6 +224,11 @@ var submitCmd = &cobra.Command{
 								log.Fatal("Missing value for -resource")
 							}
 							jobResources = append(jobResources, v)
+						case "custom":
+							if v == "" {
+								log.Fatal("Missing value for -custom")
+							}
+							customDirectives = append(customDirectives, v)
 						case "array":
 							if v == "" {
 								log.Fatal("Missing value for -array")
@@ -316,6 +327,18 @@ var submitCmd = &cobra.Command{
 								log.Fatal("Missing value for --constraint")
 							}
 							jobResources = append(jobResources, slurmConstraintFeatures(v)...)
+						case "A", "account":
+							// -A/--account -> generic custom.account passthrough
+							if v == "" {
+								log.Fatal("Missing value for -A")
+							}
+							customDirectives = append(customDirectives, "account="+v)
+						case "p", "partition":
+							// -p/--partition -> generic custom.partition passthrough
+							if v == "" {
+								log.Fatal("Missing value for -p")
+							}
+							customDirectives = append(customDirectives, "partition="+v)
 						case "a", "array":
 							if v == "" {
 								log.Fatal("Missing value for --array")
@@ -375,6 +398,18 @@ var submitCmd = &cobra.Command{
 				log.Fatalf("%v", err)
 			}
 			details[jobs.ResourcePrefix+name] = val
+		}
+
+		// generic scheduler passthrough (--custom key=value / #BATCHQ -custom ... /
+		// #SBATCH -A/-p). Interpreted by the proxy runner, not batchq's core.
+		// Directives first, then the --custom flag, so the flag overrides a
+		// directive for the same key.
+		for _, entry := range append(append([]string{}, customDirectives...), jobCustom...) {
+			name, val, err := jobs.ParseCustomEntry(entry)
+			if err != nil {
+				log.Fatalf("%v", err)
+			}
+			details[jobs.CustomPrefix+name] = val
 		}
 
 		// if the job name isn't set, look for a default option
@@ -586,6 +621,7 @@ var jobRunID string
 var jobInputs []string
 var jobOutputs []string
 var jobResources []string
+var jobCustom []string
 var jobArray string
 var jobAfterCorr []string
 var submitCluster string
@@ -613,6 +649,7 @@ func init() {
 	submitCmd.Flags().StringArrayVar(&jobInputs, "input", nil, "Input file path (repeatable)")
 	submitCmd.Flags().StringArrayVar(&jobOutputs, "output", nil, "Output file path (repeatable)")
 	submitCmd.Flags().StringArrayVar(&jobResources, "resource", nil, "Required resource (name=value or name, repeatable)")
+	submitCmd.Flags().StringArrayVar(&jobCustom, "custom", nil, "Scheduler passthrough value key=value (e.g. account=proj, partition=gpu; repeatable)")
 	submitCmd.Flags().StringVar(&submitCluster, "cluster", "", "Require this cluster (shorthand for --resource cluster=<name>)")
 	submitCmd.Flags().StringVar(&submitHost, "host", "", "Require this host (shorthand for --resource host=<name>)")
 	submitCmd.Flags().StringVar(&jobArray, "array", "", "Submit as a job array (e.g. 0-99, 1-10:2, 1,3,5, 0-99%4)")

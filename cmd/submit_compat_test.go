@@ -145,6 +145,7 @@ func resetSubmitFlags() {
 	jobInputs = nil
 	jobOutputs = nil
 	jobResources = nil
+	jobCustom = nil
 	jobArray = ""
 	jobAfterCorr = nil
 	submitCluster = ""
@@ -469,6 +470,8 @@ func TestSubmitSlurmHeaders(t *testing.T) {
 		"#SBATCH -t 02:00:00",
 		"#SBATCH -o out-%j.log",
 		"#SBATCH -e err-%j.log",
+		"#SBATCH -A myacct",
+		"#SBATCH -p gpu",
 		"echo go",
 	}, "\n") + "\n"
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
@@ -482,6 +485,13 @@ func TestSubmitSlurmHeaders(t *testing.T) {
 	}
 	if dto.Name != "slurmjob" {
 		t.Fatalf("name: %q", dto.Name)
+	}
+	// #SBATCH -A/-p map onto the generic custom.* passthrough details.
+	if dto.Details["custom.account"] != "myacct" {
+		t.Fatalf("custom.account: %q", dto.Details["custom.account"])
+	}
+	if dto.Details["custom.partition"] != "gpu" {
+		t.Fatalf("custom.partition: %q", dto.Details["custom.partition"])
 	}
 	if dto.Details["procs"] != "16" {
 		t.Fatalf("procs: %q", dto.Details["procs"])
@@ -502,6 +512,40 @@ func TestSubmitSlurmHeaders(t *testing.T) {
 	}
 	if !strings.Contains(dto.Details["stderr"], dto.JobID) {
 		t.Fatalf("stderr did not get %%j → %%JOBID → jobID: %q (want job %s)", dto.Details["stderr"], dto.JobID)
+	}
+}
+
+// TestSubmitCustomPassthrough covers the generic scheduler-passthrough surface:
+// the repeatable --custom flag and the #BATCHQ -custom directive both land under
+// the custom.* detail prefix, and a flag value overrides a directive value for
+// the same key (flags are applied after directives).
+func TestSubmitCustomPassthrough(t *testing.T) {
+	c := startCompatServer(t)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "custom.sh")
+	body := strings.Join([]string{
+		"#!/bin/sh",
+		"#BATCHQ -custom account=dir-acct",
+		"#BATCHQ -custom partition=dir-part",
+		"echo go",
+	}, "\n") + "\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	// --custom account=flag-acct should override the directive's account, while
+	// the directive-only partition survives.
+	out := runSubmit(t, "--custom", "account=flag-acct", script)
+	dto, err := c.GetJob(context.Background(), out)
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if dto.Details["custom.account"] != "flag-acct" {
+		t.Fatalf("--custom should override directive: custom.account=%q", dto.Details["custom.account"])
+	}
+	if dto.Details["custom.partition"] != "dir-part" {
+		t.Fatalf("directive partition should survive: custom.partition=%q", dto.Details["custom.partition"])
 	}
 }
 
