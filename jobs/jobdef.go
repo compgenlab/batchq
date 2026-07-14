@@ -118,6 +118,14 @@ func NewJobDef(name string, src string) *JobDef {
 // claim request, not in the job; see storage.jobFitsResources.
 const ResourcePrefix = "resource."
 
+// CustomPrefix namespaces generic scheduler-passthrough details (e.g.
+// "custom.account", "custom.partition") within the flat job_details key/value
+// store. batchq's core does not interpret these values; a proxy runner (the
+// SLURM runner today) translates the keys it recognizes into scheduler flags,
+// preferring a job's value over its own configured default. See
+// runner/slurm.go:slurmResourceDirectives.
+const CustomPrefix = "custom."
+
 // nameUnsafe matches any character that isn't safe in a bare, unquoted job
 // name; nameUnderscores matches runs of underscores left after substitution.
 var (
@@ -163,6 +171,28 @@ func ParseResourceEntry(entry string) (name, value string, err error) {
 		return "", "", fmt.Errorf("resource %q is reserved; use -p/-m/-t instead", name)
 	}
 	return name, value, nil
+}
+
+// ParseCustomEntry splits a "key=value" scheduler-passthrough entry, trimming
+// both halves. It requires a non-empty, whitespace-free key AND a non-empty
+// value (unlike a resource label, a bare key carries no meaning here), and
+// rejects the SLURM-enforced reserved names (procs/mem/walltime — use -p/-m/-t).
+// Shared by the submit CLI's --custom flag, #BATCHQ -custom directive, and the
+// #SBATCH -A/-p mapping so all validate identically.
+func ParseCustomEntry(entry string) (key, value string, err error) {
+	key, value, found := strings.Cut(entry, "=")
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" || strings.ContainsAny(key, " \t") {
+		return "", "", fmt.Errorf("bad custom key: %q", entry)
+	}
+	if !found || value == "" {
+		return "", "", fmt.Errorf("custom %q needs a value (key=value)", entry)
+	}
+	if IsReservedResourceName(key) {
+		return "", "", fmt.Errorf("custom %q is reserved; use -p/-m/-t instead", key)
+	}
+	return key, value, nil
 }
 
 func (job *JobDef) GetDetail(key string, defval string) string {
