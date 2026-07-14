@@ -327,7 +327,19 @@ func slurmRunnerRows(raw *support.Config) []debugRow {
 		stringRow("host", "", raw.SlurmRunner.Host, ""),
 		stringRow("cluster", "", raw.SlurmRunner.Cluster, ""),
 		resourcesRow(raw.SlurmRunner.Resources),
+		stringListRow("gres_resources", raw.SlurmRunner.GresResources),
+		stringListRow("gres_exclude", raw.SlurmRunner.GresExclude),
+		stringListRow("constraint_resources", raw.SlurmRunner.ConstraintResources),
+		stringListRow("nodelist_resources", raw.SlurmRunner.NodelistResources),
 	}
+}
+
+// stringListRow renders a []string config value as a "a, b, c" list.
+func stringListRow(name string, vals []string) debugRow {
+	if len(vals) == 0 {
+		return debugRow{name, "", "unset"}
+	}
+	return debugRow{name, strings.Join(vals, ", "), "config"}
 }
 
 // resourcesRow renders an advertised-resources map as a sorted "k=v, k=v" list.

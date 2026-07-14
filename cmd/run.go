@@ -81,7 +81,13 @@ var runCmd = &cobra.Command{
 				SetSlurmPartition(slurmPartition).
 				SetHost(host).
 				SetRunnerID(resolveRunnerID(runRunnerID, Config.SlurmRunner.RunnerID, host)).
-				SetResources(resources)
+				SetResources(resources).
+				SetResourceMapping(
+					Config.SlurmRunner.GresResources,
+					Config.SlurmRunner.GresExclude,
+					Config.SlurmRunner.ConstraintResources,
+					Config.SlurmRunner.NodelistResources,
+				)
 
 		case "simple":
 			if maxProcs < 0 && Config.SimpleRunner.MaxProcs > 0 {
