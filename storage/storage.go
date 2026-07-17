@@ -256,7 +256,9 @@ type Storage interface {
 	// CleanupJobs bulk-deletes a dependency-closed set of jobs (and all their
 	// rows) in batched transactions. Every dependent of a deleted job must also
 	// be in the set (see CleanupCandidates + the service's removal planner).
-	CleanupJobs(ctx context.Context, ids []string) error
+	// onProgress (may be nil) is called after each committed batch with the
+	// cumulative number of jobs deleted.
+	CleanupJobs(ctx context.Context, ids []string, onProgress func(done int)) error
 
 	// Backup writes a consistent snapshot of the database to destPath on the
 	// server's filesystem, using the existing connection — no second process

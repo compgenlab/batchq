@@ -4,6 +4,7 @@
 package client
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -443,12 +444,73 @@ func (c *Client) ArchiveJobs(ctx context.Context, ids []string, name string) (st
 
 // Cleanup runs a server-side bulk cleanup: the server selects eligible terminal
 // jobs (status + age), deletes or archives them in a dependency-safe order, and
-// optionally vacuums — all in one call. Uses doOnce (real work, not
-// auto-replayed); pair with a long-running client since it can far exceed 30s.
-func (c *Client) Cleanup(ctx context.Context, req api.CleanupRequest) (api.CleanupResponse, error) {
-	var resp api.CleanupResponse
-	err := c.doOnce(ctx, http.MethodPost, api.Prefix+api.RouteCleanup, &req, &resp)
-	return resp, err
+// optionally vacuums — all in one call. The server STREAMS progress as
+// newline-delimited api.CleanupEvent records; onEvent (may be nil) is invoked
+// for each as it arrives. Cleanup returns the final result assembled from the
+// "done" event. Not auto-replayed; pair with a long-running client (no
+// per-request timeout) since it can far exceed 30s.
+func (c *Client) Cleanup(ctx context.Context, req api.CleanupRequest, onEvent func(api.CleanupEvent)) (api.CleanupResponse, error) {
+	var result api.CleanupResponse
+
+	b, err := json.Marshal(&req)
+	if err != nil {
+		return result, fmt.Errorf("client: marshal body: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+api.Prefix+api.RouteCleanup, bytes.NewReader(b))
+	if err != nil {
+		return result, fmt.Errorf("client: new request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if c.opts.Token != "" {
+		httpReq.Header.Set(api.HeaderAuthorization, "Bearer "+c.opts.Token)
+	}
+	httpReq.Header.Set("User-Agent", c.opts.UserAgent)
+	httpReq.Header.Set("Accept", "application/x-ndjson")
+
+	resp, err := c.httpC.Do(httpReq)
+	if err != nil {
+		c.logf("http POST %s transport error: %v", api.RouteCleanup, err)
+		return result, fmt.Errorf("client: POST %s: %w", api.RouteCleanup, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		httpErr := &HTTPError{StatusCode: resp.StatusCode, Body: string(body), Draining: resp.Header.Get(api.HeaderDraining) == "1"}
+		var apiErr api.ErrorResponse
+		if json.Unmarshal(body, &apiErr) == nil && apiErr.Error != "" {
+			httpErr.APIError = &apiErr
+		}
+		return result, httpErr
+	}
+
+	// Stream the NDJSON events line by line.
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var streamErr error
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var ev api.CleanupEvent
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue // ignore a malformed line rather than aborting the whole op
+		}
+		if onEvent != nil {
+			onEvent(ev)
+		}
+		switch ev.Phase {
+		case api.CleanupPhaseDone:
+			result = api.CleanupResponse{Removed: ev.Removed, Blocked: ev.Blocked, ArchivePath: ev.ArchivePath, Vacuumed: ev.Vacuumed}
+		case api.CleanupPhaseError:
+			streamErr = fmt.Errorf("cleanup: %s", ev.Error)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return result, fmt.Errorf("client: read cleanup stream: %w", err)
+	}
+	return result, streamErr
 }
 
 func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api.JobDTO, error) {
