@@ -406,8 +406,12 @@ func (s *Server) handleVacuum(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCleanup runs a server-side bulk cleanup (select + dependency-safe
-// delete/archive + optional vacuum) and returns the counts. Synchronous and
-// potentially slow on a large DB — clients allow a long timeout.
+// delete/archive + optional vacuum) and STREAMS progress back as newline-
+// delimited JSON (api.CleanupEvent), so a long purge on a large DB reports live
+// instead of blocking silently. Request validation happens before any stream
+// bytes are written; once streaming starts, a failure is reported as an "error"
+// event (the HTTP status is already 200). The stream always ends with a "done"
+// or "error" event.
 func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 	var req api.CleanupRequest
 	if err := s.decode(r, &req); err != nil {
@@ -419,18 +423,31 @@ func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	flusher, _ := w.(http.Flusher)
+	emit := func(ev api.CleanupEvent) {
+		_ = enc.Encode(ev) // Encode appends a newline → one JSON object per line
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
+
 	res, err := s.svc.CleanupBulk(r.Context(), service.CleanupBulkOptions{
 		Statuses:    statuses,
 		OlderThan:   time.Duration(req.OlderThanSecs) * time.Second,
 		Archive:     req.Archive,
 		ArchiveName: req.ArchiveName,
 		Vacuum:      req.Vacuum,
-	})
+	}, emit)
 	if err != nil {
-		writeError(w, httpStatus(err), err)
+		emit(api.CleanupEvent{Phase: api.CleanupPhaseError, Error: err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, api.CleanupResponse{
+	emit(api.CleanupEvent{
+		Phase:       api.CleanupPhaseDone,
 		Removed:     res.Removed,
 		Blocked:     res.Blocked,
 		ArchivePath: res.ArchivePath,

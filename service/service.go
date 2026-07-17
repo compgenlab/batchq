@@ -831,6 +831,12 @@ func (s *Service) Vacuum(ctx context.Context) error {
 // mid-run never loses a job (it stays live and re-archives cleanly). Returns the
 // archive path and the number of jobs archived.
 func (s *Service) ArchiveJobs(ctx context.Context, ids []string, archiveName string) (string, int, error) {
+	return s.archiveOrdered(ctx, ids, archiveName, nil)
+}
+
+// archiveOrdered is ArchiveJobs with an optional per-batch progress callback
+// (cumulative jobs archived). Used by CleanupBulk to stream progress.
+func (s *Service) archiveOrdered(ctx context.Context, ids []string, archiveName string, onProgress func(done int)) (string, int, error) {
 	if s.archiveDir == "" {
 		return "", 0, fmt.Errorf("%w: no archive_dir configured", ErrBadRequest)
 	}
@@ -853,6 +859,7 @@ func (s *Service) ArchiveJobs(ctx context.Context, ids []string, archiveName str
 		return "", 0, fmt.Errorf("archive: open writer: %w", err)
 	}
 
+	const progressEvery = 500
 	count := 0
 	var moveErr error
 	for _, id := range ids {
@@ -876,8 +883,14 @@ func (s *Service) ArchiveJobs(ctx context.Context, ids []string, archiveName str
 			break
 		}
 		count++
+		if onProgress != nil && count%progressEvery == 0 {
+			onProgress(count)
+		}
 	}
 	_ = arc.Close()
+	if onProgress != nil && count > 0 && count%progressEvery != 0 {
+		onProgress(count) // final tick so the last partial batch is reported
+	}
 
 	if count == 0 {
 		// Nothing archived — drop the empty file so no read-only husk lingers.
@@ -976,7 +989,17 @@ type CleanupBulkResult struct {
 // round-trips), then deletes — or archives-then-deletes — them, optionally
 // vacuuming afterward. This is the scalable replacement for the old client-side
 // planner: the whole operation is one server call over data next to the DB.
-func (s *Service) CleanupBulk(ctx context.Context, opts CleanupBulkOptions) (CleanupBulkResult, error) {
+//
+// progress (may be nil) receives an event per phase — the candidate selection,
+// per-batch delete/archive progress, and the vacuum — so a caller (the streaming
+// handler) can report live on a long-running purge. The terminal "done"/"error"
+// event is emitted by the caller, not here.
+func (s *Service) CleanupBulk(ctx context.Context, opts CleanupBulkOptions, progress func(api.CleanupEvent)) (CleanupBulkResult, error) {
+	emit := func(ev api.CleanupEvent) {
+		if progress != nil {
+			progress(ev)
+		}
+	}
 	var res CleanupBulkResult
 
 	if len(opts.Statuses) > 0 {
@@ -990,17 +1013,22 @@ func (s *Service) CleanupBulk(ctx context.Context, opts CleanupBulkOptions) (Cle
 		}
 		order, blocked := planRemoval(ids, edges)
 		res.Blocked = blocked
+		emit(api.CleanupEvent{Phase: api.CleanupPhaseSelected, Matched: len(ids), Total: len(order), Blocked: blocked})
 
 		if len(order) > 0 {
 			if opts.Archive {
-				path, count, err := s.ArchiveJobs(ctx, order, opts.ArchiveName)
+				path, count, err := s.archiveOrdered(ctx, order, opts.ArchiveName, func(done int) {
+					emit(api.CleanupEvent{Phase: api.CleanupPhaseArchiving, Done: done, Total: len(order)})
+				})
 				if err != nil {
 					return res, err
 				}
 				res.ArchivePath = path
 				res.Removed = count
 			} else {
-				if err := s.store.CleanupJobs(ctx, order); err != nil {
+				if err := s.store.CleanupJobs(ctx, order, func(done int) {
+					emit(api.CleanupEvent{Phase: api.CleanupPhaseDeleting, Done: done, Total: len(order)})
+				}); err != nil {
 					return res, err
 				}
 				res.Removed = len(order)
@@ -1009,6 +1037,7 @@ func (s *Service) CleanupBulk(ctx context.Context, opts CleanupBulkOptions) (Cle
 	}
 
 	if opts.Vacuum {
+		emit(api.CleanupEvent{Phase: api.CleanupPhaseVacuum})
 		if err := s.store.Vacuum(ctx); err != nil {
 			return res, err
 		}

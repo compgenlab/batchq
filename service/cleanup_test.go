@@ -65,7 +65,7 @@ func TestCleanupBulkDeletes(t *testing.T) {
 	ctx := ctxT(t)
 	id := submitTerminal(t, svc, ctx, "j")
 
-	res, err := svc.CleanupBulk(ctx, CleanupBulkOptions{Statuses: []jobs.StatusCode{jobs.SUCCESS}})
+	res, err := svc.CleanupBulk(ctx, CleanupBulkOptions{Statuses: []jobs.StatusCode{jobs.SUCCESS}}, nil)
 	if err != nil {
 		t.Fatalf("CleanupBulk: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestCleanupBulkArchives(t *testing.T) {
 		Statuses: []jobs.StatusCode{jobs.SUCCESS},
 		Archive:  true,
 		Vacuum:   true,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("CleanupBulk: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestCleanupBulkOlderThanExcludesRecent(t *testing.T) {
 	res, err := svc.CleanupBulk(ctx, CleanupBulkOptions{
 		Statuses:  []jobs.StatusCode{jobs.SUCCESS},
 		OlderThan: time.Hour,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("CleanupBulk: %v", err)
 	}
@@ -120,6 +120,33 @@ func TestCleanupBulkOlderThanExcludesRecent(t *testing.T) {
 	}
 	if _, err := svc.GetJob(ctx, id, false); err != nil {
 		t.Fatalf("job should still be live: %v", err)
+	}
+}
+
+// CleanupBulk streams progress events: candidate selection, per-batch delete
+// progress, and the vacuum step.
+func TestCleanupBulkEmitsProgress(t *testing.T) {
+	svc, _ := newServiceWithArchives(t)
+	ctx := ctxT(t)
+	submitTerminal(t, svc, ctx, "a")
+	submitTerminal(t, svc, ctx, "b")
+
+	seen := map[string]api.CleanupEvent{}
+	_, err := svc.CleanupBulk(ctx,
+		CleanupBulkOptions{Statuses: []jobs.StatusCode{jobs.SUCCESS}, Vacuum: true},
+		func(ev api.CleanupEvent) { seen[ev.Phase] = ev },
+	)
+	if err != nil {
+		t.Fatalf("CleanupBulk: %v", err)
+	}
+	if ev, ok := seen[api.CleanupPhaseSelected]; !ok || ev.Matched != 2 || ev.Total != 2 {
+		t.Fatalf("selected event = %+v (present=%v), want Matched=2 Total=2", seen[api.CleanupPhaseSelected], ok)
+	}
+	if ev, ok := seen[api.CleanupPhaseDeleting]; !ok || ev.Done != 2 {
+		t.Fatalf("deleting event = %+v (present=%v), want Done=2", seen[api.CleanupPhaseDeleting], ok)
+	}
+	if _, ok := seen[api.CleanupPhaseVacuum]; !ok {
+		t.Fatalf("no vacuum event; saw phases %v", seen)
 	}
 }
 
@@ -148,7 +175,7 @@ func TestCleanupBulkDeletesDependencyChain(t *testing.T) {
 		t.Fatalf("EndJob child: %v", err)
 	}
 
-	res, err := svc.CleanupBulk(ctx, CleanupBulkOptions{Statuses: []jobs.StatusCode{jobs.SUCCESS}})
+	res, err := svc.CleanupBulk(ctx, CleanupBulkOptions{Statuses: []jobs.StatusCode{jobs.SUCCESS}}, nil)
 	if err != nil {
 		t.Fatalf("CleanupBulk: %v", err)
 	}
