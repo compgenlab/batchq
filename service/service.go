@@ -954,6 +954,142 @@ func (s *Service) getArchivedJob(ctx context.Context, jobID string) (*jobs.JobDe
 	return nil, storage.ErrJobNotFound
 }
 
+// CleanupBulkOptions parameterizes a server-side bulk cleanup.
+type CleanupBulkOptions struct {
+	Statuses    []jobs.StatusCode // terminal statuses to select; empty = purge nothing
+	OlderThan   time.Duration     // only jobs whose end_time is older than this; 0 = no age filter
+	Archive     bool              // true: archive-then-delete; false: delete
+	ArchiveName string            // archive file name (Archive only); empty = timestamped
+	Vacuum      bool              // VACUUM the live DB after the purge
+}
+
+// CleanupBulkResult reports what a bulk cleanup did.
+type CleanupBulkResult struct {
+	Removed     int    // jobs deleted (or archived+deleted)
+	Blocked     int    // eligible jobs left in place because a dependent wasn't eligible
+	ArchivePath string // server-side archive file, when Archive
+	Vacuumed    bool
+}
+
+// CleanupBulk selects eligible terminal jobs (by status + age, in SQL), computes
+// a dependency-safe removal order in-process from bulk queries (no per-job
+// round-trips), then deletes — or archives-then-deletes — them, optionally
+// vacuuming afterward. This is the scalable replacement for the old client-side
+// planner: the whole operation is one server call over data next to the DB.
+func (s *Service) CleanupBulk(ctx context.Context, opts CleanupBulkOptions) (CleanupBulkResult, error) {
+	var res CleanupBulkResult
+
+	if len(opts.Statuses) > 0 {
+		var endBefore time.Time
+		if opts.OlderThan > 0 {
+			endBefore = time.Now().Add(-opts.OlderThan)
+		}
+		ids, edges, err := s.store.CleanupCandidates(ctx, opts.Statuses, endBefore)
+		if err != nil {
+			return res, err
+		}
+		order, blocked := planRemoval(ids, edges)
+		res.Blocked = blocked
+
+		if len(order) > 0 {
+			if opts.Archive {
+				path, count, err := s.ArchiveJobs(ctx, order, opts.ArchiveName)
+				if err != nil {
+					return res, err
+				}
+				res.ArchivePath = path
+				res.Removed = count
+			} else {
+				if err := s.store.CleanupJobs(ctx, order); err != nil {
+					return res, err
+				}
+				res.Removed = len(order)
+			}
+		}
+	}
+
+	if opts.Vacuum {
+		if err := s.store.Vacuum(ctx); err != nil {
+			return res, err
+		}
+		res.Vacuumed = true
+	}
+	return res, nil
+}
+
+// planRemoval computes a dependency-safe removal order from a candidate set and
+// its dependency edges: a job is removable only if every job that depends on it
+// (afterok) is also a candidate and itself removable — so a parent is never
+// deleted while a kept/active dependent still references it. Returns the
+// post-order list (dependents before parents) and the count of candidates left
+// blocked. Pure in-memory graph work; the same algorithm the old client-side
+// planner ran, now fed by two bulk queries instead of N REST calls.
+func planRemoval(candidateIDs []string, edges []storage.CleanupDepEdge) (order []string, blocked int) {
+	cand := make(map[string]bool, len(candidateIDs))
+	for _, id := range candidateIDs {
+		cand[id] = true
+	}
+	dependents := make(map[string][]string)
+	for _, e := range edges {
+		dependents[e.AfterokID] = append(dependents[e.AfterokID], e.JobID)
+	}
+
+	const (
+		stUnknown = iota
+		stVisiting
+		stRemovable
+		stBlocked
+	)
+	state := make(map[string]int, len(candidateIDs))
+	var canRemove func(id string) bool
+	canRemove = func(id string) bool {
+		if st, ok := state[id]; ok {
+			if st == stVisiting { // cycle guard (job_deps is a DAG, but be safe)
+				state[id] = stBlocked
+				return false
+			}
+			return st == stRemovable
+		}
+		if !cand[id] {
+			state[id] = stBlocked
+			return false
+		}
+		state[id] = stVisiting
+		for _, dep := range dependents[id] {
+			if !canRemove(dep) {
+				state[id] = stBlocked
+				return false
+			}
+		}
+		state[id] = stRemovable
+		return true
+	}
+
+	added := make(map[string]bool, len(candidateIDs))
+	var add func(id string)
+	add = func(id string) {
+		if added[id] || !canRemove(id) {
+			return
+		}
+		for _, dep := range dependents[id] {
+			add(dep)
+		}
+		if !added[id] {
+			order = append(order, id)
+			added[id] = true
+		}
+	}
+	for _, id := range candidateIDs {
+		add(id)
+	}
+	for _, id := range candidateIDs {
+		if !canRemove(id) {
+			blocked++
+		}
+	}
+	return order, blocked
+}
+
 // Backup snapshots the database to destPath and returns the absolute path
 // written. The path resolves against the SERVER's filesystem (the snapshot is
 // taken by the server's own connection). When destPath is empty a default is

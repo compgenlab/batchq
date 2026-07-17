@@ -232,6 +232,30 @@ type ArchiveJobsResponse struct {
 	Count int    `json:"count"`
 }
 
+// CleanupRequest is the body of POST /admin/cleanup — a server-side bulk
+// cleanup. Statuses names the terminal statuses to select; OlderThanSecs (0 =
+// no age filter) keeps jobs whose end_time is within that many seconds of now.
+// Archive=true archives-then-deletes (into ArchiveName, or a timestamped default);
+// otherwise the jobs are deleted. Vacuum compacts the live DB afterward.
+type CleanupRequest struct {
+	Statuses      []string `json:"statuses"`
+	OlderThanSecs int64    `json:"older_than_secs,omitempty"`
+	Archive       bool     `json:"archive,omitempty"`
+	ArchiveName   string   `json:"archive_name,omitempty"`
+	Vacuum        bool     `json:"vacuum,omitempty"`
+}
+
+// CleanupResponse reports what POST /admin/cleanup did: Removed jobs deleted (or
+// archived+deleted), Blocked eligible jobs left in place because a dependent
+// wasn't eligible, ArchivePath the archive file (when archiving), and whether a
+// VACUUM ran.
+type CleanupResponse struct {
+	Removed     int    `json:"removed"`
+	Blocked     int    `json:"blocked"`
+	ArchivePath string `json:"archive_path,omitempty"`
+	Vacuumed    bool   `json:"vacuumed"`
+}
+
 // PriorityRequest is the body of POST /jobs/{id}/priority.
 type PriorityRequest struct {
 	Delta int `json:"delta"`

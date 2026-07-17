@@ -72,14 +72,16 @@ func debugLog(role string) *support.DebugLogger {
 // client dials the local [server] listen unix socket and may autospawn
 // a server if nothing is answering.
 func dialClient() (*client.Client, error) {
-	return dialClientWithTimeout(30 * time.Second)
+	return dialClientOpts(false)
 }
 
-// dialClientWithTimeout is dialClient with an explicit per-request HTTP timeout.
-// reqTimeout == 0 means "no per-request cap — the caller's context governs",
-// used by long-running admin ops (vacuum, big archive/backup) whose work can
-// far exceed the 30s default and would otherwise hard-fail mid-request.
-func dialClientWithTimeout(reqTimeout time.Duration) (*client.Client, error) {
+// dialClientOpts is dialClient with control over the per-request cap. When
+// noReqTimeout is true the client has NO per-request HTTP timeout (only the
+// caller's context bounds a request) — used by long-running admin ops (vacuum,
+// bulk cleanup/archive, backup) whose work can far exceed 30s and would
+// otherwise hard-fail mid-request. The autospawn health probe still uses the
+// concrete 30s Timeout so it fails fast.
+func dialClientOpts(noReqTimeout bool) (*client.Client, error) {
 	remoteRaw := clientRemote
 	if remoteRaw == "" {
 		remoteRaw = Config.Batchq.Remote
@@ -103,9 +105,10 @@ func dialClientWithTimeout(reqTimeout time.Duration) (*client.Client, error) {
 	}
 	logger := debugLog("client")
 	opts := client.Options{
-		URL:     dialURL,
-		Token:   token,
-		Timeout: reqTimeout,
+		URL:              dialURL,
+		Token:            token,
+		Timeout:          30 * time.Second,
+		NoRequestTimeout: noReqTimeout,
 	}
 	if logger != nil {
 		opts.Log = logger.Logf
@@ -177,7 +180,7 @@ func mustDialClient() *client.Client {
 // per-request HTTP timeout so the caller's context (cmdContextLong) is the only
 // bound, instead of the 30s default that would abort a slow-but-successful op.
 func mustDialClientLongRunning() *client.Client {
-	c, err := dialClientWithTimeout(0)
+	c, err := dialClientOpts(true)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error connecting to batchq server: %v\n", err)
 		os.Exit(1)
