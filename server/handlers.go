@@ -118,13 +118,14 @@ func (s *Server) handleSubmitArray(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListJobs(w http.ResponseWriter, r *http.Request) {
 	opts := service.ListJobsOptions{
-		ShowAll:      r.URL.Query().Get("all") == "true",
-		SortByStatus: r.URL.Query().Get("sort_by_status") == "true",
-		Query:        r.URL.Query().Get("q"),
-		RunID:        r.URL.Query().Get("run_id"),
-		ArrayID:      r.URL.Query().Get("array_id"),
-		Output:       r.URL.Query().Get("output"),
-		Input:        r.URL.Query().Get("input"),
+		ShowAll:         r.URL.Query().Get("all") == "true",
+		SortByStatus:    r.URL.Query().Get("sort_by_status") == "true",
+		Query:           r.URL.Query().Get("q"),
+		RunID:           r.URL.Query().Get("run_id"),
+		ArrayID:         r.URL.Query().Get("array_id"),
+		Output:          r.URL.Query().Get("output"),
+		Input:           r.URL.Query().Get("input"),
+		IncludeArchives: r.URL.Query().Get(api.QueryIncludeArchives) == "true",
 	}
 	var terr error
 	if opts.Since, terr = queryTime(r, "since"); terr != nil {
@@ -167,7 +168,8 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	dto, err := s.svc.GetJob(r.Context(), id)
+	includeArchives := r.URL.Query().Get(api.QueryIncludeArchives) == "true"
+	dto, err := s.svc.GetJob(r.Context(), id, includeArchives)
 	if err != nil {
 		writeError(w, httpStatus(err), err)
 		return
@@ -391,6 +393,32 @@ func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, api.BackupResponse{Path: path})
+}
+
+// handleVacuum runs VACUUM on the live DB via the service. Synchronous — may be
+// slow on a large DB, so clients must allow a long timeout.
+func (s *Server) handleVacuum(w http.ResponseWriter, r *http.Request) {
+	if err := s.svc.Vacuum(r.Context()); err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleArchiveJobs moves a set of terminal jobs into a new read-only archive DB
+// on the server's filesystem and returns its path plus the count archived.
+func (s *Server) handleArchiveJobs(w http.ResponseWriter, r *http.Request) {
+	var req api.ArchiveJobsRequest
+	if err := s.decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	path, count, err := s.svc.ArchiveJobs(r.Context(), req.IDs, req.ArchiveName)
+	if err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.ArchiveJobsResponse{Path: path, Count: count})
 }
 
 // --- runner handlers ---------------------------------------------------

@@ -16,6 +16,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,14 +40,31 @@ var (
 type Service struct {
 	store storage.Storage
 
+	// archiveDir is where `cleanup --archive` writes archive DBs and where the
+	// archive fallback lookup scans. Empty disables archiving/fallback.
+	archiveDir string
+
 	// resolveMu serializes dep-resolution work so a burst of state
 	// transitions only triggers one ResolveDependencies pass.
 	resolveMu sync.Mutex
 }
 
+// Option configures a Service at construction.
+type Option func(*Service)
+
+// WithArchiveDir sets the directory used for `cleanup --archive` and the archive
+// fallback lookup. An empty dir leaves archiving disabled.
+func WithArchiveDir(dir string) Option {
+	return func(s *Service) { s.archiveDir = dir }
+}
+
 // New returns a Service backed by the given Storage.
-func New(s storage.Storage) *Service {
-	return &Service{store: s}
+func New(s storage.Storage, opts ...Option) *Service {
+	svc := &Service{store: s}
+	for _, o := range opts {
+		o(svc)
+	}
+	return svc
 }
 
 // --- Submission --------------------------------------------------------
@@ -437,12 +455,18 @@ func joinUint32(vals []uint32, sep string) string {
 
 // --- Reads -------------------------------------------------------------
 
-func (s *Service) GetJob(ctx context.Context, jobID string) (*api.JobDTO, error) {
+func (s *Service) GetJob(ctx context.Context, jobID string, includeArchives bool) (*api.JobDTO, error) {
 	job, err := s.store.GetJob(ctx, jobID)
-	if err != nil {
-		return nil, err
+	if err == nil {
+		return api.JobFromDef(job), nil
 	}
-	return api.JobFromDef(job), nil
+	// Fallback: consult archive DBs only on a live miss, and only when asked.
+	if includeArchives && errors.Is(err, storage.ErrJobNotFound) {
+		if aj, aerr := s.getArchivedJob(ctx, jobID); aerr == nil {
+			return api.JobFromDef(aj), nil
+		}
+	}
+	return nil, err
 }
 
 // ListJobsOptions controls the GET /jobs endpoint.
@@ -464,9 +488,51 @@ type ListJobsOptions struct {
 	// values are ignored.
 	Since  time.Time
 	Before time.Time
+
+	// IncludeArchives unions matches from the archive DBs into the result.
+	// Opt-in ("within reason") — archives are only opened when this is set.
+	IncludeArchives bool
 }
 
 func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
+	out, err := s.listFrom(ctx, s.store, opts)
+	if err != nil {
+		return nil, err
+	}
+	if opts.IncludeArchives {
+		paths, perr := s.archivePaths()
+		if perr != nil {
+			return nil, perr
+		}
+		seen := make(map[string]struct{}, len(out))
+		for _, j := range out {
+			seen[j.JobId] = struct{}{}
+		}
+		for _, p := range paths {
+			arc, oerr := storage.OpenReadOnly(ctx, p)
+			if oerr != nil {
+				continue // skip an unreadable archive rather than failing the whole query
+			}
+			ajobs, lerr := s.listFrom(ctx, arc, opts)
+			arc.Close()
+			if lerr != nil {
+				continue
+			}
+			for _, j := range ajobs {
+				if _, dup := seen[j.JobId]; dup {
+					continue
+				}
+				seen[j.JobId] = struct{}{}
+				out = append(out, j)
+			}
+		}
+	}
+	return toDTOs(out), nil
+}
+
+// listFrom runs the ListJobs computation against a specific store (the live
+// store, or an archive DB during a fallback lookup). Returns hydrated JobDefs.
+func (s *Service) listFrom(ctx context.Context, store storage.Storage, opts ListJobsOptions) ([]*jobs.JobDef, error) {
 	// A detail filter (array/run/output/input) narrows the base listing to a
 	// small set. Skip per-job relation hydration in the base query and hydrate
 	// only the survivors — otherwise listing e.g. one array's tasks would
@@ -480,11 +546,11 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 	)
 	switch {
 	case opts.Query != "":
-		out, err = s.store.SearchJobs(ctx, opts.Query, opts.Statuses, opts.Since, opts.Before, loadRelations)
+		out, err = store.SearchJobs(ctx, opts.Query, opts.Statuses, opts.Since, opts.Before, loadRelations)
 	case len(opts.Statuses) > 0:
-		out, err = s.store.ListJobsByStatus(ctx, opts.Statuses, opts.SortByStatus, opts.Since, opts.Before, loadRelations)
+		out, err = store.ListJobsByStatus(ctx, opts.Statuses, opts.SortByStatus, opts.Since, opts.Before, loadRelations)
 	default:
-		out, err = s.store.ListJobs(ctx, opts.ShowAll, opts.SortByStatus, opts.Since, opts.Before, loadRelations)
+		out, err = store.ListJobs(ctx, opts.ShowAll, opts.SortByStatus, opts.Since, opts.Before, loadRelations)
 	}
 	if err != nil {
 		return nil, err
@@ -493,28 +559,28 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 	if detailFilter {
 		var allow map[string]struct{}
 		if opts.RunID != "" {
-			ids, err := s.store.FindJobsByDetail(ctx, "run_id", opts.RunID)
+			ids, err := store.FindJobsByDetail(ctx, "run_id", opts.RunID)
 			if err != nil {
 				return nil, err
 			}
 			allow = intersect(allow, ids)
 		}
 		if opts.ArrayID != "" {
-			ids, err := s.store.FindJobsByDetail(ctx, "array_id", opts.ArrayID)
+			ids, err := store.FindJobsByDetail(ctx, "array_id", opts.ArrayID)
 			if err != nil {
 				return nil, err
 			}
 			allow = intersect(allow, ids)
 		}
 		if opts.Output != "" {
-			ids, err := s.store.FindJobsByOutputPath(ctx, opts.Output)
+			ids, err := store.FindJobsByOutputPath(ctx, opts.Output)
 			if err != nil {
 				return nil, err
 			}
 			allow = intersect(allow, ids)
 		}
 		if opts.Input != "" {
-			ids, err := s.store.FindJobsByInputPath(ctx, opts.Input)
+			ids, err := store.FindJobsByInputPath(ctx, opts.Input)
 			if err != nil {
 				return nil, err
 			}
@@ -530,13 +596,13 @@ func (s *Service) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Jo
 
 		// The base listing ran with loadRelations=false; hydrate only the
 		// jobs that survived the detail filter.
-		if err := s.store.HydrateJobs(ctx, out); err != nil {
+		if err := store.HydrateJobs(ctx, out); err != nil {
 			return nil, err
 		}
 	}
 
 	// since/before are applied in SQL by the store methods above, not here.
-	return toDTOs(out), nil
+	return out, nil
 }
 
 // intersect merges a new set of IDs into the running allow-set. The
@@ -746,6 +812,146 @@ func (s *Service) CleanupJob(ctx context.Context, jobID string) error {
 
 func isTerminal(s jobs.StatusCode) bool {
 	return s == jobs.SUCCESS || s == jobs.FAILED || s == jobs.CANCELED
+}
+
+// Vacuum reclaims free pages in the live DB (VACUUM). Run after a purge to
+// actually shrink the file. May be slow on a large DB — callers budget a long
+// timeout (see the long-running client in cmd/).
+func (s *Service) Vacuum(ctx context.Context) error {
+	return s.store.Vacuum(ctx)
+}
+
+// ArchiveJobs moves the given terminal jobs into a NEW archive DB under the
+// server's archive dir, then makes that file read-only. ids must be in the
+// cleanup planner's dependency-safe order (dependents before parents) so the
+// per-job delete-from-live satisfies foreign keys. archiveName selects the file
+// (<archiveDir>/<name>.db); empty picks a timestamped default. The archive must
+// not already exist — archives are write-once. Each job is copied into the
+// archive and committed there BEFORE it is deleted from the live DB, so a crash
+// mid-run never loses a job (it stays live and re-archives cleanly). Returns the
+// archive path and the number of jobs archived.
+func (s *Service) ArchiveJobs(ctx context.Context, ids []string, archiveName string) (string, int, error) {
+	if s.archiveDir == "" {
+		return "", 0, fmt.Errorf("%w: no archive_dir configured", ErrBadRequest)
+	}
+	name := sanitizeArchiveName(archiveName)
+	if name == "" {
+		name = "archive-" + time.Now().Format("20060102-150405")
+	}
+	if err := os.MkdirAll(s.archiveDir, 0o755); err != nil {
+		return "", 0, fmt.Errorf("archive: create dir: %w", err)
+	}
+	path := filepath.Join(s.archiveDir, name+".db")
+	if _, err := os.Stat(path); err == nil {
+		return "", 0, fmt.Errorf("%w: archive already exists: %s", ErrBadRequest, path)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", 0, fmt.Errorf("archive: stat destination: %w", err)
+	}
+
+	arc, err := storage.OpenArchiveWriter(ctx, path)
+	if err != nil {
+		return "", 0, fmt.Errorf("archive: open writer: %w", err)
+	}
+
+	count := 0
+	var moveErr error
+	for _, id := range ids {
+		job, err := s.store.GetJob(ctx, id)
+		if err != nil {
+			moveErr = fmt.Errorf("archive: load %s: %w", id, err)
+			break
+		}
+		if !isTerminal(job.Status) {
+			moveErr = fmt.Errorf("%w: cannot archive non-terminal job %s (%s)", ErrInvalidState, id, job.Status)
+			break
+		}
+		// Commit to the archive first, then delete from live: a crash between
+		// leaves the job live (found on the next run), never lost.
+		if err := arc.RestoreJob(ctx, job); err != nil {
+			moveErr = fmt.Errorf("archive: write %s: %w", id, err)
+			break
+		}
+		if err := s.store.CleanupJob(ctx, id); err != nil {
+			moveErr = fmt.Errorf("archive: remove %s from live: %w", id, err)
+			break
+		}
+		count++
+	}
+	_ = arc.Close()
+
+	if count == 0 {
+		// Nothing archived — drop the empty file so no read-only husk lingers.
+		_ = os.Remove(path)
+		return path, 0, moveErr
+	}
+	// Finalize: archives are write-once. Read-only enforces immutability and lets
+	// the fallback lookup open them without contending for write access.
+	if err := os.Chmod(path, 0o440); err != nil && moveErr == nil {
+		moveErr = fmt.Errorf("archive: set read-only: %w", err)
+	}
+	return path, count, moveErr
+}
+
+// sanitizeArchiveName strips any directory components and a trailing .db from a
+// user-supplied archive name, so `--archive foo` and `--archive foo.db` both map
+// to <archiveDir>/foo.db and a name can never escape the archive dir.
+func sanitizeArchiveName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	name = filepath.Base(name)
+	name = strings.TrimSuffix(name, ".db")
+	if name == "." || name == ".." || name == "/" {
+		return ""
+	}
+	return name
+}
+
+// archivePaths lists the archive DB files (*.db) in the archive dir, newest
+// first (timestamped names sort chronologically, so reverse-lexical ≈ newest
+// first). Empty when no archive dir is configured or it doesn't exist.
+func (s *Service) archivePaths() ([]string, error) {
+	if s.archiveDir == "" {
+		return nil, nil
+	}
+	entries, err := os.ReadDir(s.archiveDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var paths []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".db") {
+			continue
+		}
+		paths = append(paths, filepath.Join(s.archiveDir, e.Name()))
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+	return paths, nil
+}
+
+// getArchivedJob scans archive DBs for a job by id, returning the first hit.
+// Returns ErrJobNotFound when no archive has it.
+func (s *Service) getArchivedJob(ctx context.Context, jobID string) (*jobs.JobDef, error) {
+	paths, err := s.archivePaths()
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range paths {
+		arc, oerr := storage.OpenReadOnly(ctx, p)
+		if oerr != nil {
+			continue // skip an unreadable archive
+		}
+		job, gerr := arc.GetJob(ctx, jobID)
+		arc.Close()
+		if gerr == nil {
+			return job, nil
+		}
+	}
+	return nil, storage.ErrJobNotFound
 }
 
 // Backup snapshots the database to destPath and returns the absolute path

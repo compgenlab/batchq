@@ -403,6 +403,27 @@ func (c *Client) Backup(ctx context.Context, dest string) (string, error) {
 	return resp.Path, nil
 }
 
+// Vacuum asks the server to VACUUM its live DB in place (reclaim free pages).
+// Uses doOnce — an admin op that does real work, not auto-replayed across an
+// idle-server handoff. May be slow on a large DB; budget the caller's context.
+func (c *Client) Vacuum(ctx context.Context) error {
+	return c.doOnce(ctx, http.MethodPost, api.Prefix+api.RouteVacuum, nil, nil)
+}
+
+// ArchiveJobs asks the server to move the given terminal jobs (in dependency-safe
+// order) into a new read-only archive DB. name selects the archive file
+// (server-side, under [server] archive_dir); empty picks a timestamped default.
+// Returns the server-side archive path and the count archived. Uses doOnce (real
+// work, not auto-replayed).
+func (c *Client) ArchiveJobs(ctx context.Context, ids []string, name string) (string, int, error) {
+	var resp api.ArchiveJobsResponse
+	if err := c.doOnce(ctx, http.MethodPost, api.Prefix+api.RouteJobsArchive,
+		&api.ArchiveJobsRequest{IDs: ids, ArchiveName: name}, &resp); err != nil {
+		return "", 0, err
+	}
+	return resp.Path, resp.Count, nil
+}
+
 func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api.JobDTO, error) {
 	var resp api.SubmitJobResponse
 	if err := c.do(ctx, http.MethodPost, api.Prefix+api.RouteJobs, req, &resp); err != nil {
@@ -422,8 +443,22 @@ func (c *Client) SubmitArray(ctx context.Context, req *api.SubmitArrayRequest) (
 }
 
 func (c *Client) GetJob(ctx context.Context, jobID string) (*api.JobDTO, error) {
+	return c.getJob(ctx, jobID, false)
+}
+
+// GetJobWithArchives is GetJob that falls back to the server's archive DBs when
+// the job isn't in the live DB (status/details --archives).
+func (c *Client) GetJobWithArchives(ctx context.Context, jobID string) (*api.JobDTO, error) {
+	return c.getJob(ctx, jobID, true)
+}
+
+func (c *Client) getJob(ctx context.Context, jobID string, includeArchives bool) (*api.JobDTO, error) {
+	path := api.Prefix + "/jobs/" + jobID
+	if includeArchives {
+		path += "?" + api.QueryIncludeArchives + "=true"
+	}
 	var resp api.JobResponse
-	if err := c.do(ctx, http.MethodGet, api.Prefix+"/jobs/"+jobID, nil, &resp); err != nil {
+	if err := c.do(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Job, nil
@@ -446,6 +481,10 @@ type ListJobsOptions struct {
 
 	Since  time.Time // jobs submitted at/after this time (inclusive)
 	Before time.Time // jobs submitted before this time (exclusive)
+
+	// IncludeArchives unions matches from the server's archive DBs (search
+	// --archives). Opt-in — archives are only scanned when this is set.
+	IncludeArchives bool
 }
 
 func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.JobDTO, error) {
@@ -485,6 +524,9 @@ func (c *Client) ListJobs(ctx context.Context, opts ListJobsOptions) ([]*api.Job
 	}
 	if !opts.Before.IsZero() {
 		q.Set("before", opts.Before.UTC().Format(time.RFC3339))
+	}
+	if opts.IncludeArchives {
+		q.Set(api.QueryIncludeArchives, "true")
 	}
 	path := api.Prefix + api.RouteJobs
 	if encoded := q.Encode(); encoded != "" {

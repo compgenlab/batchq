@@ -34,7 +34,7 @@ var detailsCmd = &cobra.Command{
 					continue
 				}
 				ctx, cancel := cmdContext()
-				target, err := resolveTarget(ctx, c, jobid)
+				target, err := resolveTarget(ctx, c, jobid, showIncludeArchives)
 				cancel()
 				if err != nil {
 					fmt.Fprintln(os.Stderr, err)
@@ -63,7 +63,7 @@ func emitJSON(c *client.Client, args []string) {
 				continue
 			}
 			ctx, cancel := cmdContext()
-			target, err := resolveTarget(ctx, c, jobid)
+			target, err := resolveTarget(ctx, c, jobid, showIncludeArchives)
 			cancel()
 			if err != nil {
 				continue // unknown id -> omit (matches --porcelain)
@@ -368,7 +368,7 @@ var statusCmd = &cobra.Command{
 					continue
 				}
 				ctx, cancel := cmdContext()
-				target, err := resolveTarget(ctx, c, jobid)
+				target, err := resolveTarget(ctx, c, jobid, showIncludeArchives)
 				cancel()
 				if err != nil {
 					fmt.Fprintln(os.Stderr, err)
@@ -451,6 +451,10 @@ var statusShowEnd bool
 var statusShowWall bool
 var statusPorcelain bool
 var statusJSON bool
+
+// showIncludeArchives is the --archives flag on status/details: fall back to the
+// server's archive DBs for a job/array not found in the live DB.
+var showIncludeArchives bool
 var queueRunID string
 var queueArrayID string
 var queueOutput string
@@ -477,7 +481,9 @@ func init() {
 	statusCmd.Flags().BoolVarP(&statusShowWall, "walltime", "t", false, "Show wall time (end-start)")
 	statusCmd.Flags().BoolVar(&statusPorcelain, "porcelain", false, "Machine-readable: one '<id>\\t<status>' line per queried id (arrays collapse to one status)")
 	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "Machine-readable: a JSON array of job objects")
+	statusCmd.Flags().BoolVar(&showIncludeArchives, "archives", false, "Also look in archived jobs when an id isn't in the live DB")
 	detailsCmd.Flags().BoolVar(&statusJSON, "json", false, "Machine-readable: a JSON array of job objects")
+	detailsCmd.Flags().BoolVar(&showIncludeArchives, "archives", false, "Also look in archived jobs when an id isn't in the live DB")
 
 	rootCmd.AddCommand(detailsCmd)
 	rootCmd.AddCommand(queueCmd)

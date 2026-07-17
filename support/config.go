@@ -92,6 +92,12 @@ type ServerConfig struct {
 	// Prefer the BATCHQ_SERVER_TOKEN env var so the secret stays out of a
 	// checked-in config file.
 	Token string `toml:"token,omitempty,omitzero"`
+
+	// ArchiveDir is the directory the server writes `cleanup --archive`
+	// archive DBs into (and scans for the archive fallback lookup). Each
+	// archive is a normal batchq DB holding a subset of terminal jobs, made
+	// read-only once written. Defaults to $BATCHQ_HOME/archives.
+	ArchiveDir string `toml:"archive_dir,omitempty,omitzero"`
 }
 
 type WebConfig struct {
@@ -394,6 +400,9 @@ func (c *Config) ApplyDefaults(d Defaults) {
 	}
 	if c.Server.DB == "" {
 		c.Server.DB = d.Backend
+	}
+	if c.Server.ArchiveDir == "" {
+		c.Server.ArchiveDir = d.ArchiveDir
 	}
 	// Default the web socket only when no TCP listener is configured — a
 	// [web] listen means the operator wants TCP, and defaulting the socket
