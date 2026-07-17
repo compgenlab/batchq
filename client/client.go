@@ -84,9 +84,17 @@ type Options struct {
 	// Empty token means no header is sent.
 	Token string
 
-	// Timeout for individual requests. Default 30s. Pass 0 to mean "no
-	// per-request timeout" — the caller's context governs.
+	// Timeout for individual requests. Default 30s when zero. Also used as the
+	// autospawn health-probe timeout, so it always resolves to a concrete value
+	// (never 0) — to remove the per-request cap use NoRequestTimeout instead.
 	Timeout time.Duration
+
+	// NoRequestTimeout removes the per-request HTTP timeout entirely (the
+	// http.Client.Timeout is set to 0), so only the caller's context bounds a
+	// request. Used by long-running admin ops (vacuum, bulk cleanup/archive on a
+	// large DB) whose work legitimately exceeds any fixed cap. The autospawn
+	// health probe still uses Timeout (a concrete value) so it fails fast.
+	NoRequestTimeout bool
 
 	// UserAgent is the User-Agent header value. Default "batchq-client/2".
 	UserAgent string
@@ -130,6 +138,15 @@ func DialWithOptions(opts Options) (*Client, error) {
 		opts.UserAgent = "batchq-client/2"
 	}
 
+	// httpTimeout is the per-request cap applied to the http.Client. It equals
+	// opts.Timeout normally, but NoRequestTimeout drops it to 0 (unlimited) so a
+	// long-running op is bounded only by the caller's context — while
+	// opts.Timeout keeps its concrete value for the autospawn health probe.
+	httpTimeout := opts.Timeout
+	if opts.NoRequestTimeout {
+		httpTimeout = 0
+	}
+
 	parsed, err := url.Parse(opts.URL)
 	if err != nil {
 		return nil, fmt.Errorf("client: parse URL: %w", err)
@@ -144,7 +161,7 @@ func DialWithOptions(opts Options) (*Client, error) {
 		}
 		c.base = "http://batchq" // bogus host; the dialer ignores it
 		c.httpC = &http.Client{
-			Timeout: opts.Timeout,
+			Timeout: httpTimeout,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					return (&net.Dialer{}).DialContext(ctx, "unix", c.socket)
@@ -160,7 +177,7 @@ func DialWithOptions(opts Options) (*Client, error) {
 			base += p
 		}
 		c.base = base
-		c.httpC = &http.Client{Timeout: opts.Timeout}
+		c.httpC = &http.Client{Timeout: httpTimeout}
 	case "https":
 		// Include the URL path as a mount-point prefix so deployments
 		// behind a reverse proxy at /some/subpath work. Trailing slashes
@@ -170,7 +187,7 @@ func DialWithOptions(opts Options) (*Client, error) {
 			base += p
 		}
 		c.base = base
-		c.httpC = &http.Client{Timeout: opts.Timeout}
+		c.httpC = &http.Client{Timeout: httpTimeout}
 	default:
 		return nil, fmt.Errorf("client: unsupported scheme %q (want unix://, tcp://, or https://)", parsed.Scheme)
 	}
@@ -422,6 +439,16 @@ func (c *Client) ArchiveJobs(ctx context.Context, ids []string, name string) (st
 		return "", 0, err
 	}
 	return resp.Path, resp.Count, nil
+}
+
+// Cleanup runs a server-side bulk cleanup: the server selects eligible terminal
+// jobs (status + age), deletes or archives them in a dependency-safe order, and
+// optionally vacuums — all in one call. Uses doOnce (real work, not
+// auto-replayed); pair with a long-running client since it can far exceed 30s.
+func (c *Client) Cleanup(ctx context.Context, req api.CleanupRequest) (api.CleanupResponse, error) {
+	var resp api.CleanupResponse
+	err := c.doOnce(ctx, http.MethodPost, api.Prefix+api.RouteCleanup, &req, &resp)
+	return resp, err
 }
 
 func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api.JobDTO, error) {

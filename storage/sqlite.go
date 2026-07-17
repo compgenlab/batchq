@@ -2087,6 +2087,131 @@ func (s *sqliteStorage) Vacuum(ctx context.Context) error {
 	return err
 }
 
+// CleanupCandidates returns, in one pass, the terminal jobs eligible for cleanup
+// (status in the given set, and — when endBefore is non-zero — a non-empty
+// end_time strictly older than it) plus every job_deps edge whose parent
+// (afterok_id) is one of those candidates. The service uses the edges to compute
+// a dependency-safe removal order in memory, avoiding the per-job N+1 the old
+// client-side planner did. Both queries share the same WHERE, so the edge set is
+// exactly "dependents of a candidate".
+func (s *sqliteStorage) CleanupCandidates(ctx context.Context, statuses []jobs.StatusCode, endBefore time.Time) ([]string, []CleanupDepEdge, error) {
+	if len(statuses) == 0 {
+		return nil, nil, nil
+	}
+	ph := make([]string, len(statuses))
+	base := make([]any, 0, len(statuses)+1)
+	for i, st := range statuses {
+		ph[i] = "?"
+		base = append(base, int(st))
+	}
+	where := "status IN (" + strings.Join(ph, ",") + ")"
+	whereJ := "j.status IN (" + strings.Join(ph, ",") + ")"
+	if !endBefore.IsZero() {
+		where += " AND end_time != '' AND end_time < ?"
+		whereJ += " AND j.end_time != '' AND j.end_time < ?"
+		base = append(base, formatTime(endBefore))
+	}
+
+	ids, err := collectIDsQuery(ctx, s, "SELECT id FROM jobs WHERE "+where, base)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rows, err := s.qRows(ctx,
+		"SELECT d.job_id, d.afterok_id FROM job_deps d JOIN jobs j ON d.afterok_id = j.id WHERE "+whereJ,
+		base...)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	var edges []CleanupDepEdge
+	for rows.Next() {
+		var e CleanupDepEdge
+		if err := rows.Scan(&e.JobID, &e.AfterokID); err != nil {
+			return nil, nil, err
+		}
+		edges = append(edges, e)
+	}
+	return ids, edges, rows.Err()
+}
+
+// collectIDsQuery runs a single-column id query and collects the results.
+func collectIDsQuery(ctx context.Context, s *sqliteStorage, query string, args []any) ([]string, error) {
+	rows, err := s.qRows(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// CleanupJobs bulk-deletes the given jobs (and all their associated rows) in
+// batched transactions. The caller must pass a dependency-closed set — every
+// dependent of a deleted job is also in the set — so deleting all child rows
+// (including job_deps) in phase 1 leaves no foreign-key references, and phase 2
+// can drop the jobs rows in any order. Batching bounds the rollback-journal size
+// per commit (important on NFS). Order within ids is irrelevant here.
+func (s *sqliteStorage) CleanupJobs(ctx context.Context, ids []string) error {
+	ctx = context.WithoutCancel(ctx)
+	if len(ids) == 0 {
+		return nil
+	}
+	const batch = 500
+	// Phase 1: every child table (all keyed on job_id), so no FK reference to a
+	// jobs row survives — including job_deps in BOTH directions (a dependent's
+	// edge is removed via its own job_id, which the closure guarantees is here).
+	childDeletes := []string{
+		"DELETE FROM job_running_details WHERE job_id IN ",
+		"DELETE FROM job_running         WHERE job_id IN ",
+		"DELETE FROM job_deps            WHERE job_id IN ",
+		"DELETE FROM job_details         WHERE job_id IN ",
+		"DELETE FROM job_inputs          WHERE job_id IN ",
+		"DELETE FROM job_outputs         WHERE job_id IN ",
+	}
+	for start := 0; start < len(ids); start += batch {
+		chunk := ids[start:min(start+batch, len(ids))]
+		if err := s.execBatchTx(ctx, childDeletes, chunk); err != nil {
+			return err
+		}
+	}
+	// Phase 2: the jobs rows themselves.
+	for start := 0; start < len(ids); start += batch {
+		chunk := ids[start:min(start+batch, len(ids))]
+		if err := s.execBatchTx(ctx, []string{"DELETE FROM jobs WHERE id IN "}, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// execBatchTx runs each stmtPrefix + "(?,?,...)" against chunk in one transaction.
+func (s *sqliteStorage) execBatchTx(ctx context.Context, stmtPrefixes []string, chunk []string) error {
+	ph := "(" + strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",") + ")"
+	args := make([]any, len(chunk))
+	for i, id := range chunk {
+		args[i] = id
+	}
+	tx, err := s.beginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, prefix := range stmtPrefixes {
+		if _, err := tx.ExecContext(ctx, prefix+ph, args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 // RestoreJob inserts a job into this DB preserving its terminal status, times,
 // and return code verbatim — unlike InsertJob, which derives status from deps
 // and stamps a fresh submit time. Used to move terminal jobs into an archive DB.
