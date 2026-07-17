@@ -2159,7 +2159,7 @@ func collectIDsQuery(ctx context.Context, s *sqliteStorage, query string, args [
 // (including job_deps) in phase 1 leaves no foreign-key references, and phase 2
 // can drop the jobs rows in any order. Batching bounds the rollback-journal size
 // per commit (important on NFS). Order within ids is irrelevant here.
-func (s *sqliteStorage) CleanupJobs(ctx context.Context, ids []string) error {
+func (s *sqliteStorage) CleanupJobs(ctx context.Context, ids []string, onProgress func(done int)) error {
 	ctx = context.WithoutCancel(ctx)
 	if len(ids) == 0 {
 		return nil
@@ -2182,11 +2182,14 @@ func (s *sqliteStorage) CleanupJobs(ctx context.Context, ids []string) error {
 			return err
 		}
 	}
-	// Phase 2: the jobs rows themselves.
+	// Phase 2: the jobs rows themselves — report progress per committed batch.
 	for start := 0; start < len(ids); start += batch {
 		chunk := ids[start:min(start+batch, len(ids))]
 		if err := s.execBatchTx(ctx, []string{"DELETE FROM jobs WHERE id IN "}, chunk); err != nil {
 			return err
+		}
+		if onProgress != nil {
+			onProgress(start + len(chunk))
 		}
 	}
 	return nil
