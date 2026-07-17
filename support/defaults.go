@@ -16,6 +16,9 @@ const (
 	DefaultDBFile        = "batchq.db"
 	DefaultWebSocketFile = "batchq-web.sock"
 	DefaultConfigFile    = "config"
+	// DefaultArchiveDir is the subdirectory under $BATCHQ_HOME that holds the
+	// write-once archive DBs produced by `batchq cleanup --archive`.
+	DefaultArchiveDir = "archives"
 )
 
 // DefaultWebUsername is the HTTP Basic username for the web UI when none is
@@ -33,6 +36,7 @@ type Defaults struct {
 	WebSocket    string // $HOME/batchq-web.sock
 	WebUsername  string // web UI HTTP Basic username ("admin")
 	ConfigFile   string // $HOME/config
+	ArchiveDir   string // $HOME/archives — cleanup --archive destination dir
 
 	Shell                string        // job interpreter when none is configured
 	AutospawnIdleTimeout time.Duration // server lifetime when forked by a CLI client
@@ -53,6 +57,7 @@ func NewDefaults() Defaults {
 		WebSocket:            filepath.Join(home, DefaultWebSocketFile),
 		WebUsername:          DefaultWebUsername,
 		ConfigFile:           filepath.Join(home, DefaultConfigFile),
+		ArchiveDir:           filepath.Join(home, DefaultArchiveDir),
 		Shell:                "/bin/bash",
 		AutospawnIdleTimeout: time.Minute,
 		AutospawnWaitTimeout: 10 * time.Second,

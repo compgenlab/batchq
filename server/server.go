@@ -508,6 +508,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("POST "+p+api.RouteJobs, s.handleSubmitJob)
 	mux.HandleFunc("POST "+p+api.RouteJobsArray, s.handleSubmitArray)
+	mux.HandleFunc("POST "+p+api.RouteJobsArchive, s.handleArchiveJobs)
 	mux.HandleFunc("POST "+p+api.RouteArrayCancel, s.handleCancelArray)
 	mux.HandleFunc("POST "+p+api.RouteArrayHold, s.handleHoldArray)
 	mux.HandleFunc("POST "+p+api.RouteArrayRelease, s.handleReleaseArray)
@@ -533,6 +534,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("POST "+p+api.RouteShutdown, s.handleShutdown)
 	mux.HandleFunc("POST "+p+api.RouteBackup, s.handleBackup)
+	mux.HandleFunc("POST "+p+api.RouteVacuum, s.handleVacuum)
 
 	// withAuth sits outside withActivity so unauthenticated requests
 	// neither reset the idle timer nor count as in-flight. withLogging is

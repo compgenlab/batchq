@@ -245,6 +245,15 @@ type Storage interface {
 	// NFS/Lustre). destPath must be absolute and must not already exist.
 	Backup(ctx context.Context, destPath string) error
 
+	// Vacuum reclaims free pages and defragments the DB file in place (VACUUM).
+	// Run it after a bulk delete/archive to actually shrink the file.
+	Vacuum(ctx context.Context) error
+
+	// RestoreJob inserts a job preserving its terminal status/times/return code
+	// (idempotently). Used to move a terminal job into an archive DB opened with
+	// OpenArchiveWriter; a no-op on the live store in practice.
+	RestoreJob(ctx context.Context, job *jobs.JobDef) error
+
 	// FindJobsByDetail returns the job IDs that carry a particular
 	// (key, value) row in job_details. Used for the run_id filter on
 	// GET /jobs.
