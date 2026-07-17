@@ -405,6 +405,39 @@ func (s *Server) handleVacuum(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleCleanup runs a server-side bulk cleanup (select + dependency-safe
+// delete/archive + optional vacuum) and returns the counts. Synchronous and
+// potentially slow on a large DB — clients allow a long timeout.
+func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
+	var req api.CleanupRequest
+	if err := s.decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	statuses, err := api.ParseStatusList(req.Statuses)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	res, err := s.svc.CleanupBulk(r.Context(), service.CleanupBulkOptions{
+		Statuses:    statuses,
+		OlderThan:   time.Duration(req.OlderThanSecs) * time.Second,
+		Archive:     req.Archive,
+		ArchiveName: req.ArchiveName,
+		Vacuum:      req.Vacuum,
+	})
+	if err != nil {
+		writeError(w, httpStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, api.CleanupResponse{
+		Removed:     res.Removed,
+		Blocked:     res.Blocked,
+		ArchivePath: res.ArchivePath,
+		Vacuumed:    res.Vacuumed,
+	})
+}
+
 // handleArchiveJobs moves a set of terminal jobs into a new read-only archive DB
 // on the server's filesystem and returns its path plus the count archived.
 func (s *Server) handleArchiveJobs(w http.ResponseWriter, r *http.Request) {

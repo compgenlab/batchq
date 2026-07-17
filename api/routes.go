@@ -75,6 +75,11 @@ const (
 	// free pages left by a delete/archive. Under /admin/* like the others.
 	RouteVacuum = "/admin/vacuum"
 
+	// RouteCleanup runs a server-side bulk cleanup: select terminal jobs by
+	// status + age, delete or archive them in a dependency-safe order, and
+	// optionally vacuum — all in one call, no per-job client round-trips.
+	RouteCleanup = "/admin/cleanup"
+
 	// RouteJobsArchive moves a set of terminal jobs into a new read-only
 	// archive DB on the SERVER's filesystem (cleanup --archive).
 	RouteJobsArchive = "/jobs/archive"
