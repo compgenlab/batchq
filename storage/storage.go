@@ -25,6 +25,14 @@ type ArrayMember struct {
 	Index int
 }
 
+// CleanupDepEdge is one job_deps row: JobID depends on AfterokID (afterok).
+// Returned by CleanupCandidates so the service can compute a dependency-safe
+// removal order without per-job round-trips.
+type CleanupDepEdge struct {
+	JobID     string
+	AfterokID string
+}
+
 // Limits constrains which queued jobs a runner is willing to claim. A value
 // of -1 means "no limit on this dimension".
 type Limits struct {
@@ -238,6 +246,17 @@ type Storage interface {
 	// details, deps, running claim). Caller must verify the job is in a
 	// terminal state.
 	CleanupJob(ctx context.Context, jobID string) error
+
+	// CleanupCandidates returns the terminal jobs eligible for cleanup (status
+	// in the set, and — when endBefore is non-zero — a non-empty end_time older
+	// than it) plus the job_deps edges whose parent is a candidate, for
+	// computing a dependency-safe removal order server-side.
+	CleanupCandidates(ctx context.Context, statuses []jobs.StatusCode, endBefore time.Time) ([]string, []CleanupDepEdge, error)
+
+	// CleanupJobs bulk-deletes a dependency-closed set of jobs (and all their
+	// rows) in batched transactions. Every dependent of a deleted job must also
+	// be in the set (see CleanupCandidates + the service's removal planner).
+	CleanupJobs(ctx context.Context, ids []string) error
 
 	// Backup writes a consistent snapshot of the database to destPath on the
 	// server's filesystem, using the existing connection — no second process
