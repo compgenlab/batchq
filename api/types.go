@@ -248,12 +248,39 @@ type CleanupRequest struct {
 // CleanupResponse reports what POST /admin/cleanup did: Removed jobs deleted (or
 // archived+deleted), Blocked eligible jobs left in place because a dependent
 // wasn't eligible, ArchivePath the archive file (when archiving), and whether a
-// VACUUM ran.
+// VACUUM ran. It is assembled by the client from the final "done" event.
 type CleanupResponse struct {
 	Removed     int    `json:"removed"`
 	Blocked     int    `json:"blocked"`
 	ArchivePath string `json:"archive_path,omitempty"`
 	Vacuumed    bool   `json:"vacuumed"`
+}
+
+// Cleanup phase names for CleanupEvent.Phase.
+const (
+	CleanupPhaseSelected  = "selected"  // candidates chosen; Matched/Total/Blocked set
+	CleanupPhaseArchiving = "archiving" // per-batch archive progress; Done/Total set
+	CleanupPhaseDeleting  = "deleting"  // per-batch delete progress; Done/Total set
+	CleanupPhaseVacuum    = "vacuum"    // VACUUM starting
+	CleanupPhaseDone      = "done"      // finished; Removed/Blocked/ArchivePath/Vacuumed set
+	CleanupPhaseError     = "error"     // failed mid-stream; Error set
+)
+
+// CleanupEvent is one progress record streamed (newline-delimited JSON) from
+// POST /admin/cleanup as the server works, so a long bulk cleanup on a large DB
+// reports live instead of blocking silently. Phase names the step; the other
+// fields are populated per phase. The stream always ends with a "done" event
+// (success) or an "error" event.
+type CleanupEvent struct {
+	Phase       string `json:"phase"`
+	Matched     int    `json:"matched,omitempty"`      // selected: jobs matching the filter
+	Total       int    `json:"total,omitempty"`        // selected/progress: jobs to remove
+	Blocked     int    `json:"blocked,omitempty"`      // selected/done: left in place (dependents)
+	Done        int    `json:"done,omitempty"`         // progress: processed so far
+	Removed     int    `json:"removed,omitempty"`      // done: total removed
+	ArchivePath string `json:"archive_path,omitempty"` // done: archive file (archiving)
+	Vacuumed    bool   `json:"vacuumed,omitempty"`     // done
+	Error       string `json:"error,omitempty"`        // error
 }
 
 // PriorityRequest is the body of POST /jobs/{id}/priority.

@@ -110,13 +110,39 @@ in one request — so it scales to a large backlog without per-job round-trips.`
 		ctx, cancel := cmdContextLong()
 		defer cancel()
 
+		// Print live progress streamed from the server.
+		verb := "Deleting"
+		if cleanupArchive {
+			verb = "Archiving"
+		}
+		selector := strings.Join(statuses, ", ")
+		if olderThanSecs > 0 {
+			selector += " older than " + cleanupOlderThan
+		}
+		onEvent := func(ev api.CleanupEvent) {
+			switch ev.Phase {
+			case api.CleanupPhaseSelected:
+				fmt.Printf("Found %d job(s) matching %s\n", ev.Matched, selector)
+				if ev.Blocked > 0 {
+					fmt.Printf("  %d not eligible (a dependent is still active) — leaving in place\n", ev.Blocked)
+				}
+				if ev.Total > 0 {
+					fmt.Printf("%s %d job(s)...\n", verb, ev.Total)
+				}
+			case api.CleanupPhaseArchiving, api.CleanupPhaseDeleting:
+				fmt.Printf("  %d/%d\n", ev.Done, ev.Total)
+			case api.CleanupPhaseVacuum:
+				fmt.Println("Vacuuming database...")
+			}
+		}
+
 		resp, err := c.Cleanup(ctx, api.CleanupRequest{
 			Statuses:      statuses,
 			OlderThanSecs: olderThanSecs,
 			Archive:       cleanupArchive,
 			ArchiveName:   archiveName,
 			Vacuum:        doVacuum,
-		})
+		}, onEvent)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "batchq cleanup: %v\n", err)
 			os.Exit(1)
@@ -125,15 +151,12 @@ in one request — so it scales to a large backlog without per-job round-trips.`
 		if purgeRequested {
 			if cleanupArchive {
 				if resp.Removed == 0 {
-					fmt.Println("No jobs to archive")
+					fmt.Println("Nothing to archive")
 				} else {
 					fmt.Printf("Archived %d job(s) to %s\n", resp.Removed, resp.ArchivePath)
 				}
 			} else {
 				fmt.Printf("Removed %d job(s)\n", resp.Removed)
-			}
-			if resp.Blocked > 0 {
-				fmt.Printf("Left %d job(s) in place (a dependent was not eligible for removal)\n", resp.Blocked)
 			}
 		}
 		if resp.Vacuumed {
