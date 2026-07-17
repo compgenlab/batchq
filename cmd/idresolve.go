@@ -35,9 +35,12 @@ func splitTaskAddr(arg string) (arrayID, index string, ok bool) {
 //   - "<array_id>_<index>" -> that single task
 //   - a job id            -> that job
 //   - an array id         -> the whole array (all member tasks)
-func resolveTarget(ctx context.Context, c *client.Client, arg string) (*jobTarget, error) {
+//
+// includeArchives, when true, makes the lookup fall back to the server's archive
+// DBs for a job/array not present in the live DB (status/details --archives).
+func resolveTarget(ctx context.Context, c *client.Client, arg string, includeArchives bool) (*jobTarget, error) {
 	if prefix, idx, ok := splitTaskAddr(arg); ok {
-		members, err := c.ListJobs(ctx, client.ListJobsOptions{ArrayID: prefix, ShowAll: true})
+		members, err := c.ListJobs(ctx, client.ListJobsOptions{ArrayID: prefix, ShowAll: true, IncludeArchives: includeArchives})
 		if err != nil {
 			return nil, err
 		}
@@ -49,7 +52,15 @@ func resolveTarget(ctx context.Context, c *client.Client, arg string) (*jobTarge
 		return nil, fmt.Errorf("no array task %s", arg)
 	}
 
-	dto, err := c.GetJob(ctx, arg)
+	var (
+		dto *api.JobDTO
+		err error
+	)
+	if includeArchives {
+		dto, err = c.GetJobWithArchives(ctx, arg)
+	} else {
+		dto, err = c.GetJob(ctx, arg)
+	}
 	if err == nil {
 		return &jobTarget{jobID: arg, dto: dto}, nil
 	}
@@ -58,7 +69,7 @@ func resolveTarget(ctx context.Context, c *client.Client, arg string) (*jobTarge
 	}
 
 	// Not a job id — maybe it's an array id.
-	members, err := c.ListJobs(ctx, client.ListJobsOptions{ArrayID: arg, ShowAll: true})
+	members, err := c.ListJobs(ctx, client.ListJobsOptions{ArrayID: arg, ShowAll: true, IncludeArchives: includeArchives})
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +171,7 @@ func forEachTarget(c *client.Client, args []string, fn func(ctx context.Context,
 	ids, _ := expandJobArgs(args)
 	for _, arg := range ids {
 		ctx, cancel := cmdContext()
-		target, err := resolveTarget(ctx, c, arg)
+		target, err := resolveTarget(ctx, c, arg, false)
 		if err != nil {
 			cancel()
 			fmt.Printf("Error: %v\n", err)

@@ -216,6 +216,22 @@ type BackupResponse struct {
 	Path string `json:"path"`
 }
 
+// ArchiveJobsRequest is the body of POST /jobs/archive. IDs are the terminal
+// jobs to move into an archive DB, in dependency-safe order (dependents before
+// parents). ArchiveName selects the file (<archive_dir>/<name>.db); empty asks
+// the server to pick a timestamped default. The archive must not already exist.
+type ArchiveJobsRequest struct {
+	IDs         []string `json:"ids"`
+	ArchiveName string   `json:"archive_name,omitempty"`
+}
+
+// ArchiveJobsResponse is the body of POST /jobs/archive. Path is the absolute
+// server-side archive DB written; Count is how many jobs were archived.
+type ArchiveJobsResponse struct {
+	Path  string `json:"path"`
+	Count int    `json:"count"`
+}
+
 // PriorityRequest is the body of POST /jobs/{id}/priority.
 type PriorityRequest struct {
 	Delta int `json:"delta"`

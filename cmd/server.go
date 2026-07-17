@@ -159,7 +159,7 @@ func runServer(_ *cobra.Command, _ []string) error {
 	// no-op if shutdown already ran.
 	defer store.Close()
 
-	svc := service.New(store)
+	svc := service.New(store, service.WithArchiveDir(Config.Server.ArchiveDir))
 	srv, err := server.New(svc, server.Options{
 		Listen:      serverListen,
 		IdleTimeout: serverIdleTimeout,

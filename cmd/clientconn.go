@@ -72,6 +72,14 @@ func debugLog(role string) *support.DebugLogger {
 // client dials the local [server] listen unix socket and may autospawn
 // a server if nothing is answering.
 func dialClient() (*client.Client, error) {
+	return dialClientWithTimeout(30 * time.Second)
+}
+
+// dialClientWithTimeout is dialClient with an explicit per-request HTTP timeout.
+// reqTimeout == 0 means "no per-request cap — the caller's context governs",
+// used by long-running admin ops (vacuum, big archive/backup) whose work can
+// far exceed the 30s default and would otherwise hard-fail mid-request.
+func dialClientWithTimeout(reqTimeout time.Duration) (*client.Client, error) {
 	remoteRaw := clientRemote
 	if remoteRaw == "" {
 		remoteRaw = Config.Batchq.Remote
@@ -97,7 +105,7 @@ func dialClient() (*client.Client, error) {
 	opts := client.Options{
 		URL:     dialURL,
 		Token:   token,
-		Timeout: 30 * time.Second,
+		Timeout: reqTimeout,
 	}
 	if logger != nil {
 		opts.Log = logger.Logf
@@ -164,10 +172,29 @@ func mustDialClient() *client.Client {
 	return c
 }
 
+// mustDialClientLongRunning is mustDialClient for admin ops whose server-side
+// work can far exceed 30s (vacuum, a large archive/backup). It disables the
+// per-request HTTP timeout so the caller's context (cmdContextLong) is the only
+// bound, instead of the 30s default that would abort a slow-but-successful op.
+func mustDialClientLongRunning() *client.Client {
+	c, err := dialClientWithTimeout(0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error connecting to batchq server: %v\n", err)
+		os.Exit(1)
+	}
+	return c
+}
+
 // cmdContext returns a context with a default timeout for one-shot CLI
 // calls.
 func cmdContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 30*time.Second)
+}
+
+// cmdContextLong returns a generous context for long-running admin ops (vacuum,
+// large archive/backup) that can take minutes on a big DB over a networked FS.
+func cmdContextLong() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Minute)
 }
 
 // cmdContextRetryable returns a context budgeted to outlast the client's

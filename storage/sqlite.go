@@ -74,6 +74,51 @@ func Open(ctx context.Context, path string, opts Options) (Storage, error) {
 		"file:%s?_pragma=foreign_keys(1)&_pragma=journal_mode(%s)&_pragma=busy_timeout(%d)&_pragma=synchronous(FULL)",
 		path, journal, opts.BusyTimeoutMS,
 	)
+	return openDB(ctx, path, dsn, true, opts.ReadPoolSize)
+}
+
+// OpenArchiveWriter opens (creating if needed) an archive DB at path for writing
+// archived jobs via RestoreJob. Foreign keys are OFF so a job_deps edge whose
+// afterok parent was never archived (already purged, or still live) is tolerated
+// — an archive is a historical dump, not a referentially-complete queue. Journal
+// mode is DELETE (NFS-safe, like the live DB). Schema is applied idempotently.
+func OpenArchiveWriter(ctx context.Context, path string) (Storage, error) {
+	if path == "" {
+		return nil, errors.New("storage: empty archive path")
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("storage: create archive dir: %w", err)
+		}
+	}
+	dsn := fmt.Sprintf(
+		"file:%s?_pragma=foreign_keys(0)&_pragma=journal_mode(DELETE)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)",
+		path,
+	)
+	return openDB(ctx, path, dsn, true, 1)
+}
+
+// OpenReadOnly opens an existing DB at path read-only, for querying archive DBs
+// during the fallback lookup. mode=ro + immutable=1 skips journal creation and
+// fcntl locking entirely — safe because archive files are write-once (chmod
+// 0440 after creation) and never mutated again, and it dodges slow NFS locking.
+// No schema is applied (the file is read-only). Errors if the file is missing.
+func OpenReadOnly(ctx context.Context, path string) (Storage, error) {
+	if path == "" {
+		return nil, errors.New("storage: empty path")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("storage: open read-only: %w", err)
+	}
+	dsn := fmt.Sprintf("file:%s?mode=ro&immutable=1&_pragma=foreign_keys(0)", path)
+	return openDB(ctx, path, dsn, false, 1)
+}
+
+// openDB builds a *sqliteStorage from an already-formed DSN. When applySchema is
+// true the embedded schema is applied idempotently (skip for read-only opens).
+// readPoolSize>1 opens a SEPARATE read pool; otherwise reads share the single
+// writer connection (the historical single-connection behavior).
+func openDB(ctx context.Context, path, dsn string, applySchema bool, readPoolSize int) (*sqliteStorage, error) {
 	// writeDB is the single serialized WRITER. One writer process owns the file;
 	// a single connection gives safe transaction semantics for free and is the
 	// thing that makes "one server can't SQLITE_BUSY against itself" true.
@@ -88,9 +133,11 @@ func Open(ctx context.Context, path string, opts Options) (Storage, error) {
 		writeDB.Close()
 		return nil, fmt.Errorf("storage: ping: %w", err)
 	}
-	if _, err := writeDB.ExecContext(ctx, schemaSQL); err != nil {
-		writeDB.Close()
-		return nil, fmt.Errorf("storage: apply schema: %w", err)
+	if applySchema {
+		if _, err := writeDB.ExecContext(ctx, schemaSQL); err != nil {
+			writeDB.Close()
+			return nil, fmt.Errorf("storage: apply schema: %w", err)
+		}
 	}
 
 	// readDB serves standalone reads (qRows/qRow). Default: share the writer
@@ -99,14 +146,14 @@ func Open(ctx context.Context, path string, opts Options) (Storage, error) {
 	// (each takes a SHARED lock; readers never block readers). Same DSN: the
 	// read helpers only ever SELECT, so a read-only DSN isn't needed.
 	readDB := writeDB
-	if opts.ReadPoolSize > 1 {
+	if readPoolSize > 1 {
 		readDB, err = sql.Open("sqlite", dsn)
 		if err != nil {
 			writeDB.Close()
 			return nil, fmt.Errorf("storage: open sqlite read pool: %w", err)
 		}
-		readDB.SetMaxOpenConns(opts.ReadPoolSize)
-		readDB.SetMaxIdleConns(opts.ReadPoolSize)
+		readDB.SetMaxOpenConns(readPoolSize)
+		readDB.SetMaxIdleConns(readPoolSize)
 		if err := readDB.PingContext(ctx); err != nil {
 			readDB.Close()
 			writeDB.Close()
@@ -2027,6 +2074,93 @@ func (s *sqliteStorage) AdjustArrayPriority(ctx context.Context, arrayID string,
 func (s *sqliteStorage) Backup(ctx context.Context, destPath string) error {
 	_, err := s.qExec(ctx, "VACUUM INTO ?", destPath)
 	return err
+}
+
+// Vacuum runs VACUUM to reclaim free pages (left behind by DELETE, e.g. after a
+// cleanup) and defragment the file in place. Runs on the single writer
+// connection; VACUUM cannot run inside a transaction, so this is a bare Exec. On
+// a large DB over NFS this can take a long time and briefly serializes writers
+// behind it — callers must budget a generous timeout (see the long-running
+// client in cmd/).
+func (s *sqliteStorage) Vacuum(ctx context.Context) error {
+	_, err := s.qExec(ctx, "VACUUM")
+	return err
+}
+
+// RestoreJob inserts a job into this DB preserving its terminal status, times,
+// and return code verbatim — unlike InsertJob, which derives status from deps
+// and stamps a fresh submit time. Used to move terminal jobs into an archive DB.
+// Every write is INSERT OR IGNORE so re-archiving after a mid-run crash is safe
+// (the job may already be present). The archive writer is opened with foreign
+// keys OFF (OpenArchiveWriter), so a job_deps edge whose parent isn't archived
+// is tolerated.
+func (s *sqliteStorage) RestoreJob(ctx context.Context, job *jobs.JobDef) error {
+	ctx = context.WithoutCancel(ctx)
+	if job == nil {
+		return errors.New("storage: nil job")
+	}
+	if job.JobId == "" {
+		return errors.New("storage: job missing id")
+	}
+
+	tx, err := s.beginTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO jobs
+		   (id, status, priority, name, notes, submit_time, start_time, end_time, return_code)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		job.JobId, job.Status, job.Priority, job.Name, job.Notes,
+		formatTime(job.SubmitTime), formatTime(job.StartTime), formatTime(job.EndTime),
+		job.ReturnCode,
+	); err != nil {
+		return fmt.Errorf("storage: restore job: %w", err)
+	}
+
+	for _, depID := range job.AfterOk {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO job_deps (job_id, afterok_id) VALUES (?, ?)`,
+			job.JobId, depID,
+		); err != nil {
+			return fmt.Errorf("storage: restore dep: %w", err)
+		}
+	}
+	for _, d := range job.Details {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO job_details (job_id, key, value) VALUES (?, ?, ?)`,
+			job.JobId, d.Key, d.Value,
+		); err != nil {
+			return fmt.Errorf("storage: restore detail %s: %w", d.Key, err)
+		}
+	}
+	for _, d := range job.RunningDetails {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO job_running_details (job_id, key, value) VALUES (?, ?, ?)`,
+			job.JobId, d.Key, d.Value,
+		); err != nil {
+			return fmt.Errorf("storage: restore running detail %s: %w", d.Key, err)
+		}
+	}
+	for _, p := range job.InputFiles {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO job_inputs (job_id, path) VALUES (?, ?)`,
+			job.JobId, p,
+		); err != nil {
+			return fmt.Errorf("storage: restore input %s: %w", p, err)
+		}
+	}
+	for _, p := range job.OutputFiles {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO job_outputs (job_id, path) VALUES (?, ?)`,
+			job.JobId, p,
+		); err != nil {
+			return fmt.Errorf("storage: restore output %s: %w", p, err)
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *sqliteStorage) CleanupJob(ctx context.Context, jobID string) error {

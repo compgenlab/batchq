@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,30 +16,63 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// archiveAutoName is the sentinel value the --archive flag takes when given
+// with no explicit name (NoOptDefVal), meaning "let the server pick a
+// timestamped archive filename".
+const archiveAutoName = "\x00auto"
+
 var cleanupCmd = &cobra.Command{
 	Use:   "cleanup",
-	Short: "Remove completed jobs from the database",
-	Run: func(cmd *cobra.Command, args []string) {
-		if !cleanupCanceled && !cleanupFailed && !cleanupSuccess && !cleanupAll {
-			cmd.Help()
-			return
-		}
+	Short: "Remove or archive completed jobs, and/or vacuum the database",
+	Long: `Remove or archive terminal jobs (canceled/failed/successful) from the
+database. You must choose an action explicitly:
 
+  --delete     permanently remove the selected jobs
+  --archive    move the selected jobs into a new read-only archive DB, then
+               remove them from the live DB. Use --archive=NAME to name the
+               archive file (default: a timestamped name). Each run writes one
+               new, immutable archive under [server] archive_dir.
+
+Select which jobs with --canceled / --failed / --success / --all, optionally
+narrowed by --older-than.
+
+After a --delete or --archive the database is VACUUMed automatically to reclaim
+the freed space; pass --no-vacuum to skip that. Run 'cleanup --vacuum' on its
+own to just compact the live DB without removing anything.`,
+	Args: cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
 		if cleanupAll {
 			cleanupCanceled = true
 			cleanupFailed = true
 			cleanupSuccess = true
 		}
+		purgeRequested := cleanupCanceled || cleanupFailed || cleanupSuccess
+		archiveSet := cmd.Flags().Changed("archive")
 
-		statuses := make([]jobs.StatusCode, 0, 3)
-		if cleanupCanceled {
-			statuses = append(statuses, jobs.CANCELED)
+		// Validate the action selection.
+		if cleanupVacuum && cleanupNoVacuum {
+			log.Fatal("--vacuum and --no-vacuum are mutually exclusive")
 		}
-		if cleanupFailed {
-			statuses = append(statuses, jobs.FAILED)
+		if cleanupDelete && archiveSet {
+			log.Fatal("choose exactly one of --delete or --archive, not both")
 		}
-		if cleanupSuccess {
-			statuses = append(statuses, jobs.SUCCESS)
+		if purgeRequested && !cleanupDelete && !archiveSet {
+			log.Fatal("select an action for the chosen jobs: --delete or --archive")
+		}
+		if !purgeRequested && (cleanupDelete || archiveSet) {
+			log.Fatal("no jobs selected: use --canceled / --failed / --success / --all (optionally --older-than)")
+		}
+		if !purgeRequested && !cleanupVacuum {
+			// Nothing to do — no jobs selected and no standalone vacuum.
+			cmd.Help()
+			return
+		}
+
+		// Vacuum runs automatically after a purge (unless --no-vacuum); with no
+		// purge it runs only when --vacuum was given explicitly.
+		doVacuum := cleanupVacuum
+		if purgeRequested {
+			doVacuum = !cleanupNoVacuum
 		}
 
 		var minAge time.Duration
@@ -50,38 +84,79 @@ var cleanupCmd = &cobra.Command{
 			minAge = d
 		}
 
-		c := mustDialClient()
+		// Long-running client: a large archive batch plus a VACUUM can far
+		// exceed the 30s per-request default; the server decouples cancellation
+		// so it finishes regardless — wait rather than hard-fail at 30s.
+		c := mustDialClientLongRunning()
 		defer c.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := cmdContextLong()
 		defer cancel()
 
-		reader := &clientCleanupReader{c: c}
-		plan := buildCleanupPlan(ctx, reader, statuses)
+		if purgeRequested {
+			statuses := make([]jobs.StatusCode, 0, 3)
+			if cleanupCanceled {
+				statuses = append(statuses, jobs.CANCELED)
+			}
+			if cleanupFailed {
+				statuses = append(statuses, jobs.FAILED)
+			}
+			if cleanupSuccess {
+				statuses = append(statuses, jobs.SUCCESS)
+			}
 
-		if minAge > 0 {
-			plan = filterPlanByAge(plan, minAge, time.Now())
+			reader := &clientCleanupReader{c: c}
+			plan := buildCleanupPlan(ctx, reader, statuses)
+			if minAge > 0 {
+				plan = filterPlanByAge(plan, minAge, time.Now())
+			}
+
+			for _, job := range plan.candidates {
+				if !plan.blocked[job.JobID] {
+					continue
+				}
+				dependents, ok := plan.dependents[job.JobID]
+				if !ok {
+					dependents, _ = reader.GetJobDependents(ctx, job.JobID)
+				}
+				if len(dependents) > 0 {
+					fmt.Printf("Skipping job %s: dependents not eligible for removal\n", job.JobID)
+				}
+			}
+
+			if archiveSet {
+				name := cleanupArchive
+				if name == archiveAutoName {
+					name = "" // let the server pick a timestamped name
+				}
+				if len(plan.removalOrder) == 0 {
+					fmt.Println("No jobs to archive")
+				} else {
+					path, count, err := c.ArchiveJobs(ctx, plan.removalOrder, name)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "batchq cleanup: archive failed: %v\n", err)
+						os.Exit(1)
+					}
+					fmt.Printf("Archived %d job(s) to %s\n", count, path)
+				}
+			} else { // --delete
+				for _, jobId := range plan.removalOrder {
+					if err := c.CleanupJob(ctx, jobId); err == nil {
+						fmt.Printf("Removed job: %s\n", jobId)
+					} else {
+						fmt.Printf("Error removing job: %s\n", jobId)
+					}
+				}
+			}
 		}
 
-		for _, job := range plan.candidates {
-			if !plan.blocked[job.JobID] {
-				continue
+		if doVacuum {
+			fmt.Println("Vacuuming database...")
+			if err := c.Vacuum(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "batchq cleanup: vacuum failed: %v\n", err)
+				os.Exit(1)
 			}
-			dependents, ok := plan.dependents[job.JobID]
-			if !ok {
-				dependents, _ = reader.GetJobDependents(ctx, job.JobID)
-			}
-			if len(dependents) > 0 {
-				fmt.Printf("Skipping job %s: dependents not eligible for removal\n", job.JobID)
-			}
-		}
-
-		for _, jobId := range plan.removalOrder {
-			if err := c.CleanupJob(ctx, jobId); err == nil {
-				fmt.Printf("Removed job: %s\n", jobId)
-			} else {
-				fmt.Printf("Error removing job: %s\n", jobId)
-			}
+			fmt.Println("Database vacuumed")
 		}
 	},
 }
@@ -291,12 +366,24 @@ var cleanupFailed bool
 var cleanupSuccess bool
 var cleanupAll bool
 var cleanupOlderThan string
+var cleanupDelete bool
+var cleanupArchive string
+var cleanupVacuum bool
+var cleanupNoVacuum bool
 
 func init() {
-	cleanupCmd.Flags().BoolVar(&cleanupCanceled, "canceled", false, "Remove canceled jobs")
-	cleanupCmd.Flags().BoolVar(&cleanupFailed, "failed", false, "Remove failed jobs")
-	cleanupCmd.Flags().BoolVar(&cleanupSuccess, "success", false, "Remove successful jobs")
-	cleanupCmd.Flags().BoolVar(&cleanupAll, "all", false, "Remove canceled, failed, and successful jobs")
-	cleanupCmd.Flags().StringVar(&cleanupOlderThan, "older-than", "", "Only remove jobs whose end_time is older than this duration (e.g. 30d, 12h, 1w)")
+	cleanupCmd.Flags().BoolVar(&cleanupCanceled, "canceled", false, "Select canceled jobs")
+	cleanupCmd.Flags().BoolVar(&cleanupFailed, "failed", false, "Select failed jobs")
+	cleanupCmd.Flags().BoolVar(&cleanupSuccess, "success", false, "Select successful jobs")
+	cleanupCmd.Flags().BoolVar(&cleanupAll, "all", false, "Select canceled, failed, and successful jobs")
+	cleanupCmd.Flags().StringVar(&cleanupOlderThan, "older-than", "", "Only select jobs whose end_time is older than this duration (e.g. 30d, 12h, 1w)")
+
+	cleanupCmd.Flags().BoolVar(&cleanupDelete, "delete", false, "Permanently remove the selected jobs")
+	cleanupCmd.Flags().StringVar(&cleanupArchive, "archive", "", "Archive the selected jobs into a new read-only archive DB, then remove them (use --archive=NAME to name the file)")
+	// Allow bare --archive (auto-named) as well as --archive=NAME.
+	cleanupCmd.Flags().Lookup("archive").NoOptDefVal = archiveAutoName
+	cleanupCmd.Flags().BoolVar(&cleanupVacuum, "vacuum", false, "VACUUM the live DB (runs automatically after a purge; use alone to just compact)")
+	cleanupCmd.Flags().BoolVar(&cleanupNoVacuum, "no-vacuum", false, "Skip the automatic VACUUM after a --delete/--archive")
+
 	rootCmd.AddCommand(cleanupCmd)
 }
