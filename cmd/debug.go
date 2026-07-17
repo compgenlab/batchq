@@ -235,6 +235,7 @@ func serverRows(raw *support.Config, d support.Defaults) []debugRow {
 	return []debugRow{
 		stringRow("listen", "", raw.Server.Listen, d.ServerListen),
 		stringRow("db", serverDB, raw.Server.DB, d.Backend),
+		stringRow("archive_dir", "", raw.Server.ArchiveDir, d.ArchiveDir),
 		durationRow("idle_timeout", raw.Server.IdleTimeout.AsDuration(), 0),
 		boolRow("sqlite_wal", raw.Server.SqliteWAL),
 		intRow("read_pool_size", raw.Server.ReadPoolSize),

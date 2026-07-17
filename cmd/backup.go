@@ -37,13 +37,13 @@ $BATCHQ_HOME/backups/. The destination must not already exist.`,
 			dest = args[0]
 		}
 
-		c := mustDialClient()
+		// Long-running client: VACUUM INTO of a large DB can far exceed the 30s
+		// per-request default, and because the server decouples cancellation it
+		// finishes regardless — so disable the per-request cap and wait.
+		c := mustDialClientLongRunning()
 		defer c.Close()
 
-		// Generous budget: VACUUM INTO of a large DB can run a while, and
-		// because the server decouples cancellation it finishes regardless of
-		// a client timeout — so wait rather than give up early.
-		ctx, cancel := cmdContextRetryable()
+		ctx, cancel := cmdContextLong()
 		defer cancel()
 
 		path, err := c.Backup(ctx, dest)

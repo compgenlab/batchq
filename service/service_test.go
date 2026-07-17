@@ -370,7 +370,7 @@ func TestEndJobSuccessAutoPromotesWaiters(t *testing.T) {
 		t.Fatalf("EndJob: %v", err)
 	}
 
-	got, err := svc.GetJob(ctx, child.JobID)
+	got, err := svc.GetJob(ctx, child.JobID, false)
 	if err != nil {
 		t.Fatalf("GetJob child: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestCleanupOnTerminalSucceeds(t *testing.T) {
 	if err := svc.CleanupJob(ctx, dto.JobID); err != nil {
 		t.Fatalf("CleanupJob: %v", err)
 	}
-	if _, err := svc.GetJob(ctx, dto.JobID); err != ErrJobNotFound {
+	if _, err := svc.GetJob(ctx, dto.JobID, false); err != ErrJobNotFound {
 		t.Fatalf("expected ErrJobNotFound, got %v", err)
 	}
 }

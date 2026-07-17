@@ -37,9 +37,10 @@ var searchCmd = &cobra.Command{
 		ctx, cancel := cmdContext()
 		defer cancel()
 		dtos, err := c.ListJobs(ctx, client.ListJobsOptions{
-			Query:        term,
-			ShowAll:      true,
-			SortByStatus: true,
+			Query:           term,
+			ShowAll:         true,
+			SortByStatus:    true,
+			IncludeArchives: searchIncludeArchives,
 		})
 		if err != nil {
 			log.Fatalln(err)
@@ -57,6 +58,9 @@ var searchCmd = &cobra.Command{
 	},
 }
 
+var searchIncludeArchives bool
+
 func init() {
+	searchCmd.Flags().BoolVar(&searchIncludeArchives, "archives", false, "Also search archived jobs")
 	rootCmd.AddCommand(searchCmd)
 }

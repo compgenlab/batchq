@@ -70,4 +70,16 @@ const (
 	// a path on the SERVER's filesystem. Like RouteShutdown it lives under
 	// /admin/*; remote deployments should gate it at the reverse proxy.
 	RouteBackup = "/admin/backup"
+
+	// RouteVacuum asks the server to VACUUM its live DB in place, reclaiming
+	// free pages left by a delete/archive. Under /admin/* like the others.
+	RouteVacuum = "/admin/vacuum"
+
+	// RouteJobsArchive moves a set of terminal jobs into a new read-only
+	// archive DB on the SERVER's filesystem (cleanup --archive).
+	RouteJobsArchive = "/jobs/archive"
 )
+
+// QueryIncludeArchives is the query parameter that opts a job lookup / listing
+// into consulting the archive DBs (status/details/search --archives).
+const QueryIncludeArchives = "include_archives"
