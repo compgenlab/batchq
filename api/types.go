@@ -258,6 +258,7 @@ type CleanupResponse struct {
 
 // Cleanup phase names for CleanupEvent.Phase.
 const (
+	CleanupPhaseScanning  = "scanning"  // candidate scan started (emitted immediately)
 	CleanupPhaseSelected  = "selected"  // candidates chosen; Matched/Total/Blocked set
 	CleanupPhaseArchiving = "archiving" // per-batch archive progress; Done/Total set
 	CleanupPhaseDeleting  = "deleting"  // per-batch delete progress; Done/Total set

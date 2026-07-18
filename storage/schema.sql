@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS job_outputs (
 CREATE INDEX IF NOT EXISTS jobs_status_priority_submit
     ON jobs(status, priority DESC, submit_time, id);
 
+-- Supports `cleanup`'s candidate scan: WHERE status IN (...) AND end_time < ?
+-- (the --older-than filter). Without it, cleanup full-scans the jobs table.
+CREATE INDEX IF NOT EXISTS jobs_status_end
+    ON jobs(status, end_time);
+
 CREATE INDEX IF NOT EXISTS job_deps_afterok
     ON job_deps(afterok_id, job_id);
 
