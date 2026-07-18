@@ -425,14 +425,18 @@ func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/x-ndjson")
+	// This is a long-lived streaming response — the whole cleanup can exceed the
+	// server's WriteTimeout. Clear the write deadline for THIS request only (via
+	// ResponseController, which unwraps middleware), so the server doesn't close
+	// the connection mid-stream and leave the client with "unexpected EOF" while
+	// the (decoupled) op keeps running. Other endpoints keep their WriteTimeout.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
-	flusher, _ := w.(http.Flusher)
 	emit := func(ev api.CleanupEvent) {
 		_ = enc.Encode(ev) // Encode appends a newline → one JSON object per line
-		if flusher != nil {
-			flusher.Flush()
-		}
+		_ = rc.Flush()
 	}
 
 	// Emit + flush immediately, BEFORE the (possibly slow) candidate scan, so the
