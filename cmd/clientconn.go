@@ -195,9 +195,12 @@ func cmdContext() (context.Context, context.CancelFunc) {
 }
 
 // cmdContextLong returns a generous context for long-running admin ops (vacuum,
-// large archive/backup) that can take minutes on a big DB over a networked FS.
+// large archive/backup/cleanup) that can take a long time on a big DB over a
+// networked FS. A first cleanup of a large backlog legitimately runs for a
+// while; the server decouples cancellation so it completes regardless, and the
+// client streams progress until then — so this bound is deliberately high.
 func cmdContextLong() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.Background(), 30*time.Minute)
+	return context.WithTimeout(context.Background(), 6*time.Hour)
 }
 
 // cmdContextRetryable returns a context budgeted to outlast the client's

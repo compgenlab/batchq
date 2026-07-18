@@ -107,3 +107,50 @@ func TestOpenReadOnlyMissingFile(t *testing.T) {
 		t.Fatal("OpenReadOnly on missing file: want error, got nil")
 	}
 }
+
+// LoadJobs bulk-loads full job records (row + all relations) and skips missing
+// ids — the read side of the bulk archive.
+func TestLoadJobsBulkRoundTrip(t *testing.T) {
+	st := newTestStore(t)
+	ctx := ctxT(t)
+
+	j := mkJob("j1", map[string]string{"script": "echo hi", "procs": "2"})
+	j.InputFiles = []string{"/in/a"}
+	j.OutputFiles = []string{"/out/b"}
+	if err := st.InsertJob(ctx, j); err != nil {
+		t.Fatalf("InsertJob: %v", err)
+	}
+
+	got, err := st.LoadJobs(ctx, []string{"j1", "missing"})
+	if err != nil {
+		t.Fatalf("LoadJobs: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("LoadJobs returned %d jobs, want 1 (missing id skipped)", len(got))
+	}
+	g := got[0]
+	if g.JobId != "j1" {
+		t.Fatalf("id = %q, want j1", g.JobId)
+	}
+	if g.GetDetail("script", "") != "echo hi" || g.GetDetail("procs", "") != "2" {
+		t.Fatalf("details not loaded: %+v", g.Details)
+	}
+	if len(g.InputFiles) != 1 || g.InputFiles[0] != "/in/a" {
+		t.Fatalf("inputs = %v, want [/in/a]", g.InputFiles)
+	}
+	if len(g.OutputFiles) != 1 || g.OutputFiles[0] != "/out/b" {
+		t.Fatalf("outputs = %v, want [/out/b]", g.OutputFiles)
+	}
+}
+
+// The (status, end_time) index that speeds cleanup's candidate scan must be
+// applied by the schema.
+func TestSchemaHasCleanupIndex(t *testing.T) {
+	s := newTestStoreWithReadPool(t, 1)
+	var name string
+	err := s.db.QueryRowContext(ctxT(t),
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='jobs_status_end'").Scan(&name)
+	if err != nil {
+		t.Fatalf("index jobs_status_end not present: %v", err)
+	}
+}

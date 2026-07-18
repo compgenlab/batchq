@@ -121,6 +121,8 @@ in one request — so it scales to a large backlog without per-job round-trips.`
 		}
 		onEvent := func(ev api.CleanupEvent) {
 			switch ev.Phase {
+			case api.CleanupPhaseScanning:
+				fmt.Printf("Scanning for jobs matching %s...\n", selector)
 			case api.CleanupPhaseSelected:
 				fmt.Printf("Found %d job(s) matching %s\n", ev.Matched, selector)
 				if ev.Blocked > 0 {
