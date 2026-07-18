@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -147,6 +148,63 @@ func TestCleanupBulkEmitsProgress(t *testing.T) {
 	}
 	if _, ok := seen[api.CleanupPhaseVacuum]; !ok {
 		t.Fatalf("no vacuum event; saw phases %v", seen)
+	}
+}
+
+// A second cleanup is rejected while one is already running (the concurrency
+// guard), so a decoupled long op + retries can't pile up and contend.
+func TestCleanupBulkRejectsConcurrent(t *testing.T) {
+	svc, _ := newServiceWithArchives(t)
+	ctx := ctxT(t)
+	svc.cleanupRunning.Store(true) // simulate a cleanup already in progress
+	defer svc.cleanupRunning.Store(false)
+
+	_, err := svc.CleanupBulk(ctx,
+		CleanupBulkOptions{Statuses: []jobs.StatusCode{jobs.SUCCESS}}, nil)
+	if err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("concurrent CleanupBulk err = %v, want ErrInvalidState", err)
+	}
+}
+
+// Archiving a dependency chain via the bulk path moves both and removes both.
+func TestCleanupBulkArchivesDependencyChain(t *testing.T) {
+	svc, _ := newServiceWithArchives(t)
+	ctx := ctxT(t)
+
+	parent := submitTerminal(t, svc, ctx, "parent")
+	cdto, err := svc.SubmitJob(ctx, &api.SubmitJobRequest{
+		Name: "child", AfterOk: []string{parent},
+		Details: map[string]string{"script": "echo child"},
+	})
+	if err != nil {
+		t.Fatalf("SubmitJob child: %v", err)
+	}
+	if _, err := svc.ResolveDependencies(ctx); err != nil {
+		t.Fatalf("ResolveDependencies: %v", err)
+	}
+	if _, err := svc.ClaimNextJob(ctx, "r", "simple", "", storage.Limits{}); err != nil {
+		t.Fatalf("ClaimNextJob: %v", err)
+	}
+	if err := svc.EndJob(ctx, "r", cdto.JobID, 0, ""); err != nil {
+		t.Fatalf("EndJob: %v", err)
+	}
+
+	res, err := svc.CleanupBulk(ctx,
+		CleanupBulkOptions{Statuses: []jobs.StatusCode{jobs.SUCCESS}, Archive: true}, nil)
+	if err != nil {
+		t.Fatalf("CleanupBulk archive: %v", err)
+	}
+	if res.Removed != 2 {
+		t.Fatalf("archived %d, want 2", res.Removed)
+	}
+	// Both gone from live, both findable via the archive fallback.
+	for _, id := range []string{parent, cdto.JobID} {
+		if _, err := svc.GetJob(ctx, id, false); err != ErrJobNotFound {
+			t.Fatalf("live lookup %s: %v, want ErrJobNotFound", id, err)
+		}
+		if _, err := svc.GetJob(ctx, id, true); err != nil {
+			t.Fatalf("archive fallback %s: %v", id, err)
+		}
 	}
 }
 
