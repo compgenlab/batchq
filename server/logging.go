@@ -53,6 +53,16 @@ func (w *loggingRW) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+// Flush forwards to the underlying ResponseWriter's Flusher so streaming
+// handlers (the cleanup progress stream) still flush when logging is enabled —
+// embedding the http.ResponseWriter interface would otherwise hide Flush and
+// silently buffer the whole response until the handler returns.
+func (w *loggingRW) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // withLogging logs one line per API request: method, path, final status, and
 // duration — plus the error body for 5xx. Health probes and the ownership
 // monitor's self-dials are skipped to keep the signal high (they fire

@@ -107,3 +107,15 @@ func TestOpenReadOnlyMissingFile(t *testing.T) {
 		t.Fatal("OpenReadOnly on missing file: want error, got nil")
 	}
 }
+
+// The (status, end_time) index that speeds cleanup's candidate scan must be
+// applied by the schema.
+func TestSchemaHasCleanupIndex(t *testing.T) {
+	s := newTestStoreWithReadPool(t, 1)
+	var name string
+	err := s.db.QueryRowContext(ctxT(t),
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='jobs_status_end'").Scan(&name)
+	if err != nil {
+		t.Fatalf("index jobs_status_end not present: %v", err)
+	}
+}
