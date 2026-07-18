@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/compgenlab/batchq/api"
@@ -43,6 +44,12 @@ type Service struct {
 	// archiveDir is where `cleanup --archive` writes archive DBs and where the
 	// archive fallback lookup scans. Empty disables archiving/fallback.
 	archiveDir string
+
+	// cleanupRunning guards against concurrent bulk cleanups. Because a cleanup
+	// decouples cancellation and can run for a while, a client that gives up and
+	// retries must not launch a second one that contends with the first — so a
+	// concurrent CleanupBulk is rejected rather than piled on.
+	cleanupRunning atomic.Bool
 
 	// resolveMu serializes dep-resolution work so a burst of state
 	// transitions only triggers one ResolveDependencies pass.
@@ -859,38 +866,58 @@ func (s *Service) archiveOrdered(ctx context.Context, ids []string, archiveName 
 		return "", 0, fmt.Errorf("archive: open writer: %w", err)
 	}
 
-	const progressEvery = 500
+	// Bulk move, one chunk at a time: bulk-read the chunk, bulk-write it to the
+	// archive (one fsync), then bulk-delete it from live — vs the old per-job
+	// path's ~18 fsync'd statements per job over NFS. ids are in the planner's
+	// dependency-safe post-order (dependents before parents), so each chunk's
+	// dependents are all in this-or-earlier (already-deleted) chunks, keeping the
+	// per-chunk delete foreign-key-safe. Archive-then-delete per chunk stays
+	// crash-safe (a job is committed to the archive before it leaves live).
+	const chunkSize = 500
 	count := 0
 	var moveErr error
-	for _, id := range ids {
-		job, err := s.store.GetJob(ctx, id)
+	for start := 0; start < len(ids); start += chunkSize {
+		// Cancelable between chunks (not mid-transaction): if the client
+		// disconnected / the op was aborted, stop cleanly here rather than
+		// orphaning a multi-hour run.
+		if err := ctx.Err(); err != nil {
+			moveErr = err
+			break
+		}
+		end := start + chunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+
+		batch, err := s.store.LoadJobs(ctx, chunk)
 		if err != nil {
-			moveErr = fmt.Errorf("archive: load %s: %w", id, err)
+			moveErr = fmt.Errorf("archive: load batch: %w", err)
 			break
 		}
-		if !isTerminal(job.Status) {
-			moveErr = fmt.Errorf("%w: cannot archive non-terminal job %s (%s)", ErrInvalidState, id, job.Status)
+		for _, j := range batch {
+			if !isTerminal(j.Status) {
+				moveErr = fmt.Errorf("%w: cannot archive non-terminal job %s (%s)", ErrInvalidState, j.JobId, j.Status)
+				break
+			}
+		}
+		if moveErr != nil {
 			break
 		}
-		// Commit to the archive first, then delete from live: a crash between
-		// leaves the job live (found on the next run), never lost.
-		if err := arc.RestoreJob(ctx, job); err != nil {
-			moveErr = fmt.Errorf("archive: write %s: %w", id, err)
+		if err := arc.RestoreJobs(ctx, batch); err != nil {
+			moveErr = fmt.Errorf("archive: write batch: %w", err)
 			break
 		}
-		if err := s.store.CleanupJob(ctx, id); err != nil {
-			moveErr = fmt.Errorf("archive: remove %s from live: %w", id, err)
+		if err := s.store.CleanupJobs(ctx, chunk, nil); err != nil {
+			moveErr = fmt.Errorf("archive: remove batch from live: %w", err)
 			break
 		}
-		count++
-		if onProgress != nil && count%progressEvery == 0 {
+		count += len(batch)
+		if onProgress != nil {
 			onProgress(count)
 		}
 	}
 	_ = arc.Close()
-	if onProgress != nil && count > 0 && count%progressEvery != 0 {
-		onProgress(count) // final tick so the last partial batch is reported
-	}
 
 	if count == 0 {
 		// Nothing archived — drop the empty file so no read-only husk lingers.
@@ -995,12 +1022,19 @@ type CleanupBulkResult struct {
 // handler) can report live on a long-running purge. The terminal "done"/"error"
 // event is emitted by the caller, not here.
 func (s *Service) CleanupBulk(ctx context.Context, opts CleanupBulkOptions, progress func(api.CleanupEvent)) (CleanupBulkResult, error) {
+	var res CleanupBulkResult
+
+	// Reject a concurrent cleanup (see cleanupRunning) instead of contending.
+	if !s.cleanupRunning.CompareAndSwap(false, true) {
+		return res, fmt.Errorf("%w: a cleanup is already in progress", ErrInvalidState)
+	}
+	defer s.cleanupRunning.Store(false)
+
 	emit := func(ev api.CleanupEvent) {
 		if progress != nil {
 			progress(ev)
 		}
 	}
-	var res CleanupBulkResult
 
 	if len(opts.Statuses) > 0 {
 		var endBefore time.Time

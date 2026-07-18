@@ -435,6 +435,12 @@ func (s *Server) handleCleanup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Emit + flush immediately, BEFORE the (possibly slow) candidate scan, so the
+	// client receives response headers at once and its Do() returns — otherwise a
+	// slow scan looks like an unresponsive server and the client times out
+	// waiting for headers with no output.
+	emit(api.CleanupEvent{Phase: api.CleanupPhaseScanning})
+
 	res, err := s.svc.CleanupBulk(r.Context(), service.CleanupBulkOptions{
 		Statuses:    statuses,
 		OlderThan:   time.Duration(req.OlderThanSecs) * time.Second,

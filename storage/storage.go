@@ -275,6 +275,15 @@ type Storage interface {
 	// OpenArchiveWriter; a no-op on the live store in practice.
 	RestoreJob(ctx context.Context, job *jobs.JobDef) error
 
+	// RestoreJobs is RestoreJob for many jobs in one transaction (one fsync for
+	// the whole batch) — the write side of a fast bulk archive.
+	RestoreJobs(ctx context.Context, jobs []*jobs.JobDef) error
+
+	// LoadJobs bulk-loads full JobDefs (row + relations) for the given ids using
+	// one query per table — the read side of a fast bulk archive. Missing ids are
+	// skipped; results follow input order.
+	LoadJobs(ctx context.Context, ids []string) ([]*jobs.JobDef, error)
+
 	// FindJobsByDetail returns the job IDs that carry a particular
 	// (key, value) row in job_details. Used for the run_id filter on
 	// GET /jobs.
