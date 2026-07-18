@@ -63,6 +63,11 @@ func (w *loggingRW) Flush() {
 	}
 }
 
+// Unwrap lets http.ResponseController reach the underlying ResponseWriter's
+// optional methods (e.g. SetWriteDeadline for the cleanup stream) through this
+// wrapper when logging is enabled.
+func (w *loggingRW) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 // withLogging logs one line per API request: method, path, final status, and
 // duration — plus the error body for 5xx. Health probes and the ownership
 // monitor's self-dials are skipped to keep the signal high (they fire
