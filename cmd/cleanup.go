@@ -125,10 +125,12 @@ in one request — so it scales to a large backlog without per-job round-trips.`
 				fmt.Printf("Scanning for jobs matching %s...\n", selector)
 			case api.CleanupPhaseSelected:
 				// Only mention the match count separately when some matched jobs
-				// can't be removed (a dependent is still active) — otherwise the
-				// action line below is the whole story.
+				// are held back to keep a dependency tree whole (a job that
+				// depends on them is being kept) — otherwise the action line
+				// below is the whole story. This is a structural link, not an
+				// active dependency: the dependent job may already be finished.
 				if ev.Blocked > 0 {
-					fmt.Printf("Found %s matching %s; %s not eligible (a dependent is still active)\n",
+					fmt.Printf("Found %s matching %s; keeping %s to keep dependency trees intact (a job that depends on them is being kept)\n",
 						pluralJobs(ev.Matched), selector, pluralJobs(ev.Blocked))
 				}
 				if ev.Total > 0 {
