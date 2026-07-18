@@ -2223,20 +2223,37 @@ func (s *sqliteStorage) execBatchTx(ctx context.Context, stmtPrefixes []string, 
 // keys OFF (OpenArchiveWriter), so a job_deps edge whose parent isn't archived
 // is tolerated.
 func (s *sqliteStorage) RestoreJob(ctx context.Context, job *jobs.JobDef) error {
-	ctx = context.WithoutCancel(ctx)
-	if job == nil {
-		return errors.New("storage: nil job")
-	}
-	if job.JobId == "" {
-		return errors.New("storage: job missing id")
-	}
+	return s.RestoreJobs(ctx, []*jobs.JobDef{job})
+}
 
+// RestoreJobs inserts many jobs into this DB in ONE transaction (one commit =
+// one fsync for the whole batch, vs one per job). Same semantics as RestoreJob:
+// terminal fields preserved verbatim, INSERT OR IGNORE for idempotency, foreign
+// keys OFF on the archive writer so dangling deps are tolerated.
+func (s *sqliteStorage) RestoreJobs(ctx context.Context, list []*jobs.JobDef) error {
+	ctx = context.WithoutCancel(ctx)
+	if len(list) == 0 {
+		return nil
+	}
 	tx, err := s.beginTx(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	for _, job := range list {
+		if job == nil || job.JobId == "" {
+			return errors.New("storage: nil job or missing id in restore batch")
+		}
+		if err := restoreJobTx(ctx, tx, job); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
 
+// restoreJobTx writes one job (row + all relations) into an existing transaction,
+// preserving terminal fields. Shared by RestoreJob/RestoreJobs.
+func restoreJobTx(ctx context.Context, tx *sql.Tx, job *jobs.JobDef) error {
 	if _, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO jobs
 		   (id, status, priority, name, notes, submit_time, start_time, end_time, return_code)
@@ -2247,48 +2264,158 @@ func (s *sqliteStorage) RestoreJob(ctx context.Context, job *jobs.JobDef) error 
 	); err != nil {
 		return fmt.Errorf("storage: restore job: %w", err)
 	}
-
 	for _, depID := range job.AfterOk {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO job_deps (job_id, afterok_id) VALUES (?, ?)`,
-			job.JobId, depID,
-		); err != nil {
+			job.JobId, depID); err != nil {
 			return fmt.Errorf("storage: restore dep: %w", err)
 		}
 	}
 	for _, d := range job.Details {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO job_details (job_id, key, value) VALUES (?, ?, ?)`,
-			job.JobId, d.Key, d.Value,
-		); err != nil {
+			job.JobId, d.Key, d.Value); err != nil {
 			return fmt.Errorf("storage: restore detail %s: %w", d.Key, err)
 		}
 	}
 	for _, d := range job.RunningDetails {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO job_running_details (job_id, key, value) VALUES (?, ?, ?)`,
-			job.JobId, d.Key, d.Value,
-		); err != nil {
+			job.JobId, d.Key, d.Value); err != nil {
 			return fmt.Errorf("storage: restore running detail %s: %w", d.Key, err)
 		}
 	}
 	for _, p := range job.InputFiles {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO job_inputs (job_id, path) VALUES (?, ?)`,
-			job.JobId, p,
-		); err != nil {
+			job.JobId, p); err != nil {
 			return fmt.Errorf("storage: restore input %s: %w", p, err)
 		}
 	}
 	for _, p := range job.OutputFiles {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT OR IGNORE INTO job_outputs (job_id, path) VALUES (?, ?)`,
-			job.JobId, p,
-		); err != nil {
+			job.JobId, p); err != nil {
 			return fmt.Errorf("storage: restore output %s: %w", p, err)
 		}
 	}
-	return tx.Commit()
+	return nil
+}
+
+// LoadJobs bulk-loads full JobDefs (row + all relations) for the given ids using
+// one query per table (IN clauses) instead of N per-job round-trips — the read
+// side of a fast bulk archive. Missing ids are skipped; results follow the input
+// order.
+func (s *sqliteStorage) LoadJobs(ctx context.Context, ids []string) ([]*jobs.JobDef, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	ph := "(" + strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",") + ")"
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+
+	byID := make(map[string]*jobs.JobDef, len(ids))
+	rows, err := s.qRows(ctx,
+		"SELECT id, status, priority, name, notes, submit_time, start_time, end_time, return_code FROM jobs WHERE id IN "+ph, args...)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		byID[job.JobId] = job
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// deps
+	if err := s.bulkKV(ctx, "SELECT job_id, afterok_id FROM job_deps WHERE job_id IN "+ph, args, func(id, dep string) {
+		if j := byID[id]; j != nil {
+			j.AfterOk = append(j.AfterOk, dep)
+		}
+	}); err != nil {
+		return nil, err
+	}
+	// details
+	if err := s.bulkKVV(ctx, "SELECT job_id, key, value FROM job_details WHERE job_id IN "+ph, args, func(id, k, v string) {
+		if j := byID[id]; j != nil {
+			j.Details = append(j.Details, jobs.JobDefDetail{Key: k, Value: v})
+		}
+	}); err != nil {
+		return nil, err
+	}
+	// running details
+	if err := s.bulkKVV(ctx, "SELECT job_id, key, value FROM job_running_details WHERE job_id IN "+ph, args, func(id, k, v string) {
+		if j := byID[id]; j != nil {
+			j.RunningDetails = append(j.RunningDetails, jobs.JobRunningDetail{Key: k, Value: v})
+		}
+	}); err != nil {
+		return nil, err
+	}
+	// inputs / outputs
+	if err := s.bulkKV(ctx, "SELECT job_id, path FROM job_inputs WHERE job_id IN "+ph, args, func(id, p string) {
+		if j := byID[id]; j != nil {
+			j.InputFiles = append(j.InputFiles, p)
+		}
+	}); err != nil {
+		return nil, err
+	}
+	if err := s.bulkKV(ctx, "SELECT job_id, path FROM job_outputs WHERE job_id IN "+ph, args, func(id, p string) {
+		if j := byID[id]; j != nil {
+			j.OutputFiles = append(j.OutputFiles, p)
+		}
+	}); err != nil {
+		return nil, err
+	}
+
+	out := make([]*jobs.JobDef, 0, len(byID))
+	for _, id := range ids {
+		if j := byID[id]; j != nil {
+			out = append(out, j)
+		}
+	}
+	return out, nil
+}
+
+// bulkKV runs a two-column (job_id, value) query and calls fn per row.
+func (s *sqliteStorage) bulkKV(ctx context.Context, query string, args []any, fn func(id, v string)) error {
+	rows, err := s.qRows(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, v string
+		if err := rows.Scan(&id, &v); err != nil {
+			return err
+		}
+		fn(id, v)
+	}
+	return rows.Err()
+}
+
+// bulkKVV runs a three-column (job_id, key, value) query and calls fn per row.
+func (s *sqliteStorage) bulkKVV(ctx context.Context, query string, args []any, fn func(id, k, v string)) error {
+	rows, err := s.qRows(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, k, v string
+		if err := rows.Scan(&id, &k, &v); err != nil {
+			return err
+		}
+		fn(id, k, v)
+	}
+	return rows.Err()
 }
 
 func (s *sqliteStorage) CleanupJob(ctx context.Context, jobID string) error {
