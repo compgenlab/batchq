@@ -124,12 +124,15 @@ in one request — so it scales to a large backlog without per-job round-trips.`
 			case api.CleanupPhaseScanning:
 				fmt.Printf("Scanning for jobs matching %s...\n", selector)
 			case api.CleanupPhaseSelected:
-				fmt.Printf("Found %d job(s) matching %s\n", ev.Matched, selector)
+				// Only mention the match count separately when some matched jobs
+				// can't be removed (a dependent is still active) — otherwise the
+				// action line below is the whole story.
 				if ev.Blocked > 0 {
-					fmt.Printf("  %d not eligible (a dependent is still active) — leaving in place\n", ev.Blocked)
+					fmt.Printf("Found %s matching %s; %s not eligible (a dependent is still active)\n",
+						pluralJobs(ev.Matched), selector, pluralJobs(ev.Blocked))
 				}
 				if ev.Total > 0 {
-					fmt.Printf("%s %d job(s)...\n", verb, ev.Total)
+					fmt.Printf("%s %s...\n", verb, pluralJobs(ev.Total))
 				}
 			case api.CleanupPhaseArchiving, api.CleanupPhaseDeleting:
 				fmt.Printf("  %d/%d\n", ev.Done, ev.Total)
@@ -155,16 +158,25 @@ in one request — so it scales to a large backlog without per-job round-trips.`
 				if resp.Removed == 0 {
 					fmt.Println("Nothing to archive")
 				} else {
-					fmt.Printf("Archived %d job(s) to %s\n", resp.Removed, resp.ArchivePath)
+					fmt.Printf("Archived %s to %s\n", pluralJobs(resp.Removed), resp.ArchivePath)
 				}
 			} else {
-				fmt.Printf("Removed %d job(s)\n", resp.Removed)
+				fmt.Printf("Removed %s\n", pluralJobs(resp.Removed))
 			}
 		}
 		if resp.Vacuumed {
 			fmt.Println("Database vacuumed")
 		}
 	},
+}
+
+// pluralJobs renders a job count with the correctly pluralized noun:
+// "1 job", "2 jobs", "0 jobs".
+func pluralJobs(n int) string {
+	if n == 1 {
+		return "1 job"
+	}
+	return fmt.Sprintf("%d jobs", n)
 }
 
 // parseAgeDuration parses a duration string accepting `s`, `m`, `h`, `d`,
