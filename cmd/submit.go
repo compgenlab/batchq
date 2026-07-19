@@ -489,6 +489,10 @@ var submitCmd = &cobra.Command{
 			details["run_id"] = jobRunID
 		}
 		req := &api.SubmitJobRequest{
+			// Client-assigned id: makes this submit idempotent so the in-process
+			// retry can survive a Lustre/NFS latency spike without duplicating the
+			// job. Generated once here, reused across every retry attempt.
+			JobID:       support.NewUUID(),
 			Name:        jobName,
 			Hold:        jobHold,
 			ArrayDeps:   arrayDeps,
@@ -511,10 +515,14 @@ var submitCmd = &cobra.Command{
 					details[k] = strings.ReplaceAll(v, "%JOBID", "%A_%a")
 				}
 			}
+			tmpl := *req
+			tmpl.JobID = "" // per-task ids are server-assigned; the array id is the token
 			arrReq := &api.SubmitArrayRequest{
-				SubmitJobRequest: *req,
-				ArrayIndices:     spec.Indices,
-				ArrayThrottle:    spec.Throttle,
+				SubmitJobRequest: tmpl,
+				// Client-assigned array id: idempotency token for the array submit.
+				ArrayID:       support.NewUUID(),
+				ArrayIndices:  spec.Indices,
+				ArrayThrottle: spec.Throttle,
 			}
 			resp, err := c.SubmitArray(ctx, arrReq)
 			if err != nil {

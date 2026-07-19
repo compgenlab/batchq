@@ -94,6 +94,20 @@ func (s *Service) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*ap
 		return nil, fmt.Errorf("%w: missing details.script", ErrBadRequest)
 	}
 
+	// A client-assigned id makes submit idempotent (the jobs.id PK dedups). If
+	// the job already exists, this is a retried submit — return the existing job
+	// rather than creating a duplicate.
+	jobID := support.NewUUID()
+	if req.JobID != "" {
+		if !support.IsUUID(req.JobID) {
+			return nil, fmt.Errorf("%w: job_id must be a UUID", ErrBadRequest)
+		}
+		jobID = req.JobID
+		if existing, err := s.store.GetJob(ctx, jobID); err == nil {
+			return api.JobFromDef(existing), nil
+		}
+	}
+
 	if peer, ok := support.PeerCredsFromContext(ctx); ok {
 		applyPeerIdentity(req, peer)
 	}
@@ -112,7 +126,7 @@ func (s *Service) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*ap
 	}
 
 	job := &jobs.JobDef{
-		JobId:       support.NewUUID(),
+		JobId:       jobID,
 		Name:        jobs.NormalizeName(req.Name),
 		Notes:       req.Notes,
 		Priority:    req.Priority,
@@ -128,6 +142,14 @@ func (s *Service) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*ap
 	}
 
 	if err := s.store.InsertJob(ctx, job); err != nil {
+		// Idempotency race backstop: if a client id was supplied and the job now
+		// exists, a concurrent retry won the insert — return that job instead of
+		// the (duplicate-key) error.
+		if req.JobID != "" {
+			if existing, gerr := s.store.GetJob(ctx, jobID); gerr == nil {
+				return api.JobFromDef(existing), nil
+			}
+		}
 		return nil, err
 	}
 	return api.JobFromDef(job), nil
@@ -354,7 +376,18 @@ func (s *Service) SubmitArray(ctx context.Context, req *api.SubmitArrayRequest) 
 		}
 	}
 
+	// A client-assigned array id makes the array submit idempotent: a retry with
+	// the same id returns the existing array instead of re-expanding it.
 	arrayID := support.NewUUID()
+	if req.ArrayID != "" {
+		if !support.IsUUID(req.ArrayID) {
+			return nil, fmt.Errorf("%w: array_id must be a UUID", ErrBadRequest)
+		}
+		arrayID = req.ArrayID
+		if members, err := s.store.FindArrayMembers(ctx, arrayID); err == nil && len(members) > 0 {
+			return s.existingArrayResponse(ctx, arrayID, members)
+		}
+	}
 	size := strconv.Itoa(len(req.ArrayIndices))
 	throttle := ""
 	if req.ArrayThrottle > 0 {
@@ -392,6 +425,13 @@ func (s *Service) SubmitArray(ctx context.Context, req *api.SubmitArrayRequest) 
 	}
 
 	if err := s.store.InsertArray(ctx, arrayID, tasks); err != nil {
+		// Idempotency backstop: a concurrent retry may have won — return the
+		// existing array rather than the duplicate-key error.
+		if req.ArrayID != "" {
+			if members, gerr := s.store.FindArrayMembers(ctx, arrayID); gerr == nil && len(members) > 0 {
+				return s.existingArrayResponse(ctx, arrayID, members)
+			}
+		}
 		return nil, err
 	}
 
@@ -399,6 +439,20 @@ func (s *Service) SubmitArray(ctx context.Context, req *api.SubmitArrayRequest) 
 	for _, t := range tasks {
 		resp.JobIDs = append(resp.JobIDs, t.JobId)
 		resp.Jobs = append(resp.Jobs, api.JobFromDef(t))
+	}
+	return resp, nil
+}
+
+// existingArrayResponse rebuilds the SubmitArrayResponse for an already-persisted
+// array (an idempotent-retry hit), ordered by array index.
+func (s *Service) existingArrayResponse(ctx context.Context, arrayID string, members []storage.ArrayMember) (*api.SubmitArrayResponse, error) {
+	sort.Slice(members, func(i, j int) bool { return members[i].Index < members[j].Index })
+	resp := &api.SubmitArrayResponse{ArrayID: arrayID}
+	for _, m := range members {
+		resp.JobIDs = append(resp.JobIDs, m.ID)
+		if job, err := s.store.GetJob(ctx, m.ID); err == nil {
+			resp.Jobs = append(resp.Jobs, api.JobFromDef(job))
+		}
 	}
 	return resp, nil
 }

@@ -275,15 +275,23 @@ var handoffBackoffs = []time.Duration{5 * time.Second, 10 * time.Second, 30 * ti
 // context bounds the whole sequence, so callers that want the retries must
 // budget for the backoff (see cmd.cmdContextRetryable).
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	return c.doRetry(ctx, method, path, body, out, retryableHandoff)
+}
+
+// doRetry is do with a caller-chosen predicate deciding which errors are worth a
+// reconnect-and-retry. do uses retryableHandoff (only errors that guarantee the
+// server did no work); the idempotent submit path uses retryableIdempotent
+// (also request timeouts / 5xx), safe because the client-assigned id dedups.
+func (c *Client) doRetry(ctx context.Context, method, path string, body, out any, retryable func(error) bool) error {
 	if !c.auto.Enabled {
 		return c.doOnce(ctx, method, path, body, out)
 	}
 	for attempt := 0; ; attempt++ {
 		err := c.doOnce(ctx, method, path, body, out)
-		if err == nil || attempt >= len(handoffBackoffs) || !retryableHandoff(err) {
+		if err == nil || attempt >= len(handoffBackoffs) || !retryable(err) {
 			return err
 		}
-		c.logf("server handoff on %s %s (%v); reconnecting in %s (retry %d/%d)",
+		c.logf("retrying %s %s (%v); reconnecting in %s (retry %d/%d)",
 			method, path, err, handoffBackoffs[attempt], attempt+1, len(handoffBackoffs))
 		select {
 		case <-ctx.Done():
@@ -311,6 +319,38 @@ func retryableHandoff(err error) bool {
 		return he.StatusCode == http.StatusServiceUnavailable && he.Draining
 	}
 	return isConnectFailure(err)
+}
+
+// retryableIdempotent is the wider retry predicate for a submit that carries a
+// client-assigned id: on top of the clean-handoff cases, it also retries a
+// request timeout (the server may have committed the write, but the id dedups a
+// retry) and any 5xx (e.g. a transient SQLITE_BUSY). Only used when the request
+// is idempotent — a keyless submit must never retry a timeout (it would create a
+// duplicate).
+func retryableIdempotent(err error) bool {
+	if retryableHandoff(err) {
+		return true
+	}
+	if isTimeoutErr(err) {
+		return true
+	}
+	var he *HTTPError
+	if errors.As(err, &he) {
+		return he.StatusCode >= 500
+	}
+	return false
+}
+
+// isTimeoutErr reports whether err is a request timeout — the per-request
+// http.Client cap firing, or a net-level timeout. (A caller-context expiry also
+// surfaces as DeadlineExceeded, but the retry loop's ctx.Done() check stops
+// there, so treating it as retryable is harmless.)
+func isTimeoutErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // doOnce performs a single HTTP request. Body is JSON-marshaled if non-nil.
@@ -514,18 +554,30 @@ func (c *Client) Cleanup(ctx context.Context, req api.CleanupRequest, onEvent fu
 }
 
 func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api.JobDTO, error) {
+	// A client-assigned id makes submit idempotent, so a transient (a Lustre/NFS
+	// latency spike timing the request out) can be safely retried — the server
+	// dedups on the id. Without an id, keep the conservative handoff-only retry.
+	retryable := retryableHandoff
+	if req.JobID != "" {
+		retryable = retryableIdempotent
+	}
 	var resp api.SubmitJobResponse
-	if err := c.do(ctx, http.MethodPost, api.Prefix+api.RouteJobs, req, &resp); err != nil {
+	if err := c.doRetry(ctx, http.MethodPost, api.Prefix+api.RouteJobs, req, &resp, retryable); err != nil {
 		return nil, err
 	}
 	return resp.Job, nil
 }
 
 // SubmitArray submits a job array (one template + task indices) and returns the
-// generated array id plus the persisted task jobs.
+// array id plus the persisted task jobs. A client-assigned ArrayID makes it
+// idempotent (retryable through a transient); see SubmitJob.
 func (c *Client) SubmitArray(ctx context.Context, req *api.SubmitArrayRequest) (*api.SubmitArrayResponse, error) {
+	retryable := retryableHandoff
+	if req.ArrayID != "" {
+		retryable = retryableIdempotent
+	}
 	var resp api.SubmitArrayResponse
-	if err := c.do(ctx, http.MethodPost, api.Prefix+api.RouteJobsArray, req, &resp); err != nil {
+	if err := c.doRetry(ctx, http.MethodPost, api.Prefix+api.RouteJobsArray, req, &resp, retryable); err != nil {
 		return nil, err
 	}
 	return &resp, nil

@@ -143,6 +143,11 @@ type HealthResponse struct {
 // wire; if Hold=true the server starts the job in USERHOLD instead of
 // computing the status from deps.
 type SubmitJobRequest struct {
+	// JobID, when set, is the client-assigned job id (a UUID). It makes submit
+	// idempotent: the jobs.id primary key is the dedup token, so a retried submit
+	// with the same id returns the existing job instead of creating a duplicate.
+	// Empty lets the server assign the id (the historical behavior).
+	JobID       string            `json:"job_id,omitempty"`
 	Name        string            `json:"name,omitempty"`
 	Notes       string            `json:"notes,omitempty"`
 	Priority    int               `json:"priority,omitempty"`
@@ -171,8 +176,14 @@ type SubmitJobResponse struct {
 // sharing a generated array_id.
 type SubmitArrayRequest struct {
 	SubmitJobRequest
-	ArrayIndices  []int `json:"array_indices"`
-	ArrayThrottle int   `json:"array_throttle,omitempty"`
+	// ArrayID, when set, is the client-assigned array id (a UUID) — the
+	// idempotency token for an array submit: a retry with the same id returns
+	// the existing array instead of creating a duplicate. Empty lets the server
+	// assign it. (The embedded SubmitJobRequest.JobID is ignored for arrays; the
+	// per-task ids are always server-assigned.)
+	ArrayID       string `json:"array_id,omitempty"`
+	ArrayIndices  []int  `json:"array_indices"`
+	ArrayThrottle int    `json:"array_throttle,omitempty"`
 }
 
 // SubmitArrayResponse returns the generated array id and the persisted task
