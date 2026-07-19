@@ -74,3 +74,25 @@ func NewUUID() string {
 	hexStr := hex.EncodeToString(buf)
 	return fmt.Sprintf("%s-%s-%s-%s-%s", hexStr[0:8], hexStr[8:12], hexStr[12:16], hexStr[16:20], hexStr[20:32])
 }
+
+// IsUUID reports whether s is a canonical 8-4-4-4-12 hex UUID string (the form
+// NewUUID produces). Used to validate a client-assigned id before it becomes a
+// job id, so a submit can't inject an arbitrary primary key.
+func IsUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, r := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if r != '-' {
+				return false
+			}
+		default:
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+	}
+	return true
+}
