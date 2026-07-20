@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -581,6 +582,22 @@ func slurmJobName(id, name string) string {
 	return fmt.Sprintf("bq-%s.%s", id, jobs.NormalizeName(name))
 }
 
+// slurmCommentDirective builds a `#SBATCH --comment=...` line carrying a small
+// JSON back-reference to batchq (e.g. `{"batchq_id":"<uuid>"}`). The comment is
+// stored on the SLURM job RECORD — queryable via `scontrol show job` / `sacct` /
+// `squeue` without reading the batch script — so a rescue can map a SLURM job
+// back to its batchq job/array even if we failed to record the SLURM id after
+// the (irreversible) sbatch. The JSON's quotes are escaped and the value wrapped
+// in quotes so sbatch keeps it as one directive token.
+func slurmCommentDirective(kv map[string]string) string {
+	b, err := json.Marshal(kv)
+	if err != nil {
+		return ""
+	}
+	escaped := strings.ReplaceAll(string(b), `"`, `\"`)
+	return fmt.Sprintf("#SBATCH --comment=\"%s\"\n", escaped)
+}
+
 func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO) (string, error) {
 	// we only support a limited set of SBATCH arguments
 	// -c cpus_per_task (with -n 1 nodes)
@@ -609,6 +626,7 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO)
 	src := spl[0] + "\n"
 
 	src += r.slurmResourceDirectives(jobdef)
+	src += slurmCommentDirective(map[string]string{"batchq_id": jobdef.JobID})
 	if jobdef.Name != "" {
 		src += fmt.Sprintf("#SBATCH -J %s\n", slurmJobName(jobdef.JobID, jobdef.Name))
 	}
@@ -646,6 +664,7 @@ func (r *slurmRunner) buildArraySBatchScript(ctx context.Context, jobdef *api.Jo
 	src := spl[0] + "\n"
 
 	src += r.slurmResourceDirectives(jobdef)
+	src += slurmCommentDirective(map[string]string{"batchq_array_id": arrayID})
 	if jobdef.Name != "" {
 		src += fmt.Sprintf("#SBATCH -J %s\n", slurmJobName(arrayID, jobdef.Name))
 	}
