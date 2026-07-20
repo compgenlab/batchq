@@ -53,7 +53,7 @@ var searchCmd = &cobra.Command{
 		case 1:
 			printJobDetails(dtos[0])
 		default:
-			printQueueTable(dtos)
+			printQueueTable(dtos, false)
 		}
 	},
 }

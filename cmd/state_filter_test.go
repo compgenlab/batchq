@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/compgenlab/batchq/api"
 	"github.com/compgenlab/batchq/jobs"
 )
 
@@ -53,5 +54,15 @@ func TestSlurmDisplayID(t *testing.T) {
 				t.Fatalf("slurmDisplayID = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestArrayProgress(t *testing.T) {
+	mk := func(s string) *api.JobDTO { return &api.JobDTO{Status: s} }
+	members := []*api.JobDTO{mk("RUNNING"), mk("RUNNING"), mk("QUEUED"), mk("SUCCESS")}
+	got := arrayProgress(members)
+	want := "array 1/4 · QUEUED 1 RUNNING 2 SUCCESS 1"
+	if got != want {
+		t.Fatalf("arrayProgress = %q, want %q", got, want)
 	}
 }

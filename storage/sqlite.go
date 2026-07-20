@@ -896,7 +896,7 @@ func (s *sqliteStorage) GetQueueJobs(ctx context.Context, showAll, sortByStatus 
 		LEFT JOIN (
 			SELECT job_id, group_concat(key || '=' || value, char(10)) AS details
 			FROM job_details
-			WHERE key IN ('procs', 'mem', 'walltime', 'user', 'run_id')
+			WHERE key IN ('procs', 'mem', 'walltime', 'user', 'run_id', 'array_id', 'array_index', 'array_size')
 			GROUP BY job_id
 		) details ON details.job_id = j.id
 		LEFT JOIN (

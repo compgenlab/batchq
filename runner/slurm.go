@@ -352,7 +352,10 @@ func (r *slurmRunner) submitSingleJob(ctx context.Context, jobdef *api.JobDTO) b
 	}
 	pctx, pcancel := context.WithTimeout(ctx, proxyWriteTimeout)
 	perr := r.client.MarkJobProxied(pctx, r.runnerId, jobdef.JobID, map[string]string{
-		"slurm_job_id":      slurmJobId,
+		"slurm_job_id": slurmJobId,
+		// Seed the state as PENDING at handoff so the queue shows a status
+		// immediately; the reconciler refines it (RUNNING/COMPLETED/…) later.
+		"slurm_status":      "PENDING",
 		"slurm_submit_time": support.GetNowUTCString(),
 		"slurm_script":      src,
 	})
@@ -408,8 +411,11 @@ func (r *slurmRunner) submitArrayBatch(ctx context.Context, resp *api.ClaimArray
 		// with the task, not the logical array. Duplication is bounded by the
 		// batch size (the live-queue budget), not the array size.
 		perr := r.client.MarkJobProxied(pctx, r.runnerId, t.JobID, map[string]string{
-			"slurm_array_id":    slurmArrayId,
-			"slurm_task_index":  strconv.Itoa(t.Index),
+			"slurm_array_id":   slurmArrayId,
+			"slurm_task_index": strconv.Itoa(t.Index),
+			// Seed PENDING so a pending array task shows a status before it's
+			// individually visible in sacct (the reconciler skips it until then).
+			"slurm_status":      "PENDING",
 			"slurm_submit_time": submitTime,
 			"slurm_script":      src,
 		})
