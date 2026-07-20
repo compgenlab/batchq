@@ -124,16 +124,23 @@ var queueCmd = &cobra.Command{
 			}
 		}
 
+		// Normalize + validate --state (case-insensitive, comma-separated).
+		states, perr := normalizeStates(queueStates)
+		if perr != nil {
+			log.Fatalln(perr)
+		}
+
 		var dtos []*api.JobDTO
 		var err error
-		// Detail-based filters (run-id/array-id/output/input) need the
-		// general /jobs listing, which loads full relations to match them.
-		// A plain queue view — even with --since/--before, now bounded in
-		// SQL — uses the fast single-query /queue path.
-		if queueRunID != "" || queueArrayID != "" || queueOutput != "" || queueInput != "" {
+		// A --state filter or a detail filter (run-id/array-id/output/input) uses
+		// the general /jobs listing (it can filter by status / load relations). A
+		// plain queue view — even with --since/--before, bounded in SQL — uses the
+		// fast single-query /queue path.
+		if len(states) > 0 || queueRunID != "" || queueArrayID != "" || queueOutput != "" || queueInput != "" {
 			dtos, err = c.ListJobs(ctx, client.ListJobsOptions{
 				ShowAll:      jobShowAll,
 				SortByStatus: !queueSortTime,
+				Statuses:     states,
 				RunID:        queueRunID,
 				ArrayID:      queueArrayID,
 				Output:       queueOutput,
@@ -159,6 +166,41 @@ var queueCmd = &cobra.Command{
 		}
 		printQueueTable(dtos)
 	},
+}
+
+// slurmDisplayID returns the SLURM id to show for a proxied job: a plain job's
+// slurm_job_id, or an array task's "<slurm_array_id>_<slurm_task_index>" (falling
+// back to the bare array id). Empty when nothing has been recorded yet. Array
+// tasks record slurm_array_id/slurm_task_index rather than slurm_job_id, so the
+// queue must check both — otherwise proxied array tasks show no SLURM id.
+func slurmDisplayID(job *jobs.JobDef) string {
+	if id := job.GetRunningDetail("slurm_job_id", ""); id != "" {
+		return id
+	}
+	if aid := job.GetRunningDetail("slurm_array_id", ""); aid != "" {
+		if idx := job.GetRunningDetail("slurm_task_index", ""); idx != "" {
+			return aid + "_" + idx
+		}
+		return aid
+	}
+	return ""
+}
+
+// normalizeStates upper-cases, trims, drops blanks, and validates the --state
+// values into wire status names, returning a clear error on an unknown state.
+func normalizeStates(raw []string) ([]string, error) {
+	var out []string
+	for _, s := range raw {
+		s = strings.ToUpper(strings.TrimSpace(s))
+		if s == "" {
+			continue
+		}
+		if _, err := api.ParseStatus(s); err != nil {
+			return nil, fmt.Errorf("invalid --state %q (valid: QUEUED, RUNNING, PROXYQUEUED, WAITING, USERHOLD, SUCCESS, FAILED, CANCELED)", s)
+		}
+		out = append(out, s)
+	}
+	return out, nil
 }
 
 // printQueueTable renders the standard tabular queue view for a slice
@@ -221,8 +263,8 @@ func printQueueTable(dtos []*api.JobDTO) {
 			fmt.Printf("| %-20.20s\n", fmt.Sprintf("pid:%s", job.GetRunningDetail("pid", "")))
 		case jobs.PROXYQUEUED:
 			fmt.Print("|")
-			if job.GetRunningDetail("slurm_job_id", "") != "" {
-				fmt.Printf(" %s", fmt.Sprintf("slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), job.GetRunningDetail("slurm_job_id", "")))
+			if sid := slurmDisplayID(job); sid != "" {
+				fmt.Printf(" slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), sid)
 			}
 			if len(job.AfterOk) > 0 {
 				depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
@@ -463,9 +505,11 @@ var queueSince string
 var queueBefore string
 var queueSortTime bool
 var queueSortReverse bool
+var queueStates []string
 
 func init() {
 	queueCmd.Flags().BoolVar(&jobShowAll, "all", false, "Show all jobs (including completed)")
+	queueCmd.Flags().StringSliceVarP(&queueStates, "state", "s", nil, "Only show jobs in these states (comma-separated, case-insensitive; e.g. RUNNING,QUEUED)")
 	queueCmd.Flags().StringVar(&queueRunID, "run-id", "", "Only show jobs in this workflow run")
 	queueCmd.Flags().StringVar(&queueArrayID, "array-id", "", "Only show tasks in this job array")
 	queueCmd.Flags().StringVar(&queueOutput, "output", "", "Only show jobs that list this file as an output")
