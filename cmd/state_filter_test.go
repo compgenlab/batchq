@@ -66,3 +66,20 @@ func TestArrayProgress(t *testing.T) {
 		t.Fatalf("arrayProgress = %q, want %q", got, want)
 	}
 }
+
+// A proxied array shows its SLURM state, not just PROXYQUEUED: effectiveStatus
+// surfaces slurm_status for PROXYQUEUED tasks, so a running SLURM array reads as
+// RUNNING with a PENDING/RUNNING breakdown.
+func TestArrayProgressUsesSlurmStatus(t *testing.T) {
+	proxied := func(slurm string) *api.JobDTO {
+		return &api.JobDTO{Status: "PROXYQUEUED", RunningDetails: map[string]string{"slurm_status": slurm}}
+	}
+	members := []*api.JobDTO{proxied("RUNNING"), proxied("RUNNING"), proxied("PENDING"), proxied("PENDING")}
+
+	if got := arrayProgress(members); got != "array 0/4 · PENDING 2 RUNNING 2" {
+		t.Fatalf("arrayProgress = %q, want 'array 0/4 · PENDING 2 RUNNING 2'", got)
+	}
+	if got := arrayDisplayStatus(members); got != "RUNNING" {
+		t.Fatalf("arrayDisplayStatus = %q, want RUNNING", got)
+	}
+}
