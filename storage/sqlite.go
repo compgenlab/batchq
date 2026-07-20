@@ -1735,7 +1735,20 @@ func (s *sqliteStorage) MarkJobProxied(ctx context.Context, jobID, runnerID stri
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return ErrInvalidState
+		// Not RUNNING. Idempotent retry: if it's already PROXYQUEUED, a prior
+		// call committed (its response was lost to a transient) — treat as
+		// success and still (re-)record the details below. Any other state is a
+		// genuine conflict.
+		var cur jobs.StatusCode
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, jobID).Scan(&cur); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrJobNotFound
+			}
+			return err
+		}
+		if cur != jobs.PROXYQUEUED {
+			return ErrInvalidState
+		}
 	}
 
 	for k, v := range runningDetails {
@@ -1826,7 +1839,20 @@ func (s *sqliteStorage) EndProxiedJob(ctx context.Context, jobID string, status 
 		return err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return ErrInvalidState
+		// Not PROXYQUEUED. Idempotent retry: if it's already at the SAME terminal
+		// status, a prior call committed (response lost to a transient) — the
+		// cascade already ran, so just succeed. A different status is a conflict.
+		var cur jobs.StatusCode
+		if err := tx.QueryRowContext(ctx, `SELECT status FROM jobs WHERE id = ?`, jobID).Scan(&cur); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrJobNotFound
+			}
+			return err
+		}
+		if cur != status {
+			return ErrInvalidState
+		}
+		return tx.Commit()
 	}
 
 	if status != jobs.SUCCESS {

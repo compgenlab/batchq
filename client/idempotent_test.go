@@ -113,3 +113,32 @@ func TestSubmitJobDoesNotRetryTransientWithoutID(t *testing.T) {
 		t.Fatalf("expected exactly 1 round-trip (no retry), got %d", n)
 	}
 }
+
+// MarkJobProxied must retry a transient (SQLITE_BUSY/5xx) so the SLURM id isn't
+// lost after sbatch — and it must do so even for a REMOTE runner (no autospawn),
+// since a plain resend recovers the transient with nothing to respawn.
+func TestMarkJobProxiedRetriesTransientEvenRemote(t *testing.T) {
+	orig := handoffBackoffs
+	handoffBackoffs = []time.Duration{5 * time.Millisecond, 5 * time.Millisecond, 5 * time.Millisecond}
+	t.Cleanup(func() { handoffBackoffs = orig })
+
+	c, err := DialWithOptions(Options{URL: "https://example.invalid", Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("DialWithOptions: %v", err)
+	}
+	var calls atomic.Int32
+	c.httpC = &http.Client{Transport: rtFunc(func(r *http.Request) (*http.Response, error) {
+		if calls.Add(1) == 1 {
+			return resp(http.StatusInternalServerError, nil, `{"error":"database is locked (5) (SQLITE_BUSY)"}`), nil
+		}
+		return resp(http.StatusNoContent, nil, ""), nil
+	})}
+	// c.auto stays disabled (remote runner) — doIdempotent must still retry.
+
+	if err := c.MarkJobProxied(context.Background(), "r", "j1", map[string]string{"slurm_array_id": "12345"}); err != nil {
+		t.Fatalf("MarkJobProxied should have retried the transient, got: %v", err)
+	}
+	if n := calls.Load(); n < 2 {
+		t.Fatalf("expected a retry (>=2 round-trips), got %d", n)
+	}
+}

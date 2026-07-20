@@ -275,15 +275,27 @@ var handoffBackoffs = []time.Duration{5 * time.Second, 10 * time.Second, 30 * ti
 // context bounds the whole sequence, so callers that want the retries must
 // budget for the backoff (see cmd.cmdContextRetryable).
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
-	return c.doRetry(ctx, method, path, body, out, retryableHandoff)
+	// Handoff retries recover only by respawning a local server, so they need
+	// autospawn — a remote client gets a single shot.
+	return c.doRetry(ctx, method, path, body, out, retryableHandoff, false)
+}
+
+// doIdempotent is do for a request that is safe to replay (a client-assigned
+// id / an idempotent server op): it retries the wider transient set
+// (retryableIdempotent) and does so even for a remote, non-autospawn client,
+// since a plain resend can recover a Lustre/NFS transient (e.g. SQLITE_BUSY)
+// with no respawn needed.
+func (c *Client) doIdempotent(ctx context.Context, method, path string, body, out any) error {
+	return c.doRetry(ctx, method, path, body, out, retryableIdempotent, true)
 }
 
 // doRetry is do with a caller-chosen predicate deciding which errors are worth a
-// reconnect-and-retry. do uses retryableHandoff (only errors that guarantee the
-// server did no work); the idempotent submit path uses retryableIdempotent
-// (also request timeouts / 5xx), safe because the client-assigned id dedups.
-func (c *Client) doRetry(ctx context.Context, method, path string, body, out any, retryable func(error) bool) error {
-	if !c.auto.Enabled {
+// reconnect-and-retry. allowNonAutospawn lets the retry loop run even without
+// autospawn (a remote client) — appropriate for idempotent requests, where a
+// resend recovers a transient without respawning anything. The local autospawn
+// respawn (ensureUp) still only fires when the client can autospawn.
+func (c *Client) doRetry(ctx context.Context, method, path string, body, out any, retryable func(error) bool, allowNonAutospawn bool) error {
+	if !c.auto.Enabled && !allowNonAutospawn {
 		return c.doOnce(ctx, method, path, body, out)
 	}
 	for attempt := 0; ; attempt++ {
@@ -291,21 +303,24 @@ func (c *Client) doRetry(ctx context.Context, method, path string, body, out any
 		if err == nil || attempt >= len(handoffBackoffs) || !retryable(err) {
 			return err
 		}
-		c.logf("retrying %s %s (%v); reconnecting in %s (retry %d/%d)",
+		c.logf("retrying %s %s (%v); backing off %s (retry %d/%d)",
 			method, path, err, handoffBackoffs[attempt], attempt+1, len(handoffBackoffs))
 		select {
 		case <-ctx.Done():
 			return err
 		case <-time.After(handoffBackoffs[attempt]):
 		}
-		// Drop any keep-alive connection to the now-dead server inode, then
-		// ensure a fresh server is up before resending.
-		if t, ok := c.httpC.Transport.(*http.Transport); ok {
-			t.CloseIdleConnections()
+		// Local autospawn clients: drop the keep-alive to the now-dead server
+		// inode and respawn a fresh server before resending. Remote clients just
+		// resend after the backoff.
+		if c.auto.Enabled {
+			if t, ok := c.httpC.Transport.(*http.Transport); ok {
+				t.CloseIdleConnections()
+			}
+			ensureCtx, cancel := context.WithTimeout(context.Background(), c.opts.Timeout)
+			_ = c.ensureUp(ensureCtx)
+			cancel()
 		}
-		ensureCtx, cancel := context.WithTimeout(context.Background(), c.opts.Timeout)
-		_ = c.ensureUp(ensureCtx)
-		cancel()
 	}
 }
 
@@ -557,12 +572,12 @@ func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api
 	// A client-assigned id makes submit idempotent, so a transient (a Lustre/NFS
 	// latency spike timing the request out) can be safely retried — the server
 	// dedups on the id. Without an id, keep the conservative handoff-only retry.
-	retryable := retryableHandoff
-	if req.JobID != "" {
-		retryable = retryableIdempotent
-	}
 	var resp api.SubmitJobResponse
-	if err := c.doRetry(ctx, http.MethodPost, api.Prefix+api.RouteJobs, req, &resp, retryable); err != nil {
+	send := c.do
+	if req.JobID != "" {
+		send = c.doIdempotent
+	}
+	if err := send(ctx, http.MethodPost, api.Prefix+api.RouteJobs, req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Job, nil
@@ -572,12 +587,12 @@ func (c *Client) SubmitJob(ctx context.Context, req *api.SubmitJobRequest) (*api
 // array id plus the persisted task jobs. A client-assigned ArrayID makes it
 // idempotent (retryable through a transient); see SubmitJob.
 func (c *Client) SubmitArray(ctx context.Context, req *api.SubmitArrayRequest) (*api.SubmitArrayResponse, error) {
-	retryable := retryableHandoff
-	if req.ArrayID != "" {
-		retryable = retryableIdempotent
-	}
 	var resp api.SubmitArrayResponse
-	if err := c.doRetry(ctx, http.MethodPost, api.Prefix+api.RouteJobsArray, req, &resp, retryable); err != nil {
+	send := c.do
+	if req.ArrayID != "" {
+		send = c.doIdempotent
+	}
+	if err := send(ctx, http.MethodPost, api.Prefix+api.RouteJobsArray, req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -829,8 +844,13 @@ func (c *Client) ClaimNextArrayBatch(ctx context.Context, runnerID, kind, host s
 	return &resp, nil
 }
 
+// MarkJobProxied records a job's handoff to SLURM (the slurm_* running details)
+// and moves it RUNNING->PROXYQUEUED. It runs right after an irreversible sbatch,
+// so losing this write orphans the job — hence doIdempotent: the op is idempotent
+// server-side and is retried through a transient (a Lustre SQLITE_BUSY/stall)
+// even from a remote runner.
 func (c *Client) MarkJobProxied(ctx context.Context, runnerID, jobID string, details map[string]string) error {
-	return c.do(ctx, http.MethodPost,
+	return c.doIdempotent(ctx, http.MethodPost,
 		api.Prefix+"/runners/"+runnerID+"/jobs/"+jobID+"/proxy",
 		api.ProxyJobRequest{RunningDetails: details}, nil)
 }
@@ -863,7 +883,10 @@ func (c *Client) EndProxiedJob(ctx context.Context, runnerID, jobID, status stri
 		t := endTime.UTC()
 		req.EndTime = &t
 	}
-	return c.do(ctx, http.MethodPost,
+	// Idempotent + retried: reporting a SLURM job's terminal state must not be
+	// lost to a transient (it would leave the job stuck PROXYQUEUED); a replay
+	// after the write committed is a no-op server-side.
+	return c.doIdempotent(ctx, http.MethodPost,
 		api.Prefix+"/runners/"+runnerID+"/jobs/"+jobID+"/proxy-end",
 		req, nil)
 }
