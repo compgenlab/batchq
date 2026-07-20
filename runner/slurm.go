@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,6 +19,13 @@ import (
 	"github.com/compgenlab/batchq/jobs"
 	"github.com/compgenlab/batchq/support"
 )
+
+// proxyWriteTimeout bounds the critical, now-retried state writes that record a
+// job's SLURM handoff / terminal result (MarkJobProxied, EndProxiedJob). It must
+// comfortably exceed the client's transient-retry backoff (5s+10s+30s) plus a
+// couple of attempts, so a Lustre stall right after an irreversible sbatch can't
+// cut the retry short and lose the SLURM id.
+const proxyWriteTimeout = 3 * time.Minute
 
 type slurmRunner struct {
 	client      *client.Client
@@ -342,7 +350,7 @@ func (r *slurmRunner) submitSingleJob(ctx context.Context, jobdef *api.JobDTO) b
 		r.cancelJob(ctx, jobdef.JobID, fmt.Sprintf("Error submitting to SLURM: %s", err.Error()))
 		return false
 	}
-	pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
+	pctx, pcancel := context.WithTimeout(ctx, proxyWriteTimeout)
 	perr := r.client.MarkJobProxied(pctx, r.runnerId, jobdef.JobID, map[string]string{
 		"slurm_job_id":      slurmJobId,
 		"slurm_submit_time": support.GetNowUTCString(),
@@ -392,7 +400,7 @@ func (r *slurmRunner) submitArrayBatch(ctx context.Context, resp *api.ClaimArray
 	submitTime := support.GetNowUTCString()
 	submitted := 0
 	for _, t := range resp.Tasks {
-		pctx, pcancel := context.WithTimeout(ctx, 30*time.Second)
+		pctx, pcancel := context.WithTimeout(ctx, proxyWriteTimeout)
 		// slurm_script is stored per task so `details <task>` shows the exact
 		// sbatch script this task went out in. It's identical across a single
 		// batch, but a drip-fed array is submitted as several batches (e.g. 1-5
@@ -556,7 +564,7 @@ func (r *slurmRunner) applySlurmState(ctx context.Context, job *api.JobDTO, slur
 	if finalStatus != jobs.SUCCESS.String() {
 		endNotes = fmt.Sprintf("slurm reported state: %s", slurmState.State)
 	}
-	ectx, ecancel := context.WithTimeout(ctx, 30*time.Second)
+	ectx, ecancel := context.WithTimeout(ctx, proxyWriteTimeout)
 	if eerr := r.client.EndProxiedJob(ectx, r.runnerId, job.JobID, finalStatus, slurmState.StartAsTime(), slurmState.EndAsTime(), slurmState.ExitCodeInt(), endNotes); eerr != nil {
 		fmt.Printf("Error ending proxied job %s: %v\n", job.JobID, eerr)
 	}
@@ -572,6 +580,22 @@ func (r *slurmRunner) applySlurmState(ctx context.Context, job *api.JobDTO, slur
 // defensive, idempotent guard so the directive is always a bare token.
 func slurmJobName(id, name string) string {
 	return fmt.Sprintf("bq-%s.%s", id, jobs.NormalizeName(name))
+}
+
+// slurmCommentDirective builds a `#SBATCH --comment=...` line carrying a small
+// JSON back-reference to batchq (e.g. `{"batchq_id":"<uuid>"}`). The comment is
+// stored on the SLURM job RECORD — queryable via `scontrol show job` / `sacct` /
+// `squeue` without reading the batch script — so a rescue can map a SLURM job
+// back to its batchq job/array even if we failed to record the SLURM id after
+// the (irreversible) sbatch. The JSON's quotes are escaped and the value wrapped
+// in quotes so sbatch keeps it as one directive token.
+func slurmCommentDirective(kv map[string]string) string {
+	b, err := json.Marshal(kv)
+	if err != nil {
+		return ""
+	}
+	escaped := strings.ReplaceAll(string(b), `"`, `\"`)
+	return fmt.Sprintf("#SBATCH --comment=\"%s\"\n", escaped)
 }
 
 func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO) (string, error) {
@@ -602,6 +626,7 @@ func (r *slurmRunner) buildSBatchScript(ctx context.Context, jobdef *api.JobDTO)
 	src := spl[0] + "\n"
 
 	src += r.slurmResourceDirectives(jobdef)
+	src += slurmCommentDirective(map[string]string{"batchq_id": jobdef.JobID})
 	if jobdef.Name != "" {
 		src += fmt.Sprintf("#SBATCH -J %s\n", slurmJobName(jobdef.JobID, jobdef.Name))
 	}
@@ -639,6 +664,7 @@ func (r *slurmRunner) buildArraySBatchScript(ctx context.Context, jobdef *api.Jo
 	src := spl[0] + "\n"
 
 	src += r.slurmResourceDirectives(jobdef)
+	src += slurmCommentDirective(map[string]string{"batchq_array_id": arrayID})
 	if jobdef.Name != "" {
 		src += fmt.Sprintf("#SBATCH -J %s\n", slurmJobName(arrayID, jobdef.Name))
 	}
