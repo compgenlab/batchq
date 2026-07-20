@@ -164,7 +164,10 @@ var queueCmd = &cobra.Command{
 				return ti.After(tj)
 			})
 		}
-		printQueueTable(dtos)
+		// Collapse arrays into one row by default; --expand-arrays shows every
+		// task, and --array-id (drilling into one array) implies expanded.
+		collapse := !queueExpandArrays && queueArrayID == ""
+		printQueueTable(dtos, collapse)
 	},
 }
 
@@ -203,10 +206,42 @@ func normalizeStates(raw []string) ([]string, error) {
 	return out, nil
 }
 
-// printQueueTable renders the standard tabular queue view for a slice
-// of jobs. Shared by `queue` and `search` (when a query has multiple
-// hits).
-func printQueueTable(dtos []*api.JobDTO) {
+// printQueueTable renders the standard tabular queue view for a slice of jobs.
+// Shared by `queue` and `search`. When collapseArrays is set, tasks that share
+// an array_id are folded into a single summary row (in the position of the
+// array's first task), so a large array doesn't flood the queue.
+func printQueueTable(dtos []*api.JobDTO, collapseArrays bool) {
+	printQueueHeader()
+
+	if !collapseArrays {
+		for _, dto := range dtos {
+			printJobRow(dto)
+		}
+		return
+	}
+
+	groups := map[string][]*api.JobDTO{}
+	for _, dto := range dtos {
+		if aid := dto.Details["array_id"]; aid != "" {
+			groups[aid] = append(groups[aid], dto)
+		}
+	}
+	printed := map[string]bool{}
+	for _, dto := range dtos {
+		aid := dto.Details["array_id"]
+		if aid == "" {
+			printJobRow(dto)
+			continue
+		}
+		if printed[aid] {
+			continue
+		}
+		printed[aid] = true
+		printArraySummaryRow(aid, groups[aid])
+	}
+}
+
+func printQueueHeader() {
 	fmt.Printf("| %-36.36s ", "jobid")
 	fmt.Printf("| %-8.8s ", "status")
 	fmt.Printf("| %-20.20s ", "job-name")
@@ -223,70 +258,112 @@ func printQueueTable(dtos []*api.JobDTO) {
 	} else {
 		fmt.Println("|--------------------------------------|----------|----------------------|-----|----------|-------------|--------|")
 	}
+}
 
-	for _, dto := range dtos {
-		job := api.JobToDef(dto)
-		if s, perr := api.ParseStatus(dto.Status); perr == nil {
-			job.Status = s
-		}
-		fmt.Printf("| %-36.36s ", job.JobId)
-		fmt.Printf("| %-8.8s ", job.Status.String())
-		fmt.Printf("| %-20.20s ", job.Name)
-		if Config.Batchq.Multiuser {
-			fmt.Printf("| %-12.12s ", job.GetDetail("user", ""))
-		}
-		fmt.Printf("| %-3.3s ", job.GetDetail("procs", ""))
-		fmt.Printf("| %-8.8s ", jobs.PrintMemoryString(job.GetDetail("mem", "")))
+// printArraySummaryRow renders one collapsed row for a whole array: the array id,
+// an aggregate status, the shared template fields, and a per-status progress
+// breakdown in the trailing column.
+func printArraySummaryRow(arrayID string, members []*api.JobDTO) {
+	m0 := members[0]
+	tmpl := api.JobToDef(m0)
+	fmt.Printf("| %-36.36s ", arrayID)
+	fmt.Printf("| %-8.8s ", aggregateArrayStatus(members))
+	fmt.Printf("| %-20.20s ", tmpl.Name)
+	if Config.Batchq.Multiuser {
+		fmt.Printf("| %-12.12s ", tmpl.GetDetail("user", ""))
+	}
+	fmt.Printf("| %-3.3s ", tmpl.GetDetail("procs", ""))
+	fmt.Printf("| %-8.8s ", jobs.PrintMemoryString(tmpl.GetDetail("mem", "")))
+	fmt.Printf("| %-11.11s ", jobs.WalltimeStringToString(tmpl.GetDetail("walltime", "")))
+	fmt.Printf("| %-6.6s ", relativeAge(m0.SubmitTime))
+	fmt.Printf("| %s\n", arrayProgress(members))
+}
 
-		var walltimeStr string
-		switch job.Status {
-		case jobs.CANCELED:
-			walltimeStr = ""
-		case jobs.SUCCESS, jobs.FAILED:
-			walltimeStr = jobs.WalltimeToString(int(job.EndTime.Sub(job.StartTime).Seconds()))
-		case jobs.RUNNING:
-			walltimeStr = jobs.WalltimeToString(int(time.Now().UTC().Sub(job.StartTime).Seconds()))
-		default:
-			walltimeStr = jobs.WalltimeStringToString(job.GetDetail("walltime", ""))
+// arrayProgress summarizes an array's tasks as "<done>/<total> · <status counts>"
+// e.g. "2/10 · RUNNING 3 QUEUED 5 SUCCESS 2".
+func arrayProgress(members []*api.JobDTO) string {
+	counts := map[string]int{}
+	done := 0
+	for _, m := range members {
+		counts[m.Status]++
+		switch m.Status {
+		case "SUCCESS", "FAILED", "CANCELED":
+			done++
 		}
-		fmt.Printf("| %-11.11s ", walltimeStr)
-		fmt.Printf("| %-6.6s ", relativeAge(dto.SubmitTime))
+	}
+	order := []string{"USERHOLD", "WAITING", "QUEUED", "PROXYQUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELED"}
+	parts := make([]string, 0, len(order))
+	for _, st := range order {
+		if counts[st] > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", st, counts[st]))
+		}
+	}
+	return fmt.Sprintf("array %d/%d · %s", done, len(members), strings.Join(parts, " "))
+}
 
-		switch job.Status {
-		case jobs.CANCELED:
-			fmt.Printf("| %-20.20s\n", job.Notes)
-		case jobs.SUCCESS:
-			fmt.Println("|")
-		case jobs.FAILED:
-			fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
-		case jobs.RUNNING:
-			fmt.Printf("| %-20.20s\n", fmt.Sprintf("pid:%s", job.GetRunningDetail("pid", "")))
-		case jobs.PROXYQUEUED:
-			fmt.Print("|")
-			if sid := slurmDisplayID(job); sid != "" {
-				fmt.Printf(" slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), sid)
-			}
-			if len(job.AfterOk) > 0 {
-				depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
-				if len(depStr) > 20 {
-					fmt.Printf(" %-17.17s...", depStr)
-				} else {
-					fmt.Printf(" %-20s", depStr)
-				}
-			}
-			fmt.Println("")
-		default:
-			fmt.Print("|")
-			if len(job.AfterOk) > 0 {
-				depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
-				if len(depStr) > 20 {
-					fmt.Printf(" %-17.17s...", depStr)
-				} else {
-					fmt.Printf(" %-20s", depStr)
-				}
-			}
-			fmt.Println("")
+// printJobRow renders a single job as one queue-table row.
+func printJobRow(dto *api.JobDTO) {
+	job := api.JobToDef(dto)
+	if s, perr := api.ParseStatus(dto.Status); perr == nil {
+		job.Status = s
+	}
+	fmt.Printf("| %-36.36s ", job.JobId)
+	fmt.Printf("| %-8.8s ", job.Status.String())
+	fmt.Printf("| %-20.20s ", job.Name)
+	if Config.Batchq.Multiuser {
+		fmt.Printf("| %-12.12s ", job.GetDetail("user", ""))
+	}
+	fmt.Printf("| %-3.3s ", job.GetDetail("procs", ""))
+	fmt.Printf("| %-8.8s ", jobs.PrintMemoryString(job.GetDetail("mem", "")))
+
+	var walltimeStr string
+	switch job.Status {
+	case jobs.CANCELED:
+		walltimeStr = ""
+	case jobs.SUCCESS, jobs.FAILED:
+		walltimeStr = jobs.WalltimeToString(int(job.EndTime.Sub(job.StartTime).Seconds()))
+	case jobs.RUNNING:
+		walltimeStr = jobs.WalltimeToString(int(time.Now().UTC().Sub(job.StartTime).Seconds()))
+	default:
+		walltimeStr = jobs.WalltimeStringToString(job.GetDetail("walltime", ""))
+	}
+	fmt.Printf("| %-11.11s ", walltimeStr)
+	fmt.Printf("| %-6.6s ", relativeAge(dto.SubmitTime))
+
+	switch job.Status {
+	case jobs.CANCELED:
+		fmt.Printf("| %-20.20s\n", job.Notes)
+	case jobs.SUCCESS:
+		fmt.Println("|")
+	case jobs.FAILED:
+		fmt.Printf("| %-20.20s\n", fmt.Sprintf("exit:%d", job.ReturnCode))
+	case jobs.RUNNING:
+		fmt.Printf("| %-20.20s\n", fmt.Sprintf("pid:%s", job.GetRunningDetail("pid", "")))
+	case jobs.PROXYQUEUED:
+		fmt.Print("|")
+		if sid := slurmDisplayID(job); sid != "" {
+			fmt.Printf(" slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), sid)
 		}
+		if len(job.AfterOk) > 0 {
+			depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
+			if len(depStr) > 20 {
+				fmt.Printf(" %-17.17s...", depStr)
+			} else {
+				fmt.Printf(" %-20s", depStr)
+			}
+		}
+		fmt.Println("")
+	default:
+		fmt.Print("|")
+		if len(job.AfterOk) > 0 {
+			depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))
+			if len(depStr) > 20 {
+				fmt.Printf(" %-17.17s...", depStr)
+			} else {
+				fmt.Printf(" %-20s", depStr)
+			}
+		}
+		fmt.Println("")
 	}
 }
 
@@ -506,10 +583,12 @@ var queueBefore string
 var queueSortTime bool
 var queueSortReverse bool
 var queueStates []string
+var queueExpandArrays bool
 
 func init() {
 	queueCmd.Flags().BoolVar(&jobShowAll, "all", false, "Show all jobs (including completed)")
 	queueCmd.Flags().StringSliceVarP(&queueStates, "state", "s", nil, "Only show jobs in these states (comma-separated, case-insensitive; e.g. RUNNING,QUEUED)")
+	queueCmd.Flags().BoolVar(&queueExpandArrays, "expand-arrays", false, "Show every array task as its own row (default: collapse each array into one summary row)")
 	queueCmd.Flags().StringVar(&queueRunID, "run-id", "", "Only show jobs in this workflow run")
 	queueCmd.Flags().StringVar(&queueArrayID, "array-id", "", "Only show tasks in this job array")
 	queueCmd.Flags().StringVar(&queueOutput, "output", "", "Only show jobs that list this file as an output")
