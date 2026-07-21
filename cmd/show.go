@@ -362,7 +362,10 @@ func printJobRow(dto *api.JobDTO) {
 		job.Status = s
 	}
 	fmt.Printf("| %-36.36s ", job.JobId)
-	fmt.Printf("| %-8.8s ", job.Status.String())
+	// Show the effective status: a proxied job displays its SLURM state
+	// (PENDING/RUNNING/…) rather than the bare PROXYQUEUED, matching the collapsed
+	// array row. The batchq status (job.Status) still drives the layout below.
+	fmt.Printf("| %-8.8s ", effectiveStatus(dto))
 	fmt.Printf("| %-20.20s ", job.Name)
 	if Config.Batchq.Multiuser {
 		fmt.Printf("| %-12.12s ", job.GetDetail("user", ""))
@@ -396,7 +399,9 @@ func printJobRow(dto *api.JobDTO) {
 	case jobs.PROXYQUEUED:
 		fmt.Print("|")
 		if sid := slurmDisplayID(job); sid != "" {
-			fmt.Printf(" slurm:%s %s;", job.GetRunningDetail("slurm_status", ""), sid)
+			// The SLURM status is now shown in the status column; show just the
+			// SLURM id here.
+			fmt.Printf(" slurm:%s;", sid)
 		}
 		if len(job.AfterOk) > 0 {
 			depStr := fmt.Sprintf("deps:%s", strings.Join(job.AfterOk, ","))

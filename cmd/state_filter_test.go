@@ -83,3 +83,19 @@ func TestArrayProgressUsesSlurmStatus(t *testing.T) {
 		t.Fatalf("arrayDisplayStatus = %q, want RUNNING", got)
 	}
 }
+
+func TestEffectiveStatus(t *testing.T) {
+	// Non-proxied → the batchq status unchanged.
+	if got := effectiveStatus(&api.JobDTO{Status: "QUEUED"}); got != "QUEUED" {
+		t.Fatalf("non-proxied = %q, want QUEUED", got)
+	}
+	// Proxied with a SLURM status → the SLURM status.
+	pr := &api.JobDTO{Status: "PROXYQUEUED", RunningDetails: map[string]string{"slurm_status": "RUNNING"}}
+	if got := effectiveStatus(pr); got != "RUNNING" {
+		t.Fatalf("proxied = %q, want RUNNING", got)
+	}
+	// Proxied but no SLURM status yet → falls back to PROXYQUEUED.
+	if got := effectiveStatus(&api.JobDTO{Status: "PROXYQUEUED"}); got != "PROXYQUEUED" {
+		t.Fatalf("proxied-no-status = %q, want PROXYQUEUED", got)
+	}
+}
