@@ -267,7 +267,7 @@ func printArraySummaryRow(arrayID string, members []*api.JobDTO) {
 	m0 := members[0]
 	tmpl := api.JobToDef(m0)
 	fmt.Printf("| %-36.36s ", arrayID)
-	fmt.Printf("| %-8.8s ", aggregateArrayStatus(members))
+	fmt.Printf("| %-8.8s ", arrayDisplayStatus(members))
 	fmt.Printf("| %-20.20s ", tmpl.Name)
 	if Config.Batchq.Multiuser {
 		fmt.Printf("| %-12.12s ", tmpl.GetDetail("user", ""))
@@ -279,24 +279,78 @@ func printArraySummaryRow(arrayID string, members []*api.JobDTO) {
 	fmt.Printf("| %s\n", arrayProgress(members))
 }
 
+// effectiveStatus is a task's status for the collapsed array view. For a
+// PROXYQUEUED task, its recorded SLURM state (PENDING/RUNNING/…) is shown instead
+// of the bare "PROXYQUEUED", since that's what's actually happening on the
+// cluster — otherwise a whole array that SLURM is actively running just reads as
+// PROXYQUEUED in the queue.
+func effectiveStatus(m *api.JobDTO) string {
+	if m.Status == jobs.PROXYQUEUED.String() {
+		if ss := m.RunningDetails["slurm_status"]; ss != "" {
+			return ss
+		}
+	}
+	return m.Status
+}
+
+// arrayDisplayStatus is the single aggregate status for a collapsed array row,
+// over effectiveStatus — so a proxied array with SLURM-running tasks shows
+// RUNNING, not PROXYQUEUED. Returns the most "active" state present.
+func arrayDisplayStatus(members []*api.JobDTO) string {
+	present := map[string]bool{}
+	for _, m := range members {
+		present[effectiveStatus(m)] = true
+	}
+	for _, s := range []string{"RUNNING", "COMPLETING", "SUSPENDED", "PENDING", "PROXYQUEUED", "QUEUED", "WAITING", "USERHOLD", "FAILED", "CANCELED"} {
+		if present[s] {
+			return s
+		}
+	}
+	return jobs.SUCCESS.String()
+}
+
+// isDoneStatus reports whether an effective status is terminal (batchq or SLURM).
+func isDoneStatus(s string) bool {
+	switch s {
+	case "SUCCESS", "FAILED", "CANCELED",
+		"COMPLETED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "BOOT_FAIL", "NODE_FAIL", "DEADLINE":
+		return true
+	}
+	return false
+}
+
 // arrayProgress summarizes an array's tasks as "<done>/<total> · <status counts>"
-// e.g. "2/10 · RUNNING 3 QUEUED 5 SUCCESS 2".
+// using effectiveStatus, e.g. "5/33 · PENDING 26 RUNNING 2 SUCCESS 5". Known
+// states are shown in a readable progression; any other SLURM states are
+// appended (sorted) so nothing is dropped.
 func arrayProgress(members []*api.JobDTO) string {
 	counts := map[string]int{}
 	done := 0
 	for _, m := range members {
-		counts[m.Status]++
-		switch m.Status {
-		case "SUCCESS", "FAILED", "CANCELED":
+		es := effectiveStatus(m)
+		counts[es]++
+		if isDoneStatus(es) {
 			done++
 		}
 	}
-	order := []string{"USERHOLD", "WAITING", "QUEUED", "PROXYQUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELED"}
-	parts := make([]string, 0, len(order))
+	order := []string{"USERHOLD", "WAITING", "QUEUED", "PENDING", "PROXYQUEUED", "RUNNING", "SUCCESS", "FAILED", "CANCELED"}
+	seen := map[string]bool{}
+	parts := make([]string, 0, len(counts))
 	for _, st := range order {
 		if counts[st] > 0 {
 			parts = append(parts, fmt.Sprintf("%s %d", st, counts[st]))
+			seen[st] = true
 		}
+	}
+	extra := make([]string, 0)
+	for st := range counts {
+		if !seen[st] {
+			extra = append(extra, st)
+		}
+	}
+	sort.Strings(extra)
+	for _, st := range extra {
+		parts = append(parts, fmt.Sprintf("%s %d", st, counts[st]))
 	}
 	return fmt.Sprintf("array %d/%d · %s", done, len(members), strings.Join(parts, " "))
 }
