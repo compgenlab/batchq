@@ -43,6 +43,10 @@ var runCmd = &cobra.Command{
 			if !cmd.Flags().Changed("slurm-full-array") {
 				slurmFullArray = Config.SlurmRunner.FullArray
 			}
+			// Bool flag > config, same as --slurm-full-array.
+			if !cmd.Flags().Changed("slurm-recover-orphans") {
+				slurmRecoverOrphans = Config.SlurmRunner.RecoverOrphans
+			}
 			if slurmAcct == "" {
 				slurmAcct = Config.SlurmRunner.Account
 			}
@@ -76,6 +80,7 @@ var runCmd = &cobra.Command{
 				SetMaxJobCount(maxJobs).
 				SetSlurmMinArray(slurmMinArray).
 				SetSlurmFullArray(slurmFullArray).
+				SetRecoverOrphans(slurmRecoverOrphans).
 				SetSlurmUsername(slurmUser).
 				SetSlurmAccount(slurmAcct).
 				SetSlurmPartition(slurmPartition).
@@ -154,6 +159,7 @@ var slurmPartition string
 var slurmMaxJobs int
 var slurmMinArray int
 var slurmFullArray bool
+var slurmRecoverOrphans bool
 var runResources []string
 var runHost string
 var runCluster string
@@ -239,6 +245,7 @@ func init() {
 	runCmd.Flags().IntVar(&slurmMaxJobs, "slurm-max-jobs", -1, "Max jobs allowed for this user account")
 	runCmd.Flags().IntVar(&slurmMinArray, "slurm-min-array", -1, "Min array tasks to submit per sbatch; defer smaller batches (0/unset = submit whatever fits)")
 	runCmd.Flags().BoolVar(&slurmFullArray, "slurm-full-array", false, "Only submit an array when it fits entirely in one pass; defer any partial array (overrides --slurm-min-array)")
+	runCmd.Flags().BoolVar(&slurmRecoverOrphans, "slurm-recover-orphans", false, "Re-drive jobs this runner claimed but never handed to SLURM (RUNNING with no slurm id); keys on the claim host, so don't enable with another runner on the same host")
 	runCmd.Flags().StringVar(&slurmUser, "slurm-user", "", "SLURM user (used for calculating job-count)")
 	runCmd.Flags().StringArrayVar(&runResources, "resource", nil, "Advertise an available resource (name=value or name, repeatable)")
 	runCmd.Flags().StringVar(&runHost, "host", "", "Hostname this runner advertises on each claim (default: OS hostname)")
