@@ -582,10 +582,149 @@ func (s *sqliteStorage) loadJobRelations(ctx context.Context, job *jobs.JobDef) 
 // loadRelations=false listing to hydrate only the jobs that survived a filter,
 // avoiding the N+1 relation loads for the whole table.
 func (s *sqliteStorage) HydrateJobs(ctx context.Context, list []*jobs.JobDef) error {
+	return s.batchHydrate(ctx, list)
+}
+
+// hydrateChunkSize bounds the number of bound job_ids per IN(...) query so a
+// large listing stays under SQLite's variable limit (999 on older builds).
+const hydrateChunkSize = 500
+
+// batchHydrate loads all relations for every job in list using one grouped
+// query per relation table — 5 total (chunked) — instead of the 5-per-job
+// round-trips loadJobRelations does. This is the listing hot path (queue /
+// status / the SLURM runner's PROXYQUEUED+RUNNING scans): on a high-latency
+// filesystem the per-query cost dominates, so collapsing 5N+1 queries into ~5
+// is the difference between a sub-second listing and a 30s client timeout.
+// Row order per job matches the single-job path: each relation table's
+// PRIMARY KEY is (job_id, …), so `WHERE job_id IN (…) ORDER BY job_id, …`
+// reuses that index and yields the same per-job ordering.
+func (s *sqliteStorage) batchHydrate(ctx context.Context, list []*jobs.JobDef) error {
+	if len(list) == 0 {
+		return nil
+	}
+	byID := make(map[string]*jobs.JobDef, len(list))
+	ids := make([]string, 0, len(list))
 	for _, j := range list {
-		if err := s.loadJobRelations(ctx, j); err != nil {
+		// Reset so re-hydrating an already-populated job doesn't duplicate.
+		j.AfterOk = nil
+		j.Details = nil
+		j.RunningDetails = nil
+		j.InputFiles = nil
+		j.OutputFiles = nil
+		byID[j.JobId] = j
+		ids = append(ids, j.JobId)
+	}
+
+	if err := s.batchFetchInto(ctx, ids,
+		`SELECT job_id, afterok_id FROM job_deps WHERE job_id IN (%s) ORDER BY job_id, afterok_id`,
+		func(rows *sql.Rows) error {
+			var jid, v string
+			if err := rows.Scan(&jid, &v); err != nil {
+				return err
+			}
+			if j := byID[jid]; j != nil {
+				j.AfterOk = append(j.AfterOk, v)
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+
+	if err := s.batchFetchInto(ctx, ids,
+		`SELECT job_id, key, value FROM job_details WHERE job_id IN (%s) ORDER BY job_id, key`,
+		func(rows *sql.Rows) error {
+			var jid, k, v string
+			if err := rows.Scan(&jid, &k, &v); err != nil {
+				return err
+			}
+			if j := byID[jid]; j != nil {
+				j.Details = append(j.Details, jobs.JobDefDetail{Key: k, Value: v})
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+
+	if err := s.batchFetchInto(ctx, ids,
+		`SELECT job_id, key, value FROM job_running_details WHERE job_id IN (%s) ORDER BY job_id, key`,
+		func(rows *sql.Rows) error {
+			var jid, k, v string
+			if err := rows.Scan(&jid, &k, &v); err != nil {
+				return err
+			}
+			if j := byID[jid]; j != nil {
+				j.RunningDetails = append(j.RunningDetails, jobs.JobRunningDetail{Key: k, Value: v})
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+
+	if err := s.batchFetchInto(ctx, ids,
+		`SELECT job_id, path FROM job_inputs WHERE job_id IN (%s) ORDER BY job_id, path`,
+		func(rows *sql.Rows) error {
+			var jid, p string
+			if err := rows.Scan(&jid, &p); err != nil {
+				return err
+			}
+			if j := byID[jid]; j != nil {
+				j.InputFiles = append(j.InputFiles, p)
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+
+	if err := s.batchFetchInto(ctx, ids,
+		`SELECT job_id, path FROM job_outputs WHERE job_id IN (%s) ORDER BY job_id, path`,
+		func(rows *sql.Rows) error {
+			var jid, p string
+			if err := rows.Scan(&jid, &p); err != nil {
+				return err
+			}
+			if j := byID[jid]; j != nil {
+				j.OutputFiles = append(j.OutputFiles, p)
+			}
+			return nil
+		}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// batchFetchInto runs queryTmpl (a single `%s` placeholder for the IN list)
+// over ids in chunks of hydrateChunkSize, invoking scan for every row. Each
+// chunk is one query, so the whole hydration is ~5 queries per chunk rather
+// than 5 per job.
+func (s *sqliteStorage) batchFetchInto(ctx context.Context, ids []string, queryTmpl string, scan func(*sql.Rows) error) error {
+	for start := 0; start < len(ids); start += hydrateChunkSize {
+		end := start + hydrateChunkSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args[i] = id
+		}
+		query := fmt.Sprintf(queryTmpl, strings.Join(placeholders, ","))
+		rows, err := s.qRows(ctx, query, args...)
+		if err != nil {
 			return err
 		}
+		for rows.Next() {
+			if err := scan(rows); err != nil {
+				rows.Close()
+				return err
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
 	}
 	return nil
 }
@@ -812,10 +951,8 @@ func (s *sqliteStorage) queryJobs(ctx context.Context, query string, args []any,
 		return nil, err
 	}
 	if loadRelations {
-		for _, j := range out {
-			if err := s.loadJobRelations(ctx, j); err != nil {
-				return nil, err
-			}
+		if err := s.batchHydrate(ctx, out); err != nil {
+			return nil, err
 		}
 	}
 	return out, nil
