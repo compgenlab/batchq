@@ -27,14 +27,34 @@ import (
 // cut the retry short and lose the SLURM id.
 const proxyWriteTimeout = 3 * time.Minute
 
+// claimTimeout bounds a single array-claim request. A claim commits server-side
+// even when the client's context is cancelled (storage decouples cancellation
+// via context.WithoutCancel), so a client timeout shorter than the claim's
+// actual DB write leaves the just-claimed tasks orphaned in RUNNING with no
+// SLURM id — the runner never receives the task list, so it never sbatches or
+// records a slurm id. On a networked FS (Lustre/NFS) a batch claim that scans
+// the queue can be slow, so this is matched to the critical-write budget rather
+// than the 30s used for read-only calls. Orphans that still slip through (a
+// timeout landing mid-commit) are re-driven by recoverOrphanedClaims.
+const claimTimeout = proxyWriteTimeout
+
+// orphanRecoveryMinAge is how long a job must have sat in RUNNING with no SLURM
+// id before the recovery pass will re-drive it. It must exceed proxyWriteTimeout
+// so recovery never re-submits a job whose handoff is still legitimately in
+// flight in a concurrently-running runner (sbatch done, MarkJobProxied retrying
+// through a Lustre stall) — that job is RUNNING-without-a-slurm-id too, but only
+// transiently.
+const orphanRecoveryMinAge = proxyWriteTimeout + 2*time.Minute
+
 type slurmRunner struct {
 	client      *client.Client
 	runnerId    string
 	maxUserJobs int
 	maxJobs     int
-	minArray    int
-	fullArray   bool
-	availJobs   int
+	minArray       int
+	fullArray      bool
+	recoverOrphans bool
+	availJobs      int
 	account     string
 	username    string
 	partition   string
@@ -135,6 +155,14 @@ func (r *slurmRunner) SetSlurmMinArray(minArray int) *slurmRunner {
 // larger than the job cap can never fit and will defer indefinitely.
 func (r *slurmRunner) SetSlurmFullArray(full bool) *slurmRunner {
 	r.fullArray = full
+	return r
+}
+// SetRecoverOrphans enables the orphaned-claim recovery pass: on startup the
+// runner re-drives jobs it claimed but never handed to SLURM (RUNNING with no
+// slurm id — a claim that committed server-side but whose response was lost).
+// Off by default; see recoverOrphanedClaims for the host-identity caveat.
+func (r *slurmRunner) SetRecoverOrphans(recover bool) *slurmRunner {
+	r.recoverOrphans = recover
 	return r
 }
 func (r *slurmRunner) SetSlurmAccount(account string) *slurmRunner {
@@ -247,6 +275,17 @@ func (r *slurmRunner) Start() bool {
 	fmt.Println("Updating PROXYQUEUED job SLURM status...")
 	r.UpdateSlurmJobStatus(ctx)
 
+	// Recover any jobs this runner claimed (RUNNING) but never handed to SLURM —
+	// e.g. a previous pass whose claim committed server-side but timed out
+	// client-side, orphaning the tasks in RUNNING with no slurm id. Re-drive them
+	// through the normal submit path before claiming new work. Opt-in
+	// (--slurm-recover-orphans), since recovery keys on the claim host.
+	if r.recoverOrphans {
+		if r.recoverOrphanedClaims(ctx) {
+			submittedOne = true
+		}
+	}
+
 	for {
 		// How many tasks we may submit this pass: bounded by the live
 		// SLURM-queue budget (max_slurm_jobs minus current count) and the
@@ -278,7 +317,7 @@ func (r *slurmRunner) Start() bool {
 		// procs, mem, and walltime aren't enforced on the slurm runner side;
 		// SLURM enforces them. An array candidate is claimed in a budget-bounded
 		// batch so it becomes one `sbatch --array`, drip-fed across passes.
-		claimCtx, claimCancel := context.WithTimeout(ctx, 30*time.Second)
+		claimCtx, claimCancel := context.WithTimeout(ctx, claimTimeout)
 		resp, err := r.client.ClaimNextArrayBatch(claimCtx, r.runnerId, "slurm", r.host, -1, -1, -1, r.resources, maxTasks, minArray, r.fullArray)
 		claimCancel()
 		if err != nil {
@@ -434,6 +473,139 @@ func (r *slurmRunner) submitArrayBatch(ctx context.Context, resp *api.ClaimArray
 	}
 	fmt.Printf("Submitted array %s as SLURM array job-id %s (%d/%d task(s))\n", resp.ArrayID, slurmArrayId, submitted, len(resp.Tasks))
 	return submitted > 0
+}
+
+// recoverOrphanedClaims re-drives jobs this runner claimed but never handed to
+// SLURM. When a claim commits server-side but its response is lost (e.g. the
+// client's request timed out while the server, which decouples cancellation,
+// finished the claim), the tasks are left RUNNING with no slurm id and the
+// runner never sbatches them. Such an orphan is identified by: status RUNNING,
+// claimed on this runner's host, carrying no slurm_job_id/slurm_array_id, and
+// older than orphanRecoveryMinAge (so a handoff still legitimately in flight in
+// a concurrent runner is not double-submitted). Plain orphans are re-submitted
+// individually; array-task orphans are regrouped by their batchq array_id and
+// re-submitted as one sbatch --array. Returns whether anything was submitted.
+//
+// NOTE: recovery keys on the "host" running detail (the only claim-time identity
+// exposed on the wire), so it assumes the SLURM runner is the only thing
+// claiming jobs on this host — the normal SLURM deployment. Do not run a simple
+// runner against the same server on the same host, or its locally-executing
+// RUNNING jobs would be mistaken for orphans and re-sbatched.
+func (r *slurmRunner) recoverOrphanedClaims(ctx context.Context) bool {
+	if r.host == "" {
+		// Without a host we can't tell our own claims apart from anyone else's.
+		return false
+	}
+	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
+	running, err := r.client.ListJobs(listCtx, client.ListJobsOptions{
+		Statuses: []string{jobs.RUNNING.String()},
+	})
+	listCancel()
+	if err != nil {
+		fmt.Printf("Error listing RUNNING jobs for orphan recovery: %v\n", err)
+		return false
+	}
+
+	var plain []*api.JobDTO
+	arrays := map[string][]*api.JobDTO{}
+	for _, job := range running {
+		if !r.isOrphanedClaim(job) {
+			continue
+		}
+		if aid := job.Details["array_id"]; aid != "" {
+			arrays[aid] = append(arrays[aid], job)
+		} else {
+			plain = append(plain, job)
+		}
+	}
+	if len(plain) == 0 && len(arrays) == 0 {
+		return false
+	}
+	fmt.Printf("Recovering %d orphaned claim(s) (RUNNING with no SLURM id): %d single, %d array\n", len(plain)+countTasks(arrays), len(plain), len(arrays))
+
+	submitted := false
+	for _, job := range plain {
+		// The list projection omits the script body, so fetch the full job.
+		full, gerr := r.getFullJob(ctx, job.JobID)
+		if gerr != nil {
+			fmt.Printf("Error fetching orphaned job %s: %v\n", job.JobID, gerr)
+			continue
+		}
+		if r.submitSingleJob(ctx, full) {
+			submitted = true
+		}
+	}
+	for aid, tasks := range arrays {
+		if r.resubmitOrphanedArray(ctx, aid, tasks) {
+			submitted = true
+		}
+	}
+	return submitted
+}
+
+// isOrphanedClaim reports whether a RUNNING job is one this runner claimed but
+// never handed to SLURM (see recoverOrphanedClaims).
+func (r *slurmRunner) isOrphanedClaim(job *api.JobDTO) bool {
+	if job.RunningDetails["host"] != r.host {
+		return false
+	}
+	if job.RunningDetails["slurm_job_id"] != "" || job.RunningDetails["slurm_array_id"] != "" {
+		return false
+	}
+	// Age gate: leave a recently-claimed job alone — its handoff may still be in
+	// flight in a concurrent runner (sbatch done, MarkJobProxied retrying).
+	if job.StartTime == nil || time.Since(*job.StartTime) < orphanRecoveryMinAge {
+		return false
+	}
+	return true
+}
+
+// resubmitOrphanedArray re-drives a batchq array's orphaned RUNNING tasks as one
+// sbatch --array. It fetches one task as the template (for the script/throttle,
+// which the list projection omits) and takes each task's index from the list.
+func (r *slurmRunner) resubmitOrphanedArray(ctx context.Context, arrayID string, tasks []*api.JobDTO) bool {
+	tmpl, err := r.getFullJob(ctx, tasks[0].JobID)
+	if err != nil {
+		fmt.Printf("Error fetching orphaned array %s template: %v\n", arrayID, err)
+		return false
+	}
+	throttle, _ := strconv.Atoi(tmpl.Details["array_throttle"])
+	resp := &api.ClaimArrayResponse{
+		Job:      tmpl,
+		ArrayID:  arrayID,
+		Throttle: throttle,
+		Tasks:    make([]api.ArrayTaskDTO, 0, len(tasks)),
+	}
+	for _, t := range tasks {
+		idx, ierr := strconv.Atoi(t.Details["array_index"])
+		if ierr != nil {
+			fmt.Printf("  skipping orphaned task %s: bad array_index %q\n", t.JobID, t.Details["array_index"])
+			continue
+		}
+		resp.Tasks = append(resp.Tasks, api.ArrayTaskDTO{JobID: t.JobID, Index: idx})
+	}
+	if len(resp.Tasks) == 0 {
+		return false
+	}
+	sort.Slice(resp.Tasks, func(i, j int) bool { return resp.Tasks[i].Index < resp.Tasks[j].Index })
+	return r.submitArrayBatch(ctx, resp)
+}
+
+// getFullJob fetches a job's complete definition (the list projection omits the
+// script body and array_throttle, which the submit path needs).
+func (r *slurmRunner) getFullJob(ctx context.Context, jobID string) (*api.JobDTO, error) {
+	gctx, gcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer gcancel()
+	return r.client.GetJob(gctx, jobID)
+}
+
+// countTasks totals the tasks across a group-by-array map (for logging).
+func countTasks(arrays map[string][]*api.JobDTO) int {
+	n := 0
+	for _, ts := range arrays {
+		n += len(ts)
+	}
+	return n
 }
 
 // jobEnvFor returns the captured environment for a job (split from the "env"

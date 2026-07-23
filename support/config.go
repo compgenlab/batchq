@@ -207,6 +207,13 @@ type SlurmRunnerConfig struct {
 	// the --slurm-full-array flag.
 	FullArray bool `toml:"full_array,omitempty,omitzero"`
 
+	// RecoverOrphans enables re-driving jobs this runner claimed but never handed
+	// to SLURM (left RUNNING with no slurm id when a claim committed server-side
+	// but its response was lost). Off by default: recovery keys on the claim host,
+	// so it must not be enabled when another runner (e.g. a simple runner) also
+	// claims jobs on this host. Mirrors the --slurm-recover-orphans flag.
+	RecoverOrphans bool `toml:"recover_orphans,omitempty,omitzero"`
+
 	// RunnerID is the stable identity this runner reports to the server.
 	// Empty / unset defaults to the hostname. Mirrors the --runner-id flag.
 	RunnerID string `toml:"runner_id,omitempty,omitzero"`
