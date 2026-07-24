@@ -325,6 +325,7 @@ func slurmRunnerRows(raw *support.Config) []debugRow {
 		intRow("min_array", raw.SlurmRunner.MinArray),
 		boolRow("full_array", raw.SlurmRunner.FullArray),
 		boolRow("recover_orphans", raw.SlurmRunner.RecoverOrphans),
+		boolRow("recover_hostless", raw.SlurmRunner.RecoverHostless),
 		stringRow("runner_id", "", raw.SlurmRunner.RunnerID, ""),
 		stringRow("host", "", raw.SlurmRunner.Host, ""),
 		stringRow("cluster", "", raw.SlurmRunner.Cluster, ""),
