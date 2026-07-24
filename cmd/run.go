@@ -47,6 +47,9 @@ var runCmd = &cobra.Command{
 			if !cmd.Flags().Changed("slurm-recover-orphans") {
 				slurmRecoverOrphans = Config.SlurmRunner.RecoverOrphans
 			}
+			if !cmd.Flags().Changed("slurm-recover-hostless") {
+				slurmRecoverHostless = Config.SlurmRunner.RecoverHostless
+			}
 			if slurmAcct == "" {
 				slurmAcct = Config.SlurmRunner.Account
 			}
@@ -81,6 +84,7 @@ var runCmd = &cobra.Command{
 				SetSlurmMinArray(slurmMinArray).
 				SetSlurmFullArray(slurmFullArray).
 				SetRecoverOrphans(slurmRecoverOrphans).
+				SetRecoverHostless(slurmRecoverHostless).
 				SetSlurmUsername(slurmUser).
 				SetSlurmAccount(slurmAcct).
 				SetSlurmPartition(slurmPartition).
@@ -160,6 +164,7 @@ var slurmMaxJobs int
 var slurmMinArray int
 var slurmFullArray bool
 var slurmRecoverOrphans bool
+var slurmRecoverHostless bool
 var runResources []string
 var runHost string
 var runCluster string
@@ -246,6 +251,7 @@ func init() {
 	runCmd.Flags().IntVar(&slurmMinArray, "slurm-min-array", -1, "Min array tasks to submit per sbatch; defer smaller batches (0/unset = submit whatever fits)")
 	runCmd.Flags().BoolVar(&slurmFullArray, "slurm-full-array", false, "Only submit an array when it fits entirely in one pass; defer any partial array (overrides --slurm-min-array)")
 	runCmd.Flags().BoolVar(&slurmRecoverOrphans, "slurm-recover-orphans", false, "Re-drive jobs this runner claimed but never handed to SLURM (RUNNING with no slurm id); keys on the claim host, so don't enable with another runner on the same host")
+	runCmd.Flags().BoolVar(&slurmRecoverHostless, "slurm-recover-hostless", false, "Also re-drive orphans with no recorded host (attributed by age alone; implies --slurm-recover-orphans). Only safe when this is the sole runner claiming against the server")
 	runCmd.Flags().StringVar(&slurmUser, "slurm-user", "", "SLURM user (used for calculating job-count)")
 	runCmd.Flags().StringArrayVar(&runResources, "resource", nil, "Advertise an available resource (name=value or name, repeatable)")
 	runCmd.Flags().StringVar(&runHost, "host", "", "Hostname this runner advertises on each claim (default: OS hostname)")
