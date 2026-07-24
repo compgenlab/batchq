@@ -51,10 +51,11 @@ type slurmRunner struct {
 	runnerId    string
 	maxUserJobs int
 	maxJobs     int
-	minArray       int
-	fullArray      bool
-	recoverOrphans bool
-	availJobs      int
+	minArray        int
+	fullArray       bool
+	recoverOrphans  bool
+	recoverHostless bool
+	availJobs       int
 	account     string
 	username    string
 	partition   string
@@ -160,9 +161,23 @@ func (r *slurmRunner) SetSlurmFullArray(full bool) *slurmRunner {
 // SetRecoverOrphans enables the orphaned-claim recovery pass: on startup the
 // runner re-drives jobs it claimed but never handed to SLURM (RUNNING with no
 // slurm id — a claim that committed server-side but whose response was lost).
-// Off by default; see recoverOrphanedClaims for the host-identity caveat.
+// This is the host-keyed path: an orphan is attributed to this runner by its
+// recorded "host" claim detail. Off by default; see recoverOrphanedClaims for
+// the host-identity caveat.
 func (r *slurmRunner) SetRecoverOrphans(recover bool) *slurmRunner {
 	r.recoverOrphans = recover
+	return r
+}
+
+// SetRecoverHostless broadens the recovery pass to also re-drive orphans that
+// carry NO "host" claim detail — orphans the host-keyed heuristic can never
+// match (e.g. claims from a build that predated host recording, or a handoff
+// that died before the host was persisted). These are attributed to this runner
+// by the age gate alone (orphanRecoveryMinAge), so it is only safe when this
+// runner is the sole thing claiming SLURM jobs against the server. Enabling it
+// also enables the recovery pass (no need to also set --slurm-recover-orphans).
+func (r *slurmRunner) SetRecoverHostless(recover bool) *slurmRunner {
+	r.recoverHostless = recover
 	return r
 }
 func (r *slurmRunner) SetSlurmAccount(account string) *slurmRunner {
@@ -278,9 +293,10 @@ func (r *slurmRunner) Start() bool {
 	// Recover any jobs this runner claimed (RUNNING) but never handed to SLURM —
 	// e.g. a previous pass whose claim committed server-side but timed out
 	// client-side, orphaning the tasks in RUNNING with no slurm id. Re-drive them
-	// through the normal submit path before claiming new work. Opt-in
-	// (--slurm-recover-orphans), since recovery keys on the claim host.
-	if r.recoverOrphans {
+	// through the normal submit path before claiming new work. Opt-in: the
+	// host-keyed path (--slurm-recover-orphans) and/or the hostless path
+	// (--slurm-recover-hostless), which also picks up orphans with no host.
+	if r.recoverOrphans || r.recoverHostless {
 		if r.recoverOrphanedClaims(ctx) {
 			submittedOne = true
 		}
@@ -480,22 +496,24 @@ func (r *slurmRunner) submitArrayBatch(ctx context.Context, resp *api.ClaimArray
 // client's request timed out while the server, which decouples cancellation,
 // finished the claim), the tasks are left RUNNING with no slurm id and the
 // runner never sbatches them. Such an orphan is identified by: status RUNNING,
-// claimed on this runner's host, carrying no slurm_job_id/slurm_array_id, and
-// older than orphanRecoveryMinAge (so a handoff still legitimately in flight in
-// a concurrent runner is not double-submitted). Plain orphans are re-submitted
-// individually; array-task orphans are regrouped by their batchq array_id and
-// re-submitted as one sbatch --array. Returns whether anything was submitted.
+// carrying no slurm_job_id/slurm_array_id, older than orphanRecoveryMinAge (so a
+// handoff still legitimately in flight in a concurrent runner is not
+// double-submitted), and attributable to this runner — either by matching this
+// runner's "host" claim detail (the host-keyed default, --slurm-recover-orphans)
+// or, with --slurm-recover-hostless, by carrying no host at all. Plain orphans
+// are re-submitted individually; array-task orphans are regrouped by their
+// batchq array_id and re-submitted as one sbatch --array. Returns whether
+// anything was submitted.
 //
-// NOTE: recovery keys on the "host" running detail (the only claim-time identity
-// exposed on the wire), so it assumes the SLURM runner is the only thing
-// claiming jobs on this host — the normal SLURM deployment. Do not run a simple
-// runner against the same server on the same host, or its locally-executing
-// RUNNING jobs would be mistaken for orphans and re-sbatched.
+// NOTE: attribution keys on the "host" running detail (the only claim-time
+// identity exposed on the wire), so it assumes the SLURM runner is the only
+// thing claiming jobs on this host — the normal SLURM deployment. Do not run a
+// simple runner against the same server on the same host, or its
+// locally-executing RUNNING jobs would be mistaken for orphans and re-sbatched.
+// The hostless mode is broader still (it can't even use the host to exclude
+// another runner's claims), so only enable it when this runner is the sole
+// claimant against the server.
 func (r *slurmRunner) recoverOrphanedClaims(ctx context.Context) bool {
-	if r.host == "" {
-		// Without a host we can't tell our own claims apart from anyone else's.
-		return false
-	}
 	listCtx, listCancel := context.WithTimeout(ctx, 30*time.Second)
 	running, err := r.client.ListJobs(listCtx, client.ListJobsOptions{
 		Statuses: []string{jobs.RUNNING.String()},
@@ -546,18 +564,32 @@ func (r *slurmRunner) recoverOrphanedClaims(ctx context.Context) bool {
 // isOrphanedClaim reports whether a RUNNING job is one this runner claimed but
 // never handed to SLURM (see recoverOrphanedClaims).
 func (r *slurmRunner) isOrphanedClaim(job *api.JobDTO) bool {
-	if job.RunningDetails["host"] != r.host {
-		return false
-	}
+	// Already handed to SLURM — never an orphan. Checked first so recovery can't
+	// double-submit a job that actually reached sbatch.
 	if job.RunningDetails["slurm_job_id"] != "" || job.RunningDetails["slurm_array_id"] != "" {
 		return false
 	}
 	// Age gate: leave a recently-claimed job alone — its handoff may still be in
-	// flight in a concurrent runner (sbatch done, MarkJobProxied retrying).
+	// flight in a concurrent pass (sbatch done, MarkJobProxied retrying through a
+	// Lustre stall). Applies to both attribution paths below.
 	if job.StartTime == nil || time.Since(*job.StartTime) < orphanRecoveryMinAge {
 		return false
 	}
-	return true
+	host := job.RunningDetails["host"]
+	if host == "" {
+		// No claim host recorded: the host-keyed heuristic can never match it, so
+		// only the hostless opt-in re-drives it (attributed to us by age alone).
+		return r.recoverHostless
+	}
+	if host == r.host {
+		// One of this runner's own claims (host-keyed). Recovered under either
+		// flag — hostless is a superset of the host-keyed path. A runner with no
+		// host of its own (r.host == "") never lands here (host != "" above).
+		return r.recoverOrphans || r.recoverHostless
+	}
+	// A host is recorded but it isn't ours — another runner's claim. Never
+	// re-drive it, even in hostless mode.
+	return false
 }
 
 // resubmitOrphanedArray re-drives a batchq array's orphaned RUNNING tasks as one
