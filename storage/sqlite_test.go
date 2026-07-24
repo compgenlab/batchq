@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -1182,6 +1183,67 @@ func TestSearchJobs(t *testing.T) {
 	}
 	if !seen["run-a"] || !seen["run-b"] {
 		t.Fatalf("run-id search missed expected jobs: %+v", seen)
+	}
+}
+
+// TestBatchHydrateMatchesSingleJob locks in the batched listing hydration:
+// a loadRelations=true listing (batchHydrate — ~5 grouped queries) must
+// produce byte-identical relations to per-job GetJob (loadJobRelations — 5
+// queries per job). This is the fix for the 30s client timeouts on a
+// high-IOPS-starved filesystem, where the old 5N+1 round-trips dominated.
+func TestBatchHydrateMatchesSingleJob(t *testing.T) {
+	s := newTestStore(t)
+	ctx := ctxT(t)
+
+	// A parent with rich relations, plus children depending on it (so job_deps
+	// edges have valid FK targets) and one relation-free job.
+	parent := mkJob("p", map[string]string{
+		"script": "run.sh",
+		"procs":  "4",
+		"mem":    "2048",
+		"run_id": "wf-1",
+	})
+	parent.InputFiles = []string{"/data/b.in", "/data/a.in"}
+	parent.OutputFiles = []string{"/data/out.z", "/data/out.a"}
+	mustInsert(t, s, parent)
+
+	c1 := mkJob("c1", map[string]string{"script": "c1.sh"}, "p")
+	c1.InputFiles = []string{"/data/out.a"}
+	mustInsert(t, s, c1)
+
+	mustInsert(t, s, mkJob("c2", map[string]string{"script": "c2.sh"}, "p"))
+	mustInsert(t, s, mkJob("bare", nil)) // no details, no deps, no files
+
+	// Batched path: one listing hydrates every job at once.
+	listed, err := s.ListJobs(ctx, true, false, time.Time{}, time.Time{}, true)
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	if len(listed) != 4 {
+		t.Fatalf("expected 4 jobs, got %d", len(listed))
+	}
+
+	// Single-job path: GetJob uses loadJobRelations. Compare every relation.
+	for _, got := range listed {
+		want, err := s.GetJob(ctx, got.JobId)
+		if err != nil {
+			t.Fatalf("GetJob(%s): %v", got.JobId, err)
+		}
+		if !reflect.DeepEqual(got.AfterOk, want.AfterOk) {
+			t.Errorf("%s AfterOk: batched %v != single %v", got.JobId, got.AfterOk, want.AfterOk)
+		}
+		if !reflect.DeepEqual(got.Details, want.Details) {
+			t.Errorf("%s Details: batched %v != single %v", got.JobId, got.Details, want.Details)
+		}
+		if !reflect.DeepEqual(got.RunningDetails, want.RunningDetails) {
+			t.Errorf("%s RunningDetails: batched %v != single %v", got.JobId, got.RunningDetails, want.RunningDetails)
+		}
+		if !reflect.DeepEqual(got.InputFiles, want.InputFiles) {
+			t.Errorf("%s InputFiles: batched %v != single %v", got.JobId, got.InputFiles, want.InputFiles)
+		}
+		if !reflect.DeepEqual(got.OutputFiles, want.OutputFiles) {
+			t.Errorf("%s OutputFiles: batched %v != single %v", got.JobId, got.OutputFiles, want.OutputFiles)
+		}
 	}
 }
 
