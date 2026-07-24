@@ -214,6 +214,14 @@ type SlurmRunnerConfig struct {
 	// claims jobs on this host. Mirrors the --slurm-recover-orphans flag.
 	RecoverOrphans bool `toml:"recover_orphans,omitempty,omitzero"`
 
+	// RecoverHostless broadens recovery to also re-drive orphans that carry no
+	// "host" claim detail (which the host-keyed heuristic can never match, e.g.
+	// leftovers from a build that predated host recording). It attributes such
+	// orphans to this runner by the age gate alone, so only enable it when this
+	// runner is the sole claimant against the server. Implies RecoverOrphans.
+	// Mirrors the --slurm-recover-hostless flag.
+	RecoverHostless bool `toml:"recover_hostless,omitempty,omitzero"`
+
 	// RunnerID is the stable identity this runner reports to the server.
 	// Empty / unset defaults to the hostname. Mirrors the --runner-id flag.
 	RunnerID string `toml:"runner_id,omitempty,omitzero"`
