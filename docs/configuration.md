@@ -80,6 +80,7 @@ max_jobs = 0                      # zero / unset means unlimited
 max_slurm_jobs = 200
 min_array = 100                   # defer array batches smaller than this
 full_array = false                # only submit an array that fits one pass entirely
+recover_hostless = true           # re-drive stuck orphaned claims (sole-runner deployments)
 
 [slurm_runner.resources]        # usually cluster/feature routing labels
 cluster = "biocluster"
@@ -181,6 +182,8 @@ Read by `batchq run --slurm` (or when `[batchq] runner = "slurm"`).
 | `max_slurm_jobs` | int | `0` (unlimited) | Cap on this user's live SLURM-queue jobs. The runner polls `squeue` and pauses submission when this is reached. |
 | `min_array` | int | `0` (disabled) | Minimum array batch size. Defers an array batch smaller than this (rather than emitting many tiny `sbatch --array` submissions) until enough budget frees up — *except* the array's final remainder, which is always submitted so the tail is never stranded. Clamped down to the effective job cap (`min(max_slurm_jobs, max_jobs)`). `--slurm-min-array` overrides; `--slurm-min-array=0` disables a config default. |
 | `full_array` | bool | `false` | All-or-nothing array submission: only submit an array when its *entire* remaining set of tasks fits the current budget in one pass; defer any partial array. Overrides `min_array`. An array larger than the job cap can never fit and defers indefinitely (the runner warns at startup). `--slurm-full-array` / `--slurm-full-array=false` overrides this config value. |
+| `recover_orphans` | bool | `false` | Re-drive **orphaned claims** — jobs left `RUNNING` with no SLURM id because a claim committed on the server but its response was lost (a client timeout on a slow filesystem). Attributes an orphan to this runner by matching its recorded `host`, so it's safe alongside other runners. See [SLURM › Recovering orphaned claims](slurm.md#recovering-orphaned-claims). `--slurm-recover-orphans` overrides. |
+| `recover_hostless` | bool | `false` | Superset of `recover_orphans` that **also** re-drives orphans with no recorded host, attributing them by age alone. Only safe when this runner is the *sole* claimant against the server (there's no host to exclude another runner's claims). Enabling it also enables the recovery pass. `--slurm-recover-hostless` overrides. |
 
 ### `[slurm_runner.resources]` — cluster routing labels
 

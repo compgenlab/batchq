@@ -172,6 +172,12 @@ Behavior:
 - Translates batchq dependencies to `afterok:<slurm-id>`.
 - If a job was submitted with `--env` or `#BATCHQ -env`, the captured
   environment is passed to SLURM.
+- Optionally recovers **orphaned claims** — jobs left `RUNNING` with no
+  SLURM id when a claim committed but its response was lost on a slow
+  filesystem. `--slurm-recover-orphans` re-drives your own (host-matched)
+  orphans; `--slurm-recover-hostless` also re-drives orphans with no
+  recorded host (sole-runner deployments only). See
+  [docs/slurm.md](docs/slurm.md#recovering-orphaned-claims).
 
 ## Configuration
 
