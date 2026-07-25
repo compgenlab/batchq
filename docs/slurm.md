@@ -230,6 +230,75 @@ Two knobs control the submission rate:
   job does **not** mark the batchq job FAILED — the runner records the
   reason and tries again later. (See commit `fae265f`.)
 
+## Recovering orphaned claims
+
+There is one narrow way a job can get *stuck* rather than fail cleanly,
+and the runner has an opt-in pass to fix it.
+
+**How a claim orphans.** When the runner claims a job it moves it
+`QUEUED → RUNNING`, then runs `sbatch`, then records the SLURM id and
+moves it `RUNNING → PROXYQUEUED`. The claim commits on the server *even if
+the client's request is cancelled* — the server deliberately decouples
+from request cancellation so a mid-write disconnect can't corrupt the DB.
+On a slow-IOPS networked filesystem (Lustre/NFS), a claim can therefore
+commit on the server while the runner's request times out on the client
+side. The runner never receives the task list, so it never `sbatch`es and
+never records a SLURM id — leaving the job **`RUNNING` with no slurm id**.
+Nothing advances it after that: there's no SLURM job to reconcile, and the
+normal claim path won't re-claim a `RUNNING` job.
+
+**How recovery works.** Run the SLURM runner with an orphan-recovery flag
+and, before it claims new work, it lists `RUNNING` jobs, identifies the
+orphans, and re-drives them through the normal submit path (array-task
+orphans are regrouped by their batchq array id and re-submitted as one
+`sbatch --array`). A job is only treated as an orphan when **all** of these
+hold, so recovery can never double-submit live work:
+
+- status `RUNNING` with **no** `slurm_job_id`/`slurm_array_id` — a job
+  that already reached `sbatch` is never re-driven;
+- older than a few minutes — so a handoff still legitimately in flight in
+  a concurrent pass isn't mistaken for a dead one;
+- **attributable to this runner** — see the two flags below.
+
+### `--slurm-recover-orphans` (host-keyed — the safe default)
+
+Re-drives only orphans whose recorded **`host`** claim detail matches this
+runner's host. Matching the host is how the runner proves the orphan is
+*its own* leftover and not, say, a job another runner is legitimately
+executing. Because ownership is positively identified, this is safe even
+when other runners share the same batchq server.
+
+Its blind spot: an orphan that carries **no host at all** can never match,
+so it is left alone. That happens with claims made by a build that predated
+host recording, or a handoff that died before the host was persisted.
+
+### `--slurm-recover-hostless` (sole-claimant deployments only)
+
+A **superset** of the host-keyed flag: it does everything the above does,
+*and* re-drives orphans that have **no recorded host**, attributing them to
+this runner by the age gate alone. Enabling it also turns the recovery pass
+on, so you only need this one flag — not both.
+
+The trade-off: with no host there is nothing to distinguish your orphan
+from another runner's, so this is **only safe when this runner is the sole
+thing claiming jobs against the server** — the normal single-cron-runner
+SLURM deployment. (It still never re-drives a job whose recorded host
+belongs to a *different* runner; the risk is confined to hostless jobs.)
+Don't enable it if a simple runner, or a second SLURM runner, also claims
+against the same server.
+
+| Orphan (RUNNING, no slurm id, aged) | `--slurm-recover-orphans` | `--slurm-recover-hostless` |
+|---|---|---|
+| host matches this runner | recovers | recovers |
+| host is a *different* runner's | ignores | ignores |
+| **no host recorded** | ignores | **recovers** (by age) |
+| Safe alongside other runners? | yes | no — sole claimant only |
+
+Both are off by default. Configure via `[slurm_runner] recover_orphans` /
+`recover_hostless`, or the matching flags. On the recommended single cron
+runner (see below), adding `--slurm-recover-hostless` makes stuck jobs
+self-heal on the next pass with no manual intervention.
+
 ## Three ways to drive it
 
 You can run `batchq run --slurm` in any of three shapes. The
@@ -283,7 +352,8 @@ if [ ! -e "$LOCK" ]; then
         batchq run --slurm \
             --max-jobs 50 \
             --slurm-account MYACCT \
-            --slurm-max-jobs 475
+            --slurm-max-jobs 475 \
+            --slurm-recover-hostless
     } &>> "$LOG"
     rm "$LOCK"
 fi
@@ -315,6 +385,11 @@ The pattern in this example:
 - **Append-only log.** Every tick prints a `--` separator and a
   timestamp, so the log is greppable when you need to know what the
   runner was doing at 03:14.
+- **`--slurm-recover-hostless`** self-heals claims that got stuck
+  `RUNNING` without ever reaching `sbatch` (see [Recovering orphaned
+  claims](#recovering-orphaned-claims)). It's safe here precisely
+  because this cron runner is the sole thing claiming against the
+  server; drop it if you ever add a second runner on this server.
 
 The lockfile is just a flag file, not a real lock — it's racy in
 principle, but cron at minute granularity gives you plenty of time
